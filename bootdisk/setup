@@ -1,0 +1,2 @@
+rm floppy.img
+cat stage1 stage2 pad kernel.bin > floppy.img
