@@ -1,4 +1,4 @@
-SOURCES=loader.o kernel.o
+SOURCES=loader.o gdt.o kernel.o
 
 CFLAGS=-Wall -Wextra -nostdlib -nostartfiles -nodefaultlibs
 LDFLAGS=-Tlinker.ld
@@ -15,6 +15,9 @@ link: loader.o kernel.o
 
 loader.o: loader.s
 	nasm $(ASMFLAGS) -o loader.o loader.s
+
+gdt.o: gdt.s
+	nasm $(ASMFLAGS) -o gdt.o gdt.s
 
 kernel.o: kernel.c
 	i586-elf-gcc -o kernel.o -c kernel.c $(CFLAGS)
