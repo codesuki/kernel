@@ -16,7 +16,8 @@ void print_string(char *s)
 
 void cls() 
 {
-    for (int i = 0; i < 80*25*2; ++i) 
+    int i = 0;
+    for (i = 0; i < 80*25*2; ++i) 
     {
         videoram[i] = 0;
     }
@@ -96,32 +97,51 @@ struct gdt_ptr_struct
 } __attribute__((packed));
 typedef struct gdt_ptr_struct gdt_ptr_t;
 
+struct idt_entry_struct
+{
+    uint16 offset_start;
+    uint16 selector;
+    uint8 zero;
+    uint8 type_attr;
+    uint16 offset_end;
+} __attribute__((packed));
+typedef struct idt_entry_struct idt_entry_t;
+
 gdt_ptr_t gdt;
 gdt_entry_t gdt_entries[6];
 tss_t tss;
 
+extern void gdt_update(gdt_ptr_t*);
+
+void gdt_setup();
+void gdt_write_entry(gdt_entry_t*, uint32, uint32, uint8, uint8);
+
 void gdt_setup()
 {
-    gdt.limit = sizeof(gdt_entry) * 5 - 1;
-    gdt.base = &gdt_entries;
+    gdt.limit = sizeof(gdt_entry_t) * 5 - 1;
+    gdt.base = (uint32)&gdt_entries;
 
-    write_gdt_entry(gdt_entries[0], 0, 0, 0, 0);
-    write_gdt_entry(gdt_entries[1], 0, 0xffffffff, 0x9a, 0xcf); // kernel mode code segment
-    write_gdt_entry(gdt_entries[2], 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment 
-    write_gdt_entry(gdt_entries[3], 0, 0xffffffff, 0xfa, 0xcf); // user mode code segment
-    write_gdt_entry(gdt_entries[4], 0, 0xffffffff, 0xf2, 0xcf); // user mode data segment
-    write_gdt_entry(gdt_entries[5], &tss, sizeof(tss), 0x89, 0x40); // cpu1 task switching segment
+    gdt_write_entry(&gdt_entries[0], 0, 0, 0, 0);
+    gdt_write_entry(&gdt_entries[1], 0, 0xffffffff, 0x9a, 0xcf); // kernel mode code segment
+    gdt_write_entry(&gdt_entries[2], 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment 
+    gdt_write_entry(&gdt_entries[3], 0, 0xffffffff, 0xfa, 0xcf); // user mode code segment
+    gdt_write_entry(&gdt_entries[4], 0, 0xffffffff, 0xf2, 0xcf); // user mode data segment
+    gdt_write_entry(&gdt_entries[5], (uint32)&tss, sizeof(tss), 0x89, 0x40); // cpu1 task switching segment
+
+    gdt_update(&gdt);
 }
 
-void gdt_write_entry(gdt_entry &entry, uint32 base, uint32 limit, uint8 access, uint8 flags) 
+void gdt_write_entry(gdt_entry_t* entry, uint32 base, uint32 limit, uint8 access, uint8 flags) 
 {
-    entry.base_start = (0xffff & base);
-    entry.base_middle = (base >> 16) & 0xff;
-    entry.base_end = (base >> 32) & 0xff;
+    entry->base_start = (0xffff & base);
+    entry->base_middle = (base >> 16) & 0xff;
+    entry->base_end = (base >> 24) & 0xff;
+         
+    entry->limit_start = (0xffff & limit);
+    entry->limit_and_flags = (limit >> 16) & 0x0f;
+    entry->limit_and_flags |= (flags & 0xf0);
 
-    entry.limit_start = (0xffff & limit);
-    entry.limit_and_flags = (limit >> 16) & 0x0f;
-    entry.limit_and_flags |= (flags & 0xf0);
+    entry->access = access;
 }
 
 void kmain(void* mbd, unsigned int magic)
@@ -137,6 +157,8 @@ void kmain(void* mbd, unsigned int magic)
     /* (http://www.gnu.org/software/grub/manual/multiboot/multiboot.html#multiboot_002eh) */
     /* or do your offsets yourself. The following is merely an example. */ 
     char *boot_loader_name = (char*)((long*)mbd)[16];
+
+    cls();
   
     /* Print a letter to screen to see everything is working: */
     unsigned char *videoram = (unsigned char*)0xb8000;
