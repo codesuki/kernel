@@ -38,6 +38,7 @@ typedef short int16;
 typedef unsigned char uint8;
 typedef char int8;
 
+/* task-state segment */
 struct tss_struct
 {
     uint16 link;
@@ -107,41 +108,123 @@ struct idt_entry_struct
 } __attribute__((packed));
 typedef struct idt_entry_struct idt_entry_t;
 
+struct idt_ptr_struct
+{
+    uint16 limit;
+    uint32 base;
+} __attribute__((packed));
+typedef struct idt_ptr_struct idt_ptr_t;
+
 gdt_ptr_t gdt;
 gdt_entry_t gdt_entries[6];
+
+idt_ptr_t idt;
+idt_entry_t idt_entries[256];
+
 tss_t tss;
 
 extern void gdt_update(gdt_ptr_t*);
+extern void idt_update(idt_ptr_t*);
 
 void gdt_setup();
-void gdt_write_entry(gdt_entry_t*, uint32, uint32, uint8, uint8);
+void gdt_set_entry(uint32, uint32, uint32, uint8, uint8);
+
+void idt_setup();
+void idt_set_entry(uint32, uint32, uint16, uint8);
+
+struct interrupt_registers_struct
+{
+    uint32 ds;                  // Data segment selector
+    uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax; // Pushed by pusha.
+    uint32 int_no, err_code;    // Interrupt number and error code (if applicable)
+    uint32 eip, cs, eflags, useresp, ss; // Pushed by the processor automatically.
+} __attribute__((packed));
+typedef struct registers_struct interrupt_registers_t;
+
+extern isr0; // divide error, no error code, fault
+extern isr3; // breakpoint, no error code, trap
+extern isr4; // overflow, no error code, trap
+extern isr12; // stack-segment fault, error code, fault
+extern isr13; // general protection fault, error code, fault
+extern isr14; // page fault, error code, fault
+
+void idt_setup()
+{
+    idt.limit = sizeof(idt_entry_t) * 256 - 1;
+    idt.base = (uint32)&idt_entries;
+
+    idt_set_gate(0, 0, 0x08, 0x0E);
+    idt_set_gate(1, 0, 0x08, 0x0E);
+    idt_set_gate(2, 0, 0x08, 0x0E);
+    idt_set_gate(3, 0, 0x08, 0x0E);
+    idt_set_gate(4, 0, 0x08, 0x0E);
+    idt_set_gate(5, 0, 0x08, 0x0E);
+    idt_set_gate(6, 0, 0x08, 0x0E);
+    idt_set_gate(7, 0, 0x08, 0x0E);
+    idt_set_gate(8, 0, 0x08, 0x0E);
+    idt_set_gate(9, 0, 0x08, 0x0E);
+    idt_set_gate(10, 0, 0x08, 0x0E);
+    idt_set_gate(11, 0, 0x08, 0x0E);
+    idt_set_gate(12, 0, 0x08, 0x0E);
+    idt_set_gate(13, 0, 0x08, 0x0E);
+    idt_set_gate(14, 0, 0x08, 0x0E);
+    idt_set_gate(15, 0, 0x08, 0x0E);
+    idt_set_gate(16, 0, 0x08, 0x0E);
+    idt_set_gate(17, 0, 0x08, 0x0E);
+    idt_set_gate(18, 0, 0x08, 0x0E);
+    idt_set_gate(19, 0, 0x08, 0x0E);
+    idt_set_gate(20, 0, 0x08, 0x0E);  
+    idt_set_gate(21, 0, 0x08, 0x0E);
+    idt_set_gate(22, 0, 0x08, 0x0E);
+    idt_set_gate(23, 0, 0x08, 0x0E);
+    idt_set_gate(24, 0, 0x08, 0x0E);
+    idt_set_gate(25, 0, 0x08, 0x0E);
+    idt_set_gate(26, 0, 0x08, 0x0E);
+    idt_set_gate(27, 0, 0x08, 0x0E);
+    idt_set_gate(28, 0, 0x08, 0x0E);
+    idt_set_gate(29, 0, 0x08, 0x0E);
+    idt_set_gate(30, 0, 0x08, 0x0E);
+    idt_set_gate(31, 0, 0x08, 0x0E);
+
+    idt_update(&idt);
+}
+
+void idt_set_gate(uint32 interrupt, uint32 offset, uint16 selector, uint8 type_attr)
+{
+    idt_entries[interrupt].offset_start = (offset & 0xff);
+    idt_entries[interrupt].offset_end = (offset >> 16) & 0xff; 
+    
+    idt_entries[interrupt].selector = selector;
+
+    idt_entries[interrupt].type_attr = type_attr;
+}
 
 void gdt_setup()
 {
     gdt.limit = sizeof(gdt_entry_t) * 5 - 1;
     gdt.base = (uint32)&gdt_entries;
 
-    gdt_write_entry(&gdt_entries[0], 0, 0, 0, 0);
-    gdt_write_entry(&gdt_entries[1], 0, 0xffffffff, 0x9a, 0xcf); // kernel mode code segment
-    gdt_write_entry(&gdt_entries[2], 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment 
-    gdt_write_entry(&gdt_entries[3], 0, 0xffffffff, 0xfa, 0xcf); // user mode code segment
-    gdt_write_entry(&gdt_entries[4], 0, 0xffffffff, 0xf2, 0xcf); // user mode data segment
-    gdt_write_entry(&gdt_entries[5], (uint32)&tss, sizeof(tss), 0x89, 0x40); // cpu1 task switching segment
+    gdt_set_gate(0, 0, 0, 0, 0);
+    gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf); // kernel mode code segment
+    gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment 
+    gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf); // user mode code segment
+    gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf); // user mode data segment
+    gdt_set_gate(5, (uint32)&tss, sizeof(tss), 0x89, 0x40); // cpu1 task switching segment
 
     gdt_update(&gdt);
 }
 
-void gdt_write_entry(gdt_entry_t* entry, uint32 base, uint32 limit, uint8 access, uint8 flags) 
+void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 flags) 
 {
-    entry->base_start = (0xffff & base);
-    entry->base_middle = (base >> 16) & 0xff;
-    entry->base_end = (base >> 24) & 0xff;
+    gdt_entries[entry].base_start = (0xffff & base);
+    gdt_entries[entry].base_middle = (base >> 16) & 0xff;
+    gdt_entries[entry].base_end = (base >> 24) & 0xff;
          
-    entry->limit_start = (0xffff & limit);
-    entry->limit_and_flags = (limit >> 16) & 0x0f;
-    entry->limit_and_flags |= (flags & 0xf0);
+    gdt_entries[entry].limit_start = (0xffff & limit);
+    gdt_entries[entry].limit_and_flags = (limit >> 16) & 0x0f;
+    gdt_entries[entry].limit_and_flags |= (flags & 0xf0);
 
-    entry->access = access;
+    gdt_entries[entry].access = access;
 }
 
 void kmain(void* mbd, unsigned int magic)
@@ -160,12 +243,19 @@ void kmain(void* mbd, unsigned int magic)
 
     cls();
   
+
+    /* Write your kernel here. */
+
+    gdt_setup();
+    idt_setup();
+    asm volatile ("int $0x4");
+
+    
     /* Print a letter to screen to see everything is working: */
     unsigned char *videoram = (unsigned char*)0xb8000;
     videoram[0] = 65; /* character 'A' */
     videoram[1] = 0x07; /* forground, background color. */
   
-    /* Write your kernel here. */
-  
+
     //   return 0xDEADBABA;
 }

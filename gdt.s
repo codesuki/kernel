@@ -1,4 +1,4 @@
-global gdt_update    ; Allows the C code to call gdt_flush().
+global gdt_update    ; Allows the C code to call gdt_update().
 
 gdt_update:
         mov eax, [esp+4]  ; Get the pointer to the GDT, passed as a parameter.
