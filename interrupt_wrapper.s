@@ -1,12 +1,13 @@
 global isr_wrapper
-
+extern interrupt_handler
+        
 %macro ISR_NOERRCODE 1  ; define a macro, taking one parameter
 GLOBAL isr%1        ; %1 accesses the first parameter.
 isr%1:
         cli
         push byte 0
         push byte %1
-        jmp isr_common_stub
+        jmp isr_wrapper
 %endmacro
 
 %macro ISR_ERRCODE 1
@@ -14,7 +15,7 @@ global isr%1
 isr%1:
         cli
         push byte %1
-        jmp isr_common_stub
+        jmp isr_wrapper
 %endmacro
 
 ISR_NOERRCODE 0
@@ -52,8 +53,6 @@ ISR_NOERRCODE 31
         
 isr_wrapper:
         pushad
-        push                    ; push error code
-        push                    ; push interrupt number
         call interrupt_handler
         popad
         iret
