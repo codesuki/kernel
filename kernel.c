@@ -1,16 +1,27 @@
 unsigned char *videoram = (unsigned char*)0xb8000;
 
+int xpos = 0;
+int ypos = 0;
+
 void print_character(char c) 
-{
-    videoram[0] = (int)c;
-    videoram[1] = 0x07;
+{   
+    videoram[ypos*80*2+xpos] = (int)c;
+    videoram[ypos*80*2+xpos+1] = 0x07;
+    xpos += 2;
+
+    if (c == '\n' || xpos > 80*2) 
+    {
+        xpos = 0;
+        ++ypos;
+    }
 }
 
 void print_string(char *s)
 {
-    while(*s++ != '\n')
+    while(*s != 0)
     {
         print_character(*s);
+        s++;
     }
 }
 
@@ -21,6 +32,16 @@ void cls()
     {
         videoram[i] = 0;
     }
+}
+
+void print_warning(char *s) 
+{
+    
+}
+
+void print_error(char *s)
+{
+    
 }
 
 /* available colors
@@ -134,9 +155,9 @@ void idt_set_entry(uint32, uint32, uint16, uint8);
 
 struct interrupt_registers_struct
 {
-    uint32 ds;                  // Data segment selector
+    uint32 ds; // Data segment selector
     uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax; // Pushed by pusha.
-    uint32 int_no, err_code;    // Interrupt number and error code (if applicable)
+    uint32 int_no, err_code; // Interrupt number and error code (if applicable)
     uint32 eip, cs, eflags, useresp, ss; // Pushed by the processor automatically.
 } __attribute__((packed));
 typedef struct registers_struct interrupt_registers_t;
@@ -147,6 +168,11 @@ extern isr4; // overflow, no error code, trap
 extern isr12; // stack-segment fault, error code, fault
 extern isr13; // general protection fault, error code, fault
 extern isr14; // page fault, error code, fault
+
+void interrupt_handler()
+{
+    
+}
 
 void idt_setup()
 {
@@ -246,16 +272,11 @@ void kmain(void* mbd, unsigned int magic)
 
     /* Write your kernel here. */
 
-    gdt_setup();
-    idt_setup();
-    asm volatile ("int $0x4");
-
+    /* gdt_setup(); */
+    /* idt_setup(); */
+    /* asm volatile ("int $0x4"); */
     
     /* Print a letter to screen to see everything is working: */
-    unsigned char *videoram = (unsigned char*)0xb8000;
-    videoram[0] = 65; /* character 'A' */
-    videoram[1] = 0x07; /* forground, background color. */
-  
-
+    print_string("hello knorki\nneue Zeile\nnoch eine neue Zeile\nscheint zu gehen\n\n\n\n4 neue zeilen");
     //   return 0xDEADBABA;
 }
