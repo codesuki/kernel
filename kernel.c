@@ -36,12 +36,14 @@ void cls()
 
 void print_warning(char *s) 
 {
-    
+    print_string("Warning: ");
+    print_string(s);
 }
 
 void print_error(char *s)
 {
-    
+    print_string("Error: ");
+    print_string(s);   
 }
 
 /* available colors
@@ -225,6 +227,21 @@ void idt_set_gate(uint32 interrupt, uint32 offset, uint16 selector, uint8 type_a
     idt_entries[interrupt].type_attr = type_attr;
 }
 
+/* put this into some bitfield enum? */
+
+#define TYPE_SYSTEM
+#define TYPE_CODE_DATA
+#define RING0
+#define RING3
+#define DATA_READ
+#define DATA_WRITE
+#define DATA_EXPAND_DOWN
+#define DATA_ACCESSED
+#define CODE_EXECUTE
+#define CODE_READ
+#define CODE_ACCESSED
+#define CODE_CONFORMING
+
 void gdt_setup()
 {
     gdt.limit = sizeof(gdt_entry_t) * 5 - 1;
@@ -253,6 +270,16 @@ void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 f
     gdt_entries[entry].access = access;
 }
 
+void pic_remap() 
+{
+    
+}
+
+void pic_end_of_interrupt()
+{
+    
+}
+
 void kmain(void* mbd, unsigned int magic)
 {
     if (magic != 0x2BADB002) 
@@ -261,14 +288,13 @@ void kmain(void* mbd, unsigned int magic)
         /* message and halt, but do *not* rely on the multiboot */
         /* data structure. */
     }
-  
+    
     /* You could either use multiboot.h */
     /* (http://www.gnu.org/software/grub/manual/multiboot/multiboot.html#multiboot_002eh) */
     /* or do your offsets yourself. The following is merely an example. */ 
     char *boot_loader_name = (char*)((long*)mbd)[16];
 
     cls();
-  
 
     /* Write your kernel here. */
 
@@ -277,6 +303,6 @@ void kmain(void* mbd, unsigned int magic)
     /* asm volatile ("int $0x4"); */
     
     /* Print a letter to screen to see everything is working: */
-    print_string("hello knorki\nneue Zeile\nnoch eine neue Zeile\nscheint zu gehen\n\n\n\n4 neue zeilen");
+    print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu gehen\n\n\n\n4 neue zeilen");
     //   return 0xDEADBABA;
 }
