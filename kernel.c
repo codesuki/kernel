@@ -165,15 +165,15 @@ struct interrupt_registers_struct
 typedef struct registers_struct interrupt_registers_t;
 
 extern isr0; // divide error, no error code, fault
-extern isr3; // breakpoint, no error code, trap
-extern isr4; // overflow, no error code, trap
+extern void isr3(void); // breakpoint, no error code, trap
+extern void isr4(void); // overflow, no error code, trap
 extern isr12; // stack-segment fault, error code, fault
 extern isr13; // general protection fault, error code, fault
 extern isr14; // page fault, error code, fault
 
 void interrupt_handler()
 {
-    
+	print_string("interrupt\n");    
 }
 
 void idt_setup()
@@ -184,8 +184,8 @@ void idt_setup()
     idt_set_gate(0, 0, 0x08, 0x0E);
     idt_set_gate(1, 0, 0x08, 0x0E);
     idt_set_gate(2, 0, 0x08, 0x0E);
-    idt_set_gate(3, 0, 0x08, 0x0E);
-    idt_set_gate(4, 0, 0x08, 0x0E);
+    idt_set_gate(3, isr3, 0x08, 0x8E);
+    idt_set_gate(4, isr4, 0x08, 0x8E);
     idt_set_gate(5, 0, 0x08, 0x0E);
     idt_set_gate(6, 0, 0x08, 0x0E);
     idt_set_gate(7, 0, 0x08, 0x0E);
@@ -270,9 +270,51 @@ void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 f
     gdt_entries[entry].access = access;
 }
 
-void pic_remap() 
+#define ICW1_ICW4	0x01		/* ICW4 (not) needed */
+#define ICW1_SINGLE	0x02		/* Single (cascade) mode */
+#define ICW1_INTERVAL4	0x04		/* Call address interval 4 (8) */
+#define ICW1_LEVEL	0x08		/* Level triggered (edge) mode */
+#define ICW1_INIT	0x10		/* Initialization - required! */
+ 
+#define ICW4_8086	0x01		/* 8086/88 (MCS-80/85) mode */
+#define ICW4_AUTO	0x02		/* Auto (normal) EOI */
+#define ICW4_BUF_SLAVE	0x08		/* Buffered mode/slave */
+#define ICW4_BUF_MASTER	0x0C		/* Buffered mode/master */
+#define ICW4_SFNM	0x10		/* Special fully nested (not) */
+ 
+/*
+arguments:
+	offset1 - vector offset for master PIC
+		vectors on the master become offset1..offset1+7
+	offset2 - same for slave PIC: offset2..offset2+7
+*/
+void pic_remap(int offset1, int offset2)
 {
-    
+	unsigned char a1, a2;
+ 
+	a1 = inb(PIC1_DATA);                        // save masks
+	a2 = inb(PIC2_DATA);
+ 
+	outb(PIC1_COMMAND, ICW1_INIT+ICW1_ICW4);  // starts the initialization sequence
+	io_wait();
+	outb(PIC2_COMMAND, ICW1_INIT+ICW1_ICW4);
+	io_wait();
+	outb(PIC1_DATA, offset1);                 // define the PIC vectors
+	io_wait();
+	outb(PIC2_DATA, offset2);
+	io_wait();
+	outb(PIC1_DATA, 4);                       // continue initialization sequence
+	io_wait();
+	outb(PIC2_DATA, 2);
+	io_wait();
+ 
+	outb(PIC1_DATA, ICW4_8086);
+	io_wait();
+	outb(PIC2_DATA, ICW4_8086);
+	io_wait();
+ 
+	outb(PIC1_DATA, a1);   // restore saved masks.
+	outb(PIC2_DATA, a2);
 }
 
 void pic_end_of_interrupt()
@@ -298,9 +340,9 @@ void kmain(void* mbd, unsigned int magic)
 
     /* Write your kernel here. */
 
-    /* gdt_setup(); */
-    /* idt_setup(); */
-    /* asm volatile ("int $0x4"); */
+    gdt_setup(); 
+    idt_setup();
+	pic_remap(20, 28);
     
     /* Print a letter to screen to see everything is working: */
     print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu gehen\n\n\n\n4 neue zeilen");

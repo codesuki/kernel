@@ -1,7 +1,7 @@
 SOURCES=loader.o gdt.o idt.o interrupt_wrapper.o kernel.o
 
-CFLAGS=-Wall -Wextra -nostdlib -nostartfiles -nodefaultlibs
-LDFLAGS=-Tlinker.ld
+CFLAGS=-Wall -Wextra -nostdlib -nostartfiles -nodefaultlibs -m32
+LDFLAGS=-Tlinker.ld -melf_i386
 ASMFLAGS=-felf
 
 all: $(SOURCES) link 

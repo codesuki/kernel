@@ -53,6 +53,26 @@ ISR_NOERRCODE 31
         
 isr_wrapper:
         pushad
+
+   		mov ax, ds               ; Lower 16-bits of eax = ds.
+   		push eax                 ; save the data segment descriptor
+
+   		mov ax, 0x10  ; load the kernel data segment descriptor
+   		mov ds, ax
+   		mov es, ax
+   		mov fs, ax
+   		mov gs, ax
+
         call interrupt_handler
+
+   		pop eax        ; reload the original data segment descriptor
+   		mov ds, ax
+   		mov es, ax
+   		mov fs, ax
+   		mov gs, ax
+
         popad
+
+		add esp, 8 ; wirklich error code kommt doch vom cpu? s. intel 
+
         iret
