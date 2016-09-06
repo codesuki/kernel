@@ -3,13 +3,13 @@ unsigned char *videoram = (unsigned char*)0xb8000;
 int xpos = 0;
 int ypos = 0;
 
-void print_character(char c) 
-{   
+void print_character(char c)
+{
     videoram[ypos*80*2+xpos] = (int)c;
     videoram[ypos*80*2+xpos+1] = 0x07;
     xpos += 2;
 
-    if (c == '\n' || xpos > 80*2) 
+    if (c == '\n' || xpos > 80*2)
     {
         xpos = 0;
         ++ypos;
@@ -25,16 +25,16 @@ void print_string(char *s)
     }
 }
 
-void cls() 
+void cls()
 {
     int i = 0;
-    for (i = 0; i < 80*25*2; ++i) 
+    for (i = 0; i < 80*25*2; ++i)
     {
         videoram[i] = 0;
     }
 }
 
-void print_warning(char *s) 
+void print_warning(char *s)
 {
     print_string("Warning: ");
     print_string(s);
@@ -43,14 +43,14 @@ void print_warning(char *s)
 void print_error(char *s)
 {
     print_string("Error: ");
-    print_string(s);   
+    print_string(s);
 }
 
 /* available colors
 
-0:black, 1:blue, 2:green, 3:cyan, 4:red, 
-5:magenta, 6:brown, 7:light grey, 8:dark grey, 
-9:light blue, 10:light green, 11:light cyan, 
+0:black, 1:blue, 2:green, 3:cyan, 4:red,
+5:magenta, 6:brown, 7:light grey, 8:dark grey,
+9:light blue, 10:light green, 11:light cyan,
 12:light red, 13:light magneta, 14: light brown, 15: white
 */
 
@@ -151,9 +151,11 @@ extern void idt_update(idt_ptr_t*);
 
 void gdt_setup();
 void gdt_set_entry(uint32, uint32, uint32, uint8, uint8);
+void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 flags);
 
 void idt_setup();
 void idt_set_entry(uint32, uint32, uint16, uint8);
+void idt_set_gate(uint32 interrupt, uint32 offset, uint16 selector, uint8 type_attr);
 
 struct interrupt_registers_struct
 {
@@ -173,7 +175,7 @@ extern isr14; // page fault, error code, fault
 
 void interrupt_handler()
 {
-	print_string("interrupt\n");    
+    print_string("interrupt\n");
 }
 
 void idt_setup()
@@ -201,7 +203,7 @@ void idt_setup()
     idt_set_gate(17, 0, 0x08, 0x0E);
     idt_set_gate(18, 0, 0x08, 0x0E);
     idt_set_gate(19, 0, 0x08, 0x0E);
-    idt_set_gate(20, 0, 0x08, 0x0E);  
+    idt_set_gate(20, 0, 0x08, 0x0E);
     idt_set_gate(21, 0, 0x08, 0x0E);
     idt_set_gate(22, 0, 0x08, 0x0E);
     idt_set_gate(23, 0, 0x08, 0x0E);
@@ -220,8 +222,8 @@ void idt_setup()
 void idt_set_gate(uint32 interrupt, uint32 offset, uint16 selector, uint8 type_attr)
 {
     idt_entries[interrupt].offset_start = (offset & 0xff);
-    idt_entries[interrupt].offset_end = (offset >> 16) & 0xff; 
-    
+    idt_entries[interrupt].offset_end = (offset >> 16) & 0xff;
+
     idt_entries[interrupt].selector = selector;
 
     idt_entries[interrupt].type_attr = type_attr;
@@ -249,7 +251,7 @@ void gdt_setup()
 
     gdt_set_gate(0, 0, 0, 0, 0);
     gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf); // kernel mode code segment
-    gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment 
+    gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment
     gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf); // user mode code segment
     gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf); // user mode data segment
     gdt_set_gate(5, (uint32)&tss, sizeof(tss), 0x89, 0x40); // cpu1 task switching segment
@@ -257,12 +259,12 @@ void gdt_setup()
     gdt_update(&gdt);
 }
 
-void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 flags) 
+void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 flags)
 {
     gdt_entries[entry].base_start = (0xffff & base);
     gdt_entries[entry].base_middle = (base >> 16) & 0xff;
     gdt_entries[entry].base_end = (base >> 24) & 0xff;
-         
+
     gdt_entries[entry].limit_start = (0xffff & limit);
     gdt_entries[entry].limit_and_flags = (limit >> 16) & 0x0f;
     gdt_entries[entry].limit_and_flags |= (flags & 0xf0);
@@ -270,81 +272,100 @@ void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access, uint8 f
     gdt_entries[entry].access = access;
 }
 
-#define ICW1_ICW4	0x01		/* ICW4 (not) needed */
+// assembler
+static inline void outb(uint16 port, uint8 val) {
+  asm volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
+  /* There's an outb %al, $imm8  encoding, for compile-time constant port numbers that fit in 8b.  (N constraint).
+   * Wider immediate constants would be truncated at assemble-time (e.g. "i" constraint).
+   * The  outb  %al, %dx  encoding is the only option for all other cases.
+   * %1 expands to %dx because  port  is a uint16_t.  %w1 could be used if we had the port number a wider C type */
+}
+
+static inline uint8 inb(uint16 port) {
+    uint8 ret;
+    asm volatile ( "inb %1, %0"
+                   : "=a"(ret)
+                   : "Nd"(port) );
+    return ret;
+}
+
+// I/O ports
+#define PIC1 0x20
+#define PIC2 0xA0
+#define PIC1_COMMAND PIC1
+#define PIC1_DATA (PIC1+1)
+#define PIC2_COMMAND PIC2
+#define PIC2_DATA (PIC2+1)
+
+#define PIC_END_OF_INTERRUPT 0x20
+
+#define ICW1_ICW4 0x01		/* ICW4 (not) needed */
 #define ICW1_SINGLE	0x02		/* Single (cascade) mode */
-#define ICW1_INTERVAL4	0x04		/* Call address interval 4 (8) */
-#define ICW1_LEVEL	0x08		/* Level triggered (edge) mode */
-#define ICW1_INIT	0x10		/* Initialization - required! */
- 
-#define ICW4_8086	0x01		/* 8086/88 (MCS-80/85) mode */
-#define ICW4_AUTO	0x02		/* Auto (normal) EOI */
-#define ICW4_BUF_SLAVE	0x08		/* Buffered mode/slave */
+#define ICW1_INTERVAL4 0x04		/* Call address interval 4 (8) */
+#define ICW1_LEVEL 0x08		/* Level triggered (edge) mode */
+#define ICW1_INIT 0x10		/* Initialization - required! */
+
+#define ICW4_8086 0x01		/* 8086/88 (MCS-80/85) mode */
+#define ICW4_AUTO 0x02		/* Auto (normal) EOI */
+#define ICW4_BUF_SLAVE 0x08		/* Buffered mode/slave */
 #define ICW4_BUF_MASTER	0x0C		/* Buffered mode/master */
-#define ICW4_SFNM	0x10		/* Special fully nested (not) */
- 
+#define ICW4_SFNM 0x10		/* Special fully nested (not) */
+
 /*
 arguments:
-	offset1 - vector offset for master PIC
-		vectors on the master become offset1..offset1+7
-	offset2 - same for slave PIC: offset2..offset2+7
+    offset1 - vector offset for master PIC
+        vectors on the master become offset1..offset1+7
+    offset2 - same for slave PIC: offset2..offset2+7
 */
 void pic_remap(int offset1, int offset2)
 {
-	unsigned char a1, a2;
- 
-	a1 = inb(PIC1_DATA);                        // save masks
-	a2 = inb(PIC2_DATA);
- 
-	outb(PIC1_COMMAND, ICW1_INIT+ICW1_ICW4);  // starts the initialization sequence
-	io_wait();
-	outb(PIC2_COMMAND, ICW1_INIT+ICW1_ICW4);
-	io_wait();
-	outb(PIC1_DATA, offset1);                 // define the PIC vectors
-	io_wait();
-	outb(PIC2_DATA, offset2);
-	io_wait();
-	outb(PIC1_DATA, 4);                       // continue initialization sequence
-	io_wait();
-	outb(PIC2_DATA, 2);
-	io_wait();
- 
-	outb(PIC1_DATA, ICW4_8086);
-	io_wait();
-	outb(PIC2_DATA, ICW4_8086);
-	io_wait();
- 
-	outb(PIC1_DATA, a1);   // restore saved masks.
-	outb(PIC2_DATA, a2);
+    unsigned char a1, a2;
+
+    a1 = inb(PIC1_DATA);                        // save masks
+    a2 = inb(PIC2_DATA);
+
+    outb(PIC1_COMMAND, ICW1_INIT+ICW1_ICW4);  // starts the initialization sequence
+    outb(PIC2_COMMAND, ICW1_INIT+ICW1_ICW4);
+
+    outb(PIC1_DATA, offset1);                 // define the PIC vectors
+    outb(PIC2_DATA, offset2);
+
+    outb(PIC1_DATA, 4);                       // continue initialization sequence
+    outb(PIC2_DATA, 2);
+
+    outb(PIC1_DATA, ICW4_8086);
+    outb(PIC2_DATA, ICW4_8086);
+
+    outb(PIC1_DATA, a1);   // restore saved masks.
+    outb(PIC2_DATA, a2);
 }
 
 void pic_end_of_interrupt()
 {
-    
+
 }
 
 void kmain(void* mbd, unsigned int magic)
 {
-    if (magic != 0x2BADB002) 
+    if (magic != 0x2BADB002)
     {
         /* Something went not according to specs. Print an error */
         /* message and halt, but do *not* rely on the multiboot */
         /* data structure. */
     }
-    
+
     /* You could either use multiboot.h */
     /* (http://www.gnu.org/software/grub/manual/multiboot/multiboot.html#multiboot_002eh) */
-    /* or do your offsets yourself. The following is merely an example. */ 
+    /* or do your offsets yourself. The following is merely an example. */
     char *boot_loader_name = (char*)((long*)mbd)[16];
 
-    cls();
-
     /* Write your kernel here. */
-
-    gdt_setup(); 
+    gdt_setup();
     idt_setup();
-	pic_remap(20, 28);
-    
+    pic_remap(20, 28);
+
     /* Print a letter to screen to see everything is working: */
+    cls();
     print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu gehen\n\n\n\n4 neue zeilen");
     //   return 0xDEADBABA;
 }
