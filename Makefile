@@ -31,10 +31,10 @@ clean:
 	@rm -r dist/
 
 run:
-	qemu-system-x86_64 -cdrom $(ISO) -s
+	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s
 
 debug:
-	qemu-system-x86_64 -cdrom $(ISO) -s -S
+	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -S
 
 $(ISO): $(KERNEL)
 	mkdir -p dist/boot/grub
