@@ -364,8 +364,11 @@ void kmain(void* mbd, unsigned int magic)
     idt_setup();
     pic_remap(20, 28);
 
-    /* Print a letter to screen to see everything is working: */
     cls();
+    asm volatile ("int $0x4");
+
+    /* Print a letter to screen to see everything is working: */
+
     print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu gehen\n\n\n\n4 neue zeilen");
     //   return 0xDEADBABA;
 }
