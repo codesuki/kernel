@@ -13,4 +13,8 @@ header_start:
         dd header_end - header_start
         ; checksum using two's complement
         dd 0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
+        ; MULTIBOOT_TAG_TYPE_END = 0
+        dw 0
+        dw 0
+        dd 8
 header_end:

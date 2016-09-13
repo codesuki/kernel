@@ -3,6 +3,10 @@ ENTRY (loader)
 SECTIONS{
     . = 0x00100000;
 
+    .boot : {
+        *(.multiboot)
+    }
+
     .text : {
         *(.text)
     }
