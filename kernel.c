@@ -1,42 +1,8 @@
-unsigned char *videoram = (unsigned char *)0xb8000;
-
-int xpos = 0;
-int ypos = 0;
-
-void print_character(char c) {
-  videoram[ypos * 80 * 2 + xpos] = (int)c;
-  videoram[ypos * 80 * 2 + xpos + 1] = 0x07;
-  xpos += 2;
-
-  if (c == '\n' || xpos > 80 * 2) {
-    xpos = 0;
-    ++ypos;
-  }
-}
-
-void print_string(char *s) {
-  while (*s != 0) {
-    print_character(*s);
-    s++;
-  }
-}
-
-void cls() {
-  int i = 0;
-  for (i = 0; i < 80 * 25 * 2; ++i) {
-    videoram[i] = 0;
-  }
-}
-
-void print_warning(char *s) {
-  print_string("Warning: ");
-  print_string(s);
-}
-
-void print_error(char *s) {
-  print_string("Error: ");
-  print_string(s);
-}
+#define va_start(v, l) __builtin_va_start(v, l)
+#define va_arg(v, l) __builtin_va_arg(v, l)
+#define va_end(v) __builtin_va_end(v)
+#define va_copy(d, s) __builtin_va_copy(d, s)
+typedef __builtin_va_list va_list;
 
 char *reverse(char *buffer, unsigned int length) {
   char *start = buffer;
@@ -65,6 +31,91 @@ char *itoa(int value, char *buffer, unsigned int base) {
   *s = 0;
   reverse(buffer, s - buffer);
   return buffer;
+}
+
+unsigned char *videoram = (unsigned char *)0xb8000;
+
+int xpos = 0;
+int ypos = 0;
+
+void new_line() {
+  xpos = 0;
+  ++ypos;
+}
+
+void print_character(char c) {
+  if (c == '\n') {
+    new_line();
+    return;
+  }
+  if (xpos > 80 * 2) {
+    new_line();
+  }
+  videoram[ypos * 80 * 2 + xpos] = (int)c;
+  videoram[ypos * 80 * 2 + xpos + 1] = 0x07;
+  xpos += 2;
+}
+
+void print_string(char *s) {
+  while (*s != 0) {
+    print_character(*s);
+    s++;
+  }
+}
+
+void print_integer(int d) {
+  char number_buffer[11];
+  itoa(d, number_buffer, 10);
+  print_string(number_buffer);
+}
+
+void cls() {
+  int i = 0;
+  for (i = 0; i < 80 * 25 * 2; ++i) {
+    videoram[i] = 0;
+  }
+}
+
+void print_warning(char *s) {
+  print_string("Warning: ");
+  print_string(s);
+}
+
+void print_error(char *s) {
+  print_string("Error: ");
+  print_string(s);
+}
+
+int printf(const char *format, ...) {
+  va_list args;
+  int d;
+  char c;
+  char *s;
+  va_start(args, format);
+  while (*format != 0) {
+    char c = *format;
+    if (c == '%') {
+      c = *++format;
+      switch (c) {
+      case 'd':
+        d = va_arg(args, int);
+        print_integer(d);
+        break;
+      case 'c':
+        c = va_arg(args, int);
+        print_character(c);
+        break;
+      case 's':
+        s = va_arg(args, char *);
+        print_string(s);
+        break;
+      }
+    } else {
+      print_character(c);
+    }
+    ++format;
+  }
+  va_end(args);
 }
 
 /* available colors
@@ -293,7 +344,8 @@ static inline void outb(uint16 port, uint8 val) {
    * Wider immediate constants would be truncated at assemble-time (e.g. "i"
    * constraint).
    * The  outb  %al, %dx  encoding is the only option for all other cases.
-   * %1 expands to %dx because  port  is a uint16_t.  %w1 could be used if we
+   * %1 expands to %dx because  port  is a uint16_t.  %w1 could be used if
+   * we
    * had the port number a wider C type */
 }
 
@@ -382,8 +434,10 @@ void kmain(void *mbd, unsigned int magic) {
   // print_string(test);
 
   itoa(-123, test, 10);
-
   print_string(test);
+
+  printf("\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer: %d\n",
+         "test", 'c', 123, -123);
 
   print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu "
                "gehen\n\n\n\n4 neue zeilen");
