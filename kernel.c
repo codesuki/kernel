@@ -38,6 +38,35 @@ void print_error(char *s) {
   print_string(s);
 }
 
+char *reverse(char *buffer, unsigned int length) {
+  char *start = buffer;
+  char *end = buffer + length - 1;
+  while (start < end) {
+    char tmp = *start;
+    *start++ = *end;
+    *end-- = tmp;
+  }
+  return buffer;
+}
+
+char *itoa(int value, char *buffer, unsigned int base) {
+  char *s = buffer;
+  if (value < 0) {
+    *s++ = '-';
+    ++buffer;
+    value = -value;
+  }
+  while (value > base) {
+    int remainder = value % base;
+    value /= base;
+    *s++ = '0' + remainder;
+  }
+  *s++ = '0' + value;
+  *s = 0;
+  reverse(buffer, s - buffer);
+  return buffer;
+}
+
 /* available colors
 
 0:black, 1:blue, 2:green, 3:cyan, 4:red,
@@ -346,9 +375,15 @@ void kmain(void *mbd, unsigned int magic) {
   pic_remap(20, 28);
 
   cls();
-  asm volatile("int $0x4");
+  __asm__ volatile("int $0x4");
 
-  /* Print a letter to screen to see everything is working: */
+  char test[10];
+  // itoa(123, test, 10);
+  // print_string(test);
+
+  itoa(-123, test, 10);
+
+  print_string(test);
 
   print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu "
                "gehen\n\n\n\n4 neue zeilen");
