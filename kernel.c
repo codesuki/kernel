@@ -44,16 +44,18 @@ void new_line() {
 }
 
 void print_character(char c) {
-  if (c == '\n') {
+  switch (c) {
+  case '\n':
     new_line();
-    return;
+    break;
+  default:
+    if (xpos > 80 * 2) {
+      new_line();
+    }
+    videoram[ypos * 80 * 2 + xpos] = (int)c;
+    videoram[ypos * 80 * 2 + xpos + 1] = 0x07;
+    xpos += 2;
   }
-  if (xpos > 80 * 2) {
-    new_line();
-  }
-  videoram[ypos * 80 * 2 + xpos] = (int)c;
-  videoram[ypos * 80 * 2 + xpos + 1] = 0x07;
-  xpos += 2;
 }
 
 void print_string(char *s) {
@@ -241,7 +243,19 @@ extern isr12;           // stack-segment fault, error code, fault
 extern isr13;           // general protection fault, error code, fault
 extern isr14;           // page fault, error code, fault
 
-void interrupt_handler() { print_string("interrupt\n"); }
+struct interrupt_registers {
+  uint32 ds;                                     // data segment selector
+  uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax; // pushed by pushad
+  uint32 int_no, err_code;
+  uint32 eip, cs, eflags; // pushed by cpu after interrupt
+} __attribute__((packed));
+
+void interrupt_handler(struct interrupt_registers *regs) {
+  print_string("interrupt\n");
+  printf("eflags: %d\n", regs->eflags);
+  printf("interrupt number: %d\n", regs->int_no);
+  printf("error code: %d\n", regs->err_code);
+}
 
 void idt_setup() {
   idt.limit = sizeof(idt_entry_t) * 256 - 1;
