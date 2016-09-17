@@ -1,5 +1,6 @@
-global gdt_update    ; Allows the C code to call gdt_update().
+bits 32
 
+global gdt_update
 gdt_update:
         mov eax, [esp+4]  ; Get the pointer to the GDT, passed as a parameter.
         lgdt [eax]        ; Load the new GDT pointer
@@ -12,4 +13,4 @@ gdt_update:
         mov ss, ax
         jmp 0x08:.flush   ; 0x08 is the offset to our code segment: Far jump!
 .flush:
-        ret 
+        ret

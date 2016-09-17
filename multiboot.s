@@ -1,6 +1,7 @@
+bits 32
 ; reference:
 ; http://git.savannah.gnu.org/cgit/grub.git/tree/doc/multiboot.texi?h=multiboot2
-
+align 4
 section .multiboot
 header_start:
         ; magic

@@ -1,8 +1,9 @@
-global isr_wrapper
+bits 32
+
 extern interrupt_handler
 
-%macro ISR_NOERRCODE 1  ; define a macro, taking one parameter
-GLOBAL isr%1        ; %1 accesses the first parameter.
+%macro ISR_NOERRCODE 1
+global isr%1
 isr%1:
         cli
         push byte 0
@@ -51,13 +52,17 @@ ISR_NOERRCODE 29
 ISR_NOERRCODE 30
 ISR_NOERRCODE 31
 
+global isr_wrapper
 isr_wrapper:
         pushad
 
-        mov ax, ds               ; Lower 16-bits of eax = ds.
-        push eax                 ; save the data segment descriptor
+        ; Lower 16-bits of eax = ds.
+        mov ax, ds
+        ; save the data segment descriptor
+        push eax
 
-        mov ax, 0x10  ; load the kernel data segment descriptor
+        ; load the kernel data segment descriptor
+        mov ax, 0x10
         mov ds, ax
         mov es, ax
         mov fs, ax
@@ -69,7 +74,8 @@ isr_wrapper:
 
         pop esp
 
-        pop eax        ; reload the original data segment descriptor
+        ; reload the original data segment descriptor
+        pop eax
         mov ds, ax
         mov es, ax
         mov fs, ax
@@ -77,6 +83,7 @@ isr_wrapper:
 
         popad
 
-        add esp, 8 ; wirklich error code kommt doch vom cpu? s. intel
-
+        ; remove error code and interrupt number from stack
+        add esp, 8
+        ;sti maybe add for hardwar einterrupts, doesnt matter for software
         iret

@@ -1,7 +1,6 @@
-ENTRY (loader)
-
-SECTIONS{
-    . = 0x00100000;
+ENTRY(loader)
+SECTIONS {
+    . = 1M;
 
     .boot : {
         *(.multiboot)
@@ -15,14 +14,11 @@ SECTIONS{
         *(.rodata)
     }
 
-    .data ALIGN (0x1000) : {
+    .data : {
         *(.data)
     }
 
     .bss : {
-        sbss = .;
-        *(COMMON)
         *(.bss)
-        ebss = .;
     }
 }

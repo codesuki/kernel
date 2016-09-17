@@ -239,9 +239,10 @@ typedef struct registers_struct interrupt_registers_t;
 extern isr0;            // divide error, no error code, fault
 extern void isr3(void); // breakpoint, no error code, trap
 extern void isr4(void); // overflow, no error code, trap
-extern isr12;           // stack-segment fault, error code, fault
-extern isr13;           // general protection fault, error code, fault
-extern isr14;           // page fault, error code, fault
+extern void isr8(void);
+extern isr12; // stack-segment fault, error code, fault
+extern isr13; // general protection fault, error code, fault
+extern isr14; // page fault, error code, fault
 
 struct interrupt_registers {
   uint32 ds;                                     // data segment selector
@@ -269,7 +270,7 @@ void idt_setup() {
   idt_set_gate(5, 0, 0x08, 0x0E);
   idt_set_gate(6, 0, 0x08, 0x0E);
   idt_set_gate(7, 0, 0x08, 0x0E);
-  idt_set_gate(8, 0, 0x08, 0x0E);
+  idt_set_gate(8, isr8, 0x08, 0x8E);
   idt_set_gate(9, 0, 0x08, 0x0E);
   idt_set_gate(10, 0, 0x08, 0x0E);
   idt_set_gate(11, 0, 0x08, 0x0E);
@@ -441,7 +442,7 @@ void kmain(void *mbd, unsigned int magic) {
   pic_remap(20, 28);
 
   cls();
-  __asm__ volatile("int $0x4");
+  //  __asm__ volatile("int $0x8");
 
   char test[10];
   // itoa(123, test, 10);

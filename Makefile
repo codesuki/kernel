@@ -8,19 +8,13 @@ C_SOURCES = $(wildcard *.c)
 OBJECTS += $(C_SOURCES:.c=.o)
 
 LD = x86_64-elf-ld
-LDFLAGS = -T linker.ld -melf_i386
+LDFLAGS = -T linker.ld -nostdlib -z max-page-size=0x1000
 
-CC = gcc
-
-COMPILER_NAME = $(shell gcc --version 2>&1 | grep -E -o '(clang|gcc)')
-ifeq ($(COMPILER_NAME), clang)
-	CFLAGS = --target=i686-pc-none-elf -march=i686 -Wall -Wextra -nostdlib -nostdinc -ffreestanding -fno-builtin
-else
-	CFLAGS = --target=i686-pc-none-elf -Wall -Wextra -nostdlib -nostartfiles -nodefaultlibs -m32
-endif
+CC = x86_64-elf-gcc
+CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone
 
 AS = nasm
-ASFLAGS = -f elf32
+ASFLAGS = -f elf64 -g -F dwarf
 
 .PHONY: all clean run debug
 
