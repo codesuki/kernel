@@ -22,7 +22,7 @@ hang:
         jmp   hang
 
 handle_error:
-        mov dword [0xb8000], 0x04410450
+        mov dword [0xb8000], 0x04410450 ; prints PANIC in red letters 0x04 <- red, 0x41 <- A
         mov dword [0xb8004], 0x0449044E
         mov dword [0xb8008], 0x04200443
         mov byte [0xb800D], 0x04
