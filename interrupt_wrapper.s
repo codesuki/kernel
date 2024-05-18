@@ -1,22 +1,22 @@
-bits 32
+bits 64
 
 extern interrupt_handler
 
 %macro ISR_NOERRCODE 1
 global isr%1
 isr%1:
-        cli
-        push byte 0
-        push byte %1
-        jmp isr_wrapper
+	cli
+	push 0		; in case no error was pushed, but the C code expects a value.
+	push %1
+	jmp isr_wrapper
 %endmacro
 
 %macro ISR_ERRCODE 1
 global isr%1
 isr%1:
-        cli
-        push byte %1
-        jmp isr_wrapper
+	cli
+	push %1
+	jmp isr_wrapper
 %endmacro
 
 ISR_NOERRCODE 0
@@ -51,39 +51,42 @@ ISR_NOERRCODE 28
 ISR_NOERRCODE 29
 ISR_NOERRCODE 30
 ISR_NOERRCODE 31
+ISR_NOERRCODE 32
 
 global isr_wrapper
 isr_wrapper:
-        pushad
+	; TODO: probably more registers to save.
 
-        ; Lower 16-bits of eax = ds.
-        mov ax, ds
-        ; save the data segment descriptor
-        push eax
+	;; Save caller saved scratch registers.
+	push rax
+	push rcx
+	push rdx
+	push rsi
+	push rdi
+	push r8
+	push r9
+	push r10
+	push r11
 
-        ; load the kernel data segment descriptor
-        mov ax, 0x10
-        mov ds, ax
-        mov es, ax
-        mov fs, ax
-        mov gs, ax
+	; We put a datastructure onto the stack and pass it to interrupt_handler.
+	mov rdi, rsp
+	add rdi, 9*8		; 9 scratch registers * 8 byte
 
-        push esp
+	call interrupt_handler
 
-        call interrupt_handler
+	; Restore caller saved scratch registers.
+	pop r11
+	pop r10
+	pop r9
+	pop r8
+	pop rdi
+	pop rsi
+	pop rdx
+	pop rcx
+	pop rax
 
-        pop esp
+	;; Remove error code and interrupt number from the stack.
+	add rsp, 16
 
-        ; reload the original data segment descriptor
-        pop eax
-        mov ds, ax
-        mov es, ax
-        mov fs, ax
-        mov gs, ax
-
-        popad
-
-        ; remove error code and interrupt number from stack
-        add esp, 8
-        ;sti maybe add for hardwar einterrupts, doesnt matter for software
-        iret
+	;;sti maybe add for hardwar einterrupts, doesnt matter for software
+	iretq
