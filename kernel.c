@@ -17,19 +17,36 @@ char *reverse(char *buffer, unsigned int length) {
   return buffer;
 }
 
+char digit(int value) {
+  // Hack: jumps over ascii values between 9 and A to display hex.
+  if (value > 9) {
+    return '0' + 7 + value;
+  } else {
+    return '0' + value;
+  }
+}
+
 char *itoa(int value, char *buffer, unsigned int base) {
   char *s = buffer;
-  if (value < 0) {
+  // This seems too specific to base 10?
+  // Answer from stdlib:
+  // If base is 10 and value is negative, the resulting string is preceded with
+  // a minus sign (-). With any other base, value is always considered unsigned.
+  if (base == 10 && value < 0) {
     *s++ = '-';
     ++buffer;
     value = -value;
   }
-  while (value > base) {
+  while (value >= base) {
     int remainder = value % base;
     value /= base;
-    *s++ = '0' + remainder;
+    *s++ = digit(remainder);
   }
-  *s++ = '0' + value;
+  *s++ = digit(value);
+  if (base == 16) {
+    *s++ = 'x';
+    *s++ = '0';
+  }
   *s = 0;
   reverse(buffer, s - buffer);
   return buffer;
@@ -73,6 +90,12 @@ void print_integer(int d) {
   print_string(number_buffer);
 }
 
+void print_hex(int d) {
+  char number_buffer[11];
+  itoa(d, number_buffer, 16);
+  print_string(number_buffer);
+}
+
 void cls() {
   int i = 0;
   for (i = 0; i < 80 * 25 * 2; ++i) {
@@ -112,6 +135,10 @@ int printf(const char *format, ...) {
         case 's':
           s = va_arg(args, char *);
           print_string(s);
+          break;
+        case 'x':
+          d = va_arg(args, int);
+          print_hex(d);
           break;
       }
     } else {
@@ -292,9 +319,9 @@ void interrupt_handler(struct interrupt_registers *regs) {
   print_string("interrupt\n");
   printf("eflags: %d\n", regs->eflags);
   printf("ss: %d\n", regs->ss);
-  printf("rsp: %d\n", regs->rsp);
+  printf("rsp: %x\n", regs->rsp);
   printf("cs: %d\n", regs->cs);
-  printf("eip: %d\n", regs->eip);
+  printf("ip: %x\n", regs->eip);
   printf("interrupt number: %d\n", regs->int_no);
   printf("error code: %d\n", regs->err_code);
 }
@@ -602,12 +629,15 @@ void kmain(void *mbd, unsigned int magic) {
   /* itoa(-123, test, 10); */
   /* print_string(test); */
 
-  /* printf("\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer: %d\n", */
-  /*        "test", 'c', 123, -123); */
+  printf("\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer: %d\n",
+         "test", 'c', 123, -123);
 
   /* print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu " */
   /*              "gehen\n\n\n\n4 neue zeilen"); */
 
+  printf("some hex: 3=%x 15=%x 16=%x 27=%x 26=%x 32=%x\n", 3, 15, 16, 17, 26, 32);
+
+  // I validated that this prints IP at nop after int3
   __asm__ volatile("int $0x3");
 
   apic_setup();
