@@ -1,3 +1,5 @@
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define va_start(v, l) __builtin_va_start(v, l)
@@ -6,9 +8,9 @@
 #define va_copy(d, s) __builtin_va_copy(d, s)
 typedef __builtin_va_list va_list;
 
-char *reverse(char *buffer, unsigned int length) {
-  char *start = buffer;
-  char *end = buffer + length - 1;
+char* reverse(char* buffer, unsigned int length) {
+  char* start = buffer;
+  char* end = buffer + length - 1;
   while (start < end) {
     char tmp = *start;
     *start++ = *end;
@@ -26,8 +28,8 @@ char digit(int value) {
   }
 }
 
-char *itoa(int value, char *buffer, unsigned int base) {
-  char *s = buffer;
+char* itoa(int value, char* buffer, unsigned int base) {
+  char* s = buffer;
   // This seems too specific to base 10?
   // Answer from stdlib:
   // If base is 10 and value is negative, the resulting string is preceded with
@@ -52,7 +54,7 @@ char *itoa(int value, char *buffer, unsigned int base) {
   return buffer;
 }
 
-unsigned char *videoram = (unsigned char *)0xb8000;
+unsigned char* videoram = (unsigned char*)0xb8000;
 
 int xpos = 0;
 int ypos = 0;
@@ -60,6 +62,10 @@ int ypos = 0;
 void new_line() {
   xpos = 0;
   ++ypos;
+  if (ypos == 25) {
+    cls();
+    ypos = 0;
+  }
 }
 
 void print_character(char c) {
@@ -69,7 +75,7 @@ void print_character(char c) {
       break;
     default:
       if (xpos > 80 * 2) {
-        new_line();
+	new_line();
       }
       videoram[ypos * 80 * 2 + xpos] = (int)c;
       videoram[ypos * 80 * 2 + xpos + 1] = 0x07;
@@ -77,11 +83,20 @@ void print_character(char c) {
   }
 }
 
-void print_string(char *s) {
+void print_string_n(char* s, int limit) {
+  int i = 0;
   while (*s != 0) {
     print_character(*s);
     s++;
+    i++;
+    if (i == limit) {
+      return;
+    }
   }
+}
+
+void print_string(char* s) {
+  print_string_n(s, 0);
 }
 
 void print_integer(int d) {
@@ -103,43 +118,59 @@ void cls() {
   }
 }
 
-void print_warning(char *s) {
+void print_warning(char* s) {
   print_string("Warning: ");
   print_string(s);
 }
 
-void print_error(char *s) {
+void print_error(char* s) {
   print_string("Error: ");
   print_string(s);
 }
 
-int printf(const char *format, ...) {
+int printf(const char* format, ...) {
   va_list args;
   int d;
   char c;
-  char *s;
+  char* s;
   va_start(args, format);
   while (*format != 0) {
     char c = *format;
     if (c == '%') {
       c = *++format;
+      // hacky ad hoc modifier parsing.
+      int length = 0;
       switch (c) {
-        case 'd':
-          d = va_arg(args, int);
-          print_integer(d);
-          break;
-        case 'c':
-          c = va_arg(args, int);
-          print_character(c);
-          break;
-        case 's':
-          s = va_arg(args, char *);
-          print_string(s);
-          break;
-        case 'x':
-          d = va_arg(args, int);
-          print_hex(d);
-          break;
+	case '.':
+	  c = *++format;
+	  switch (c) {
+	    case '*':
+	      length = va_arg(args, int);
+	      break;
+	    default:
+	      // panic()
+	      break;
+	  }
+	  c = *++format;
+	  break;
+      }
+      switch (c) {
+	case 'd':
+	  d = va_arg(args, int);
+	  print_integer(d);
+	  break;
+	case 'c':
+	  c = va_arg(args, int);
+	  print_character(c);
+	  break;
+	case 's':
+	  s = va_arg(args, char*);
+	  print_string_n(s, length);
+	  break;
+	case 'x':
+	  d = va_arg(args, int);
+	  print_hex(d);
+	  break;
       }
     } else {
       print_character(c);
@@ -159,17 +190,17 @@ int printf(const char *format, ...) {
 
 typedef uint64_t uint64;
 typedef int64_t int64;
-//typedef unsigned int uint32;
+// typedef unsigned int uint32;
 typedef uint32_t uint32;
-//typedef int int32;
+// typedef int int32;
 typedef int32_t int32;
-//typedef unsigned short uint16;
+// typedef unsigned short uint16;
 typedef uint16_t uint16;
-//typedef short int16;
+// typedef short int16;
 typedef int16_t int16;
-//typedef unsigned char uint8;
+// typedef unsigned char uint8;
 typedef uint8_t uint8;
-//typedef char int8;
+// typedef char int8;
 typedef int8_t int8;
 
 /* task-state segment */
@@ -229,7 +260,7 @@ struct gdt_ptr_struct {
 } __attribute__((packed));
 typedef struct gdt_ptr_struct gdt_ptr_t;
 
-//#IFDEF __x86_64__
+// #IFDEF __x86_64__
 struct idt_entry {
   uint16 offset_start;
   uint16 selector;
@@ -251,13 +282,10 @@ typedef struct idt_entry idt_entry_t;
 /* typedef struct idt_entry_struct idt_entry_t; */
 /* #ENDIF */
 
-
-
-
 // The base addresses of the IDT should be aligned on an 8-byte boundary to
 // maximize performance of cache line fills
 struct idt_ptr_struct {
-    // TODO: this is supposed to be 32 bit but in 64 bit code this will be 64bit.
+  // TODO: this is supposed to be 32 bit but in 64 bit code this will be 64bit.
   // See 6.10
 
   // Also: In 64-bit mode, the instruction’s operand size is fixed at 8+2 bytes
@@ -277,87 +305,199 @@ idt_entry_t idt_entries[256] = {0};
 
 tss_t tss;
 
-extern void gdt_update(gdt_ptr_t *);
-extern void idt_update(idt_ptr_t *);
+extern void gdt_update(gdt_ptr_t*);
+extern void idt_update(idt_ptr_t*);
 
 void gdt_setup();
 void gdt_set_entry(uint32, uint32, uint32, uint8, uint8);
-void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access,
-                  uint8 flags);
+void gdt_set_gate(uint32 entry,
+		  uint32 base,
+		  uint32 limit,
+		  uint8 access,
+		  uint8 flags);
 
 void idt_setup();
-//void idt_set_entry(uint32, uint32, uint16, uint8);
-void idt_set_gate(uint32 interrupt, uint64 offset, uint16 selector,
-                  uint8 type_attr);
+// void idt_set_entry(uint32, uint32, uint16, uint8);
+void idt_set_gate(uint32 interrupt,
+		  uint64 offset,
+		  uint16 selector,
+		  uint8 type_attr);
 
 struct interrupt_registers_struct {
-  uint32 ds;                                     // Data segment selector
-  uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax; // Pushed by pusha.
-  uint32 int_no, err_code; // Interrupt number and error code (if applicable)
-  uint32 eip, cs, eflags, useresp, ss; // Pushed by the processor automatically.
+  uint32 ds;                                      // Data segment selector
+  uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax;  // Pushed by pusha.
+  uint32 int_no, err_code;  // Interrupt number and error code (if applicable)
+  uint32 eip, cs, eflags, useresp,
+      ss;  // Pushed by the processor automatically.
 } __attribute__((packed));
 typedef struct registers_struct interrupt_registers_t;
 
-extern isr0;            // divide error, no error code, fault
-extern void isr3(void); // breakpoint, no error code, trap
-extern void isr4(void); // overflow, no error code, trap
+extern isr0;             // divide error, no error code, fault
+extern void isr3(void);  // breakpoint, no error code, trap
+extern void isr4(void);  // overflow, no error code, trap
 extern void isr8(void);
-extern isr12; // stack-segment fault, error code, fault
-extern void isr13(void); // general protection fault, error code, fault
-extern isr14; // page fault, error code, fault
+extern isr12;             // stack-segment fault, error code, fault
+extern void isr13(void);  // general protection fault, error code, fault
+extern void isr14(void);  // page fault, error code, fault
 extern void isr32(void);
+extern void isr0x31(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
   // uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax; // pushed by pushad
   uint64 int_no, err_code;
-  uint64 eip, cs, eflags, rsp, ss; // pushed by cpu after interrupt
+  uint64 eip, cs, eflags, rsp, ss;  // pushed by cpu after interrupt
 } __attribute__((packed));
 
+#define EXCEPTION_PAGE_FAULT 14
+
+char* interrupt_names[15] = {
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "Double Fault Exception",
+    "9",
+    "10",
+    "11",
+    "12",
+    "General Protection Exception",  // 13
+    "Page Fault Exception"           // 14
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+};
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint32_t p : 1;
+    uint32_t wr : 1;
+    uint32_t us : 1;
+    uint32_t rsvd : 1;
+    uint32_t id : 1;
+    uint32_t pk : 1;
+    uint32_t ss : 1;
+    uint32_t hlat : 1;
+    uint32_t reserved : 24;
+  } flags;
+} page_fault_error_t;
+
+// assembler
+static inline void outb(uint16 port, uint8 val) {
+  __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+  /* There's an outb %al, $imm8  encoding, for compile-time constant port
+   * numbers that fit in 8b.  (N constraint).
+   * Wider immediate constants would be truncated at assemble-time (e.g. "i"
+   * constraint).
+   * The  outb  %al, %dx  encoding is the only option for all other cases.
+   * %1 expands to %dx because  port  is a uint16_t.  %w1 could be used if
+   * we
+   * had the port number a wider C type */
+}
+
+static inline uint8 inb(uint16 port) {
+  uint8 ret;
+  __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+  return ret;
+}
+
 // regs is passed via rdi
-void interrupt_handler(struct interrupt_registers *regs) {
-  print_string("interrupt\n");
+void interrupt_handler(struct interrupt_registers* regs) {
+  if (regs->int_no == 0x31) {  // keyboard IRQ
+    // ref: https://wiki.osdev.org/%228042%22_PS/2_Controller
+    // read from port 0x60? this is the data port
+    // 0x64 is the status register if read and command register if written.
+    uint8 scancode = inb(0x60);
+    switch (scancode) {
+      case 0x9e:
+	printf("a");
+	break;
+      case 0x23:
+	printf("h");
+	break;
+      case 0x17:
+	printf("i");
+	break;
+      case 0x1C:  // enter
+	printf("\n");
+	break;
+    }
+    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    *local_apic_eoi = 0;
+    return;
+  }
+
+  if (regs->int_no < 15) {
+    printf("interrupt: %s\n", interrupt_names[regs->int_no]);
+  } else {
+    printf("interrupt: %x\n", regs->int_no);
+  }
   printf("eflags: %d\n", regs->eflags);
   printf("ss: %d\n", regs->ss);
   printf("rsp: %x\n", regs->rsp);
   printf("cs: %d\n", regs->cs);
   printf("ip: %x\n", regs->eip);
-  printf("interrupt number: %d\n", regs->int_no);
-  printf("error code: %d\n", regs->err_code);
+
+  if (regs->int_no == EXCEPTION_PAGE_FAULT) {
+    page_fault_error_t* e = &regs->err_code;
+    printf(
+	"p: %d, wr: %d, us: %d, rsvd: %d, id: %d, pk: %d, ss: %d, hlat: %d\n",
+	e->flags.p, e->flags.wr, e->flags.us, e->flags.rsvd, e->flags.id,
+	e->flags.pk, e->flags.ss, e->flags.hlat);
+    // cr2 contains the address that caused the page fault.
+    uint64_t addr;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(addr));
+    printf("fault address: %x\n", addr);
+  } else {
+    printf("error code: %d\n", regs->err_code);
+  }
+
+  if (regs->int_no != 3) {
+    __asm__ volatile("hlt" : :);
+  }
 }
 
 void idt_setup() {
   idt.limit = sizeof(idt_entry_t) * 256 - 1;
   //  idt.base = (uint32)&idt_entries;
   idt.base = (uint64)&idt_entries;
-  // 0x0E = 14 = 64-bit Interrupt Gate
-  // but this has p=0 (present bit)
-  // 0x8E has p=1 and type=14
-  // ref: Table 3-2
+// 0x0E = 14 = 64-bit Interrupt Gate
+// but this has p=0 (present bit)
+// 0x8E has p=1 and type=14
+// ref: Table 3-2
 
-  // 0x08 in binary is 0b1000
-  // which sets selector to 1
-  // ref: Fig 3-6
-  // ref: https://wiki.osdev.org/Segment_Selector
+// 0x08 in binary is 0b1000
+// which sets selector to 1
+// ref: Fig 3-6
+// ref: https://wiki.osdev.org/Segment_Selector
 
-  // ref: 3.4.5.1 Code- and Data-Segment Descriptor Types
+// ref: 3.4.5.1 Code- and Data-Segment Descriptor Types
 
-  // The INT n instruction can be used to emulate exceptions in software; but
-  // there is a limitation.1 If INT n provides a vector for one of the
-  // architecturally-defined exceptions, the processor generates an interrupt to
-  // the correct vector (to access the exception handler) but does not push an
-  // error code on the stack. This is true even if the associated
-  // hardware-generated exception normally produces an error code. The exception
-  // handler will still attempt to pop an error code from the stack while
-  // handling the exception. Because no error code was pushed, the handler will
-  // pop off and discard the EIP instead (in place of the missing error code).
-  // This sends the return to the wrong location.
+// The INT n instruction can be used to emulate exceptions in software; but
+// there is a limitation.1 If INT n provides a vector for one of the
+// architecturally-defined exceptions, the processor generates an interrupt to
+// the correct vector (to access the exception handler) but does not push an
+// error code on the stack. This is true even if the associated
+// hardware-generated exception normally produces an error code. The exception
+// handler will still attempt to pop an error code from the stack while
+// handling the exception. Because no error code was pushed, the handler will
+// pop off and discard the EIP instead (in place of the missing error code).
+// This sends the return to the wrong location.
 
-  // ref: 6.4.2 Software-Generated Exceptions
+// ref: 6.4.2 Software-Generated Exceptions
 
-  // 00077694943d[CPU0  ] LONG MODE IRET
-  // 00077694943e[CPU0  ] fetch_raw_descriptor: GDT: index (e67) 1cc > limit (f)
-  #define INTERRUPT_GATE 0x8E
+// 00077694943d[CPU0  ] LONG MODE IRET
+// 00077694943e[CPU0  ] fetch_raw_descriptor: GDT: index (e67) 1cc > limit (f)
+#define INTERRUPT_GATE 0x8E
   idt_set_gate(0, 0, 0x08, 0x0E);
   idt_set_gate(1, 0, 0x08, 0x0E);
   idt_set_gate(2, 0, 0x08, 0x0E);
@@ -372,7 +512,7 @@ void idt_setup() {
   idt_set_gate(11, 0, 0x08, 0x0E);
   idt_set_gate(12, 0, 0x08, 0x0E);
   idt_set_gate(13, isr13, 0x08, 0x8E);
-  idt_set_gate(14, 0, 0x08, 0x0E);
+  idt_set_gate(14, isr14, 0x08, 0x8E);
   idt_set_gate(15, 0, 0x08, 0x0E);
   idt_set_gate(16, 0, 0x08, 0x0E);
   idt_set_gate(17, 0, 0x08, 0x0E);
@@ -391,19 +531,21 @@ void idt_setup() {
   idt_set_gate(30, 0, 0x08, 0x0E);
   idt_set_gate(31, 0, 0x08, 0x0E);
   idt_set_gate(32, isr32, 0x08, 0x8E);
-  //  idt_set_gate(255, 0, 0x08, 0x0E);
+  idt_set_gate(0x31, isr0x31, 0x08, 0x8E);
 
   idt_update(&idt);
 }
 
-void idt_set_gate(uint32 interrupt, uint64 offset, uint16 selector,
-                  uint8 type_attr) {
+void idt_set_gate(uint32 interrupt,
+		  uint64 offset,
+		  uint16 selector,
+		  uint8 type_attr) {
   // first 16 bits
-  idt_entries[interrupt].offset_start = offset; //(offset & 0xFFFF);
+  idt_entries[interrupt].offset_start = offset;  //(offset & 0xFFFF);
   // next 16 bits
-  idt_entries[interrupt].offset_mid = offset >> 16;// & 0xFFFF;
+  idt_entries[interrupt].offset_mid = offset >> 16;  // & 0xFFFF;
   // last 32 bits
-  idt_entries[interrupt].offset_end = offset >> 32;// & 0xFFFFFFFF;
+  idt_entries[interrupt].offset_end = offset >> 32;  // & 0xFFFFFFFF;
 
   idt_entries[interrupt].selector = selector;
 
@@ -442,18 +584,21 @@ void gdt_setup() {
   gdt.base = (uint32)&gdt_entries;
 
   gdt_set_gate(0, 0, 0, 0, 0);
-  gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf); // kernel mode code segment
-  gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf); // kernel mode data segment
-  gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf); // user mode code segment
-  gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf); // user mode data segment
+  gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf);  // kernel mode code segment
+  gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf);  // kernel mode data segment
+  gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf);  // user mode code segment
+  gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf);  // user mode data segment
   gdt_set_gate(5, (uint32)&tss, sizeof(tss), 0x89,
-               0x40); // cpu1 task switching segment
+	       0x40);  // cpu1 task switching segment
 
   gdt_update(&gdt);
 }
 
-void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access,
-                  uint8 flags) {
+void gdt_set_gate(uint32 entry,
+		  uint32 base,
+		  uint32 limit,
+		  uint8 access,
+		  uint8 flags) {
   gdt_entries[entry].base_start = (0xffff & base);
   gdt_entries[entry].base_middle = (base >> 16) & 0xff;
   gdt_entries[entry].base_end = (base >> 24) & 0xff;
@@ -465,26 +610,8 @@ void gdt_set_gate(uint32 entry, uint32 base, uint32 limit, uint8 access,
   gdt_entries[entry].access = access;
 }
 
-// assembler
-static inline void outb(uint16 port, uint8 val) {
-  __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
-  /* There's an outb %al, $imm8  encoding, for compile-time constant port
-   * numbers that fit in 8b.  (N constraint).
-   * Wider immediate constants would be truncated at assemble-time (e.g. "i"
-   * constraint).
-   * The  outb  %al, %dx  encoding is the only option for all other cases.
-   * %1 expands to %dx because  port  is a uint16_t.  %w1 could be used if
-   * we
-   * had the port number a wider C type */
-}
-
-static inline uint8 inb(uint16 port) {
-  uint8 ret;
-  __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
-  return ret;
-}
-
 // I/O ports
+// ref: https://wiki.osdev.org/I/O_ports
 #define PIC1 0x20
 #define PIC2 0xA0
 #define PIC1_COMMAND PIC1
@@ -513,45 +640,100 @@ static inline uint8 inb(uint16 port) {
   offset2 - same for slave PIC: offset2..offset2+7
 */
 void pic_remap(int offset1, int offset2) {
-  unsigned char a1, a2;
+  /* unsigned char a1, a2; */
 
-  a1 = inb(PIC1_DATA); // save masks
-  a2 = inb(PIC2_DATA);
+  /* a1 = inb(PIC1_DATA);  // save masks */
+  /* a2 = inb(PIC2_DATA); */
 
   outb(PIC1_COMMAND,
-       ICW1_INIT + ICW1_ICW4); // starts the initialization sequence
+       ICW1_INIT + ICW1_ICW4);  // starts the initialization sequence
   outb(PIC2_COMMAND, ICW1_INIT + ICW1_ICW4);
 
-  outb(PIC1_DATA, offset1); // define the PIC vectors
+  // ICW2
+  // Sets the offset into the idt.
+  outb(PIC1_DATA, offset1);  // ICW2: define the PIC vectors
   outb(PIC2_DATA, offset2);
 
-  outb(PIC1_DATA, 4); // continue initialization sequence
+  // ICW3
+  // define IRQ 2 (0,1,2) to be connected to PIC 2. 4 binary is 100.
+  outb(PIC1_DATA, 4);
+  // defines that pic 2 is connected to IRQ2 of pic 1.
+  // There is a table in the spec that explains it.
+  // ref: https://pdos.csail.mit.edu/6.828/2005/readings/hardware/8259A.pdf
   outb(PIC2_DATA, 2);
 
   outb(PIC1_DATA, ICW4_8086);
   outb(PIC2_DATA, ICW4_8086);
 
-  outb(PIC1_DATA, a1); // restore saved masks.
-  outb(PIC2_DATA, a2);
+  // Mask (disable) all IRQs
+  outb(PIC1_DATA, 0xff);
+  outb(PIC2_DATA, 0xff);
 }
 
 struct apic_registers {
-  uint64_t reserve_1[4];
-  uint64_t local_apic_id[2];
-  uint64_t local_apic_version[2];
-  uint64_t reserve_2[8];
-  uint64_t task_priority;
-  uint64_t ignore[4];
-  uint64_t local_destination;
-  uint64_t spurious_interrupt_vector;
-
-} __attribute__((packed));
+  uint64_t reserve_1[4] __attribute__((aligned(16)));
+  uint32_t local_apic_id __attribute__((aligned(16)));
+  uint64_t local_apic_version[2] __attribute__((aligned(16)));
+  uint64_t reserve_2[8] __attribute__((aligned(16)));
+  uint64_t tpr __attribute__((aligned(16)));
+  uint64_t apr __attribute__((aligned(16)));
+  uint64_t prr __attribute__((aligned(16)));
+  uint64_t eoi __attribute__((aligned(16)));
+  uint64_t rrd __attribute__((aligned(16)));
+  uint64_t logical_destination __attribute__((aligned(16)));
+  uint64_t destination_format __attribute__((aligned(16)));
+  uint64_t spurious_interrupt_vector __attribute__((aligned(16)));
+  uint32_t isr_0 __attribute__((aligned(16)));  // in service register ro
+  uint32_t isr_1 __attribute__((aligned(16)));
+  uint32_t isr_2 __attribute__((aligned(16)));
+  uint32_t isr_3 __attribute__((aligned(16)));
+  uint32_t isr_4 __attribute__((aligned(16)));
+  uint32_t isr_5 __attribute__((aligned(16)));
+  uint32_t isr_6 __attribute__((aligned(16)));
+  uint32_t isr_7 __attribute__((aligned(16)));
+  uint32_t tmr_0 __attribute__((aligned(16)));  // trigger mode register ro
+  uint32_t tmr_1 __attribute__((aligned(16)));
+  uint32_t tmr_2 __attribute__((aligned(16)));
+  uint32_t tmr_3 __attribute__((aligned(16)));
+  uint32_t tmr_4 __attribute__((aligned(16)));
+  uint32_t tmr_5 __attribute__((aligned(16)));
+  uint32_t tmr_6 __attribute__((aligned(16)));
+  uint32_t tmr_7 __attribute__((aligned(16)));
+  uint32_t irr_0 __attribute__((aligned(16)));  // interrupt request register ro
+  uint32_t irr_1 __attribute__((aligned(16)));
+  uint32_t irr_2 __attribute__((aligned(16)));
+  uint32_t irr_3 __attribute__((aligned(16)));
+  uint32_t irr_4 __attribute__((aligned(16)));
+  uint32_t irr_5 __attribute__((aligned(16)));
+  uint32_t irr_6 __attribute__((aligned(16)));
+  uint32_t irr_7 __attribute__((aligned(16)));
+  uint32_t error_status __attribute__((aligned(16)));
+  uint64_t reserve_3[12] __attribute__((aligned(16)));
+  uint32_t cmci __attribute__((aligned(16)));
+  uint32_t icr_low __attribute__((aligned(16)));
+  uint32_t icr_high __attribute__((aligned(16)));
+  uint32_t lvt_timer __attribute__((aligned(16)));
+  uint32_t lvt_thermal_sensor __attribute__((aligned(16)));
+  uint32_t lvt_performance_monitoring_counters __attribute__((aligned(16)));
+  uint32_t lvt_lint0 __attribute__((aligned(16)));  // FEE00350
+  uint32_t lvt_lint1 __attribute__((aligned(16)));  // FEE00360
+} __attribute__((aligned(16)));
 typedef struct apic_registers apic_registers_t;
 
+#define APIC_REGISTER_BASE 0xFEE00000
+
 void apic_setup() {
-  apic_registers_t *regs = (apic_registers_t*)0xFEE00000;
+  apic_registers_t* regs = (apic_registers_t*)APIC_REGISTER_BASE;
   // print as hex?
-  printf("apic id: %d\n", regs->local_apic_version);
+  printf("apic id addr: %x, value: %d\n", &regs->local_apic_id,
+	 regs->local_apic_id >> 24);
+
+  printf("apic tmr0  addr: %x\n", &regs->cmci);
+  printf("apic lvt_lint0 addr: %x\n", &regs->lvt_lint0);
+  // this just accesses the pointer. have to do [0] but then page fault because
+  // maybe not mapped.
+  // it's defined as 64 bit but I think it's just 32?
+  // aligned 16 worked.
 
   // TODO
   // set up spurious interrupt
@@ -562,47 +744,248 @@ void apic_setup() {
 
 // TODO: use timer to print clock
 
+uint64_t rdmsr(uint32_t reg) {
+  uint64_t value;
+  // A = eax + edx
+  // c = ecx (the c register)
+  // ref:
+  // https://gcc.gnu.org/onlinedocs/gcc/extensions-to-the-c-language-family/how-to-use-inline-assembly-language-in-c-code.html#x86-family-config-i386-constraints-md
+  asm volatile("rdmsr" : "=A"(value) : "c"(reg));
+  return value;
+}
+
+#define MSR_APIC_BASE 0x1b
+
+// ref: Vol 4 2.1
+typedef union {
+  uint64_t raw;
+  struct {
+    uint64_t reserved : 8;
+    uint64_t bsp : 1;
+    uint64_t reserved_2 : 1;
+    uint64_t x2apic : 1;
+    uint64_t apic_global : 1;
+    uint64_t base_address : 52;
+  } bits;
+} msr_apic_base_t;
+
+struct ioapic_redirection_register {
+  union {
+    uint32_t lower;
+    struct {
+      uint32_t interrupt_vector : 8;
+      uint32_t delivery_mode : 3;
+      uint32_t destination_mode : 1;
+      uint32_t delivery_status : 1;
+      uint32_t remote_irr : 1;
+      uint32_t trigger_mode : 1;  // 1=level, 0=edge
+      uint32_t interrupt_mask : 1;
+      uint32_t reserved : 16;
+    } lower_bits;
+  };
+
+  union {
+    uint32_t upper;
+    struct {
+      uint32_t reserved : 24;
+      uint32_t destination : 8;
+    } upper_bits;
+  };
+} __attribute__((packed));
+typedef struct ioapic_redirection_register ioapic_redirection_register_t;
+
+// Seems Intel and AMD have this at the same address.
+// Normally it can be found via the Multiple APIC Description Table (MADT).
+// ref: https://wiki.osdev.org/MADT
+#define IOAPIC_BASE 0xfec00000
+#define IOAPIC_IOREGSEL 0xfec00000
+#define IOAPIC_IOWIN 0xfec00010
+
 /*
-  00077690286d[CPU0  ] LONG MODE IRET
-00077690286d[CPU0  ] LONG MODE INTERRUPT RETURN TO OUTER PRIVILEGE LEVEL or 64 BIT MODE
-00077690295d[CPU0  ] page walk for address 0x00000000fee00010
-00077690295d[CPU0  ] PAE  PDPE: entry not present
-00077690295d[CPU0  ] page fault for address 00000000fee00010 @ 0000000000100e32
-00077690295d[CPU0  ] exception(0x0e): error_code=0000
-00077690295d[CPU0  ] interrupt(): vector = 0e, TYPE = 3, EXT = 1
-00077690295e[CPU0  ] interrupt(long mode): gate.p == 0
-00077690295d[CPU0  ] exception(0x0b): error_code=0073
-00077690295d[CPU0  ] exception(0x08): error_code=0000
-00077690295d[CPU0  ] interrupt(): vector = 08, TYPE = 3, EXT = 1
-00077690295d[CPU0  ] interrupt(long mode): INTERRUPT TO SAME PRIVILEGE
-00077696878d[CPU0  ] LONG MODE IRET
-00077696878d[CPU0  ] LONG MODE INTERRUPT RETURN TO OUTER PRIVILEGE LEVEL or 64 BIT MODE
-00077696879d[CPU0  ] page walk for address 0x00000000fee00010
-00077696879d[CPU0  ] PAE  PDPE: entry not present
-00077696879d[CPU0  ] page fault for address 00000000fee00010 @ 0000000000100e32
-00077696879d[CPU0  ] exception(0x0e): error_code=0000
-00077696879d[CPU0  ] interrupt(): vector = 0e, TYPE = 3, EXT = 1
-00077696879e[CPU0  ] interrupt(long mode): gate.p == 0
-00077696879d[CPU0  ] exception(0x0b): error_code=0073
-00077696879d[CPU0  ] exception(0x08): error_code=0000
-00077696879d[CPU0  ] interrupt(): vector = 08, TYPE = 3, EXT = 1
-00077696879d[CPU0  ] interrupt(long mode): INTERRUPT TO SAME PRIVILEGE
-00077703462d[CPU0  ] LONG MODE IRET
-00077703462d[CPU0  ] LONG MODE INTERRUPT RETURN TO OUTER PRIVILEGE LEVEL or 64 BIT MODE
-00077703463d[CPU0  ] page walk for address 0x00000000fee00010
-00077703463d[CPU0  ] PAE  PDPE: entry not present
-00077703463d[CPU0  ] page fault for address 00000000fee00010 @ 0000000000100e32
-00077703463d[CPU0  ] exception(0x0e): error_code=0000
-00077703463d[CPU0  ] interrupt(): vector = 0e, TYPE = 3, EXT = 1
-00077703463e[CPU0  ] interrupt(long mode): gate.p == 0
-00077703463d[CPU0  ] exception(0x0b): error_code=0073
-00077703463d[CPU0  ] exception(0x08): error_code=0000
-00077703463d[CPU0  ] interrupt(): vector = 08, TYPE = 3, EXT = 1
-00077703463d[CPU0  ] interrupt(long mode): INTERRUPT TO SAME PRIVILEGE
+  IOAPIC registers
+  00h: IOAPIC ID
+  01h: IOAPIC Version
+  02h: IOAPIC Arbitration ID
+  10-3Fh: Redirection Table (Entries 0-23) (64 bits each)
 
-*/
+  How it works:
+  1. Write register index as byte to IOREGSEL.
+  2. Read data as 32bit value from IOWIN.
+ */
 
-void kmain(void *mbd, unsigned int magic) {
+uint32_t ioapic_read_register(uint32_t reg) {
+  uint32_t volatile* ioregsel = (uint32_t volatile*)IOAPIC_IOREGSEL;
+  ioregsel[0] = reg;
+  return ioregsel[4];  // IOAPIC_IOREGSEL+10h (4*4 byte = 16 byte) =
+		       // IOAPIC_IOWIN
+}
+
+void ioapic_write_register(uint32_t reg, ioapic_redirection_register_t* r) {
+  uint32_t volatile* ioregsel = (uint32_t volatile*)IOAPIC_IOREGSEL;
+  ioregsel[0] = reg;
+  ioregsel[4] = r->lower;
+  ioregsel[0] = reg + 1;
+  ioregsel[4] = r->upper;
+}
+
+void ioapic_setup() {
+  msr_apic_base_t apic_base;
+  apic_base.raw = rdmsr(MSR_APIC_BASE);
+  printf("apic enabled: %d, apic base address: %x\n",
+	 apic_base.bits.apic_global, apic_base.bits.base_address);
+
+  printf("ioapic id: %d\n", ioapic_read_register(0));
+  printf("ioapic version: %d\n", ioapic_read_register(1) & 0xFF);  // version
+  // = first 8 bits.
+
+  // manually validated. This reads back 123.
+
+  // next steps:
+  // find apic id
+  apic_registers_t* regs = (apic_registers_t*)0xFEE00000;
+  printf("apic id: %d\n", regs->local_apic_id >> 24);
+  ioapic_redirection_register_t r = {0};
+  r.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
+  r.lower_bits.interrupt_vector = 0x31;
+  ioapic_write_register(0x12, &r);
+  printf("ioapic irq 1 destination: %d\n",
+	 (ioapic_read_register(0x13) & 0xFF000000) >> 24);
+  // map irq 1 to user defined interrupt vector
+
+  // we can find irq that are remapped in the ioapic from the default.
+  // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#interrupt-source-override-structure
+}
+
+// TODO: pull entries out as 'first' into sdt struct.
+// sdt: system description table
+struct acpi_sdt_header2 {
+  uint8_t signature[4];
+  uint32_t length;
+  uint8_t revision;
+  uint8_t checksum;
+  uint8_t oem_id[6];
+  uint8_t oem_table_id[8];
+  uint32_t oem_revision;
+  uint32_t creator_id;
+  uint32_t creator_revision;
+} __attribute__((packed));
+typedef struct acpi_sdt_header2 acpi_sdt_header2_t;
+
+struct acpi_sdt_header {
+  uint8_t signature[4];
+  uint32_t length;
+  uint8_t revision;
+  uint8_t checksum;
+  uint8_t oem_id[6];
+  uint8_t oem_table_id[8];
+  uint32_t oem_revision;
+  uint32_t creator_id;
+  uint32_t creator_revision;
+  uint32_t entries;  // length - (sizeof(header) - 4 byte)
+} __attribute__((packed));
+typedef struct acpi_sdt_header acpi_sdt_header_t;
+
+struct acpi_rsdp {
+  uint8_t signature[8];
+  uint8_t checksum;
+  uint8_t oem_id[6];
+  uint8_t revision;
+  uint32_t rsdt;
+} __attribute__((packed));
+typedef struct acpi_rsdp acpi_rsdp_t;
+
+acpi_rsdp_t* locate_rsdp() {
+  // ref: https://wiki.osdev.org/RSDP
+  // ref:
+  // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#finding-the-rsdp-on-ia-pc-systems
+  uint64_t* start = 0xE0000;
+  uint64_t* end = 0xFFFFF;
+
+  // "RSD PTR "
+  for (; start < end; start += 2) {
+    uint8_t* s = start;
+    if (s[0] == 'R' && s[1] == 'S' && s[2] == 'D' && s[3] == ' ' &&
+	s[4] == 'P' && s[5] == 'T' && s[6] == 'R' && s[7] == ' ') {
+      return start;
+    }
+  }
+  return NULL;
+}
+
+bool strncmp(char* s1, char* s2, int n) {
+  for (int i = 0; i < n; i++) {
+    if (s1[i] != s2[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+struct acpi_madt {
+  acpi_sdt_header2_t header;
+  uint32_t local_interrupt_controller_address;
+  uint32_t flags;
+  uint32_t first;
+} __attribute__((packed));
+typedef struct acpi_madt acpi_madt_t;
+
+// ics = interrupt controller structure
+struct acpi_ics_header {
+  uint8_t type;
+  uint8_t length;
+} __attribute__((packed));
+typedef struct acpi_ics_header acpi_ics_header_t;
+
+struct acpi_ics_ioapic {
+  acpi_ics_header_t header;
+  uint8_t id;
+  uint8_t reserved;
+  uint32_t address;
+  uint32_t global_system_interrupt_base;
+} __attribute__((packed));
+typedef struct acpi_ics_ioapic acpi_ics_ioapic_t;
+
+// note: take care when taking references of a pointer.
+void list_tables(acpi_sdt_header_t* rsdt) {
+  int count = (rsdt->length - sizeof(acpi_sdt_header_t) + sizeof(uint32_t)) /
+	      sizeof(uint32_t);
+  printf("rsdt: entry count: %d\n", count);
+  for (int i = 0; i < count; i++) {
+    // &entries to get the first entry.
+    // +i uses size of type which is uint32_t.
+    // * because it's a pointer to some place.
+    acpi_sdt_header_t* h = *(&rsdt->entries + i);
+    printf("table %d: %.*s\n", i, 4, h->signature);
+    if (strncmp(h->signature, "APIC", 4)) {
+      acpi_madt_t* madt = h;
+      printf("configuring acpi: %x\n",
+	     madt->local_interrupt_controller_address);
+      // how many? madt->length?
+      // first
+      int j = 0;
+      for (acpi_ics_header_t* h = &(madt->first);; h = (char*)h + h->length) {
+	printf("type: %d, length: %d\n", h->type, h->length);
+	if (h->type == 1) {
+	  acpi_ics_ioapic_t* ioapic = h;
+	  printf("ioapic: %x\n", ioapic->address);
+	  // 0x000000e3, e3 implies dirty flag is set
+	  // 0x00200083, this is a normal page with dirty flag not set
+	  // 0xFEC00000 is beyond 4GB.
+
+	  // Our page tables have the first 512 2mb
+	  // To reach 0xfec00000 we need to map the 2038th 2mb range.
+	  // Skip number 2 and 3 and set up page 502.
+	}
+	j++;
+	if (j == 10) {
+	  return;
+	}
+      }
+    }
+  }
+}
+
+void kmain(void* mbd, unsigned int magic) {
   if (magic != 0x2BADB002) {
     /* Something went not according to specs. Print an error */
     /* message and halt, but do *not* rely on the multiboot */
@@ -613,12 +996,12 @@ void kmain(void *mbd, unsigned int magic) {
   /* (http://www.gnu.org/software/grub/manual/multiboot/multiboot.html#multiboot_002eh)
    */
   /* or do your offsets yourself. The following is merely an example. */
-  char *boot_loader_name = (char *)((long *)mbd)[16];
+  char* boot_loader_name = (char*)((long*)mbd)[16];
 
   /* Write your kernel here. */
   /* gdt_setup(); */
-   idt_setup();
-  /* pic_remap(20, 28); */
+  pic_remap(0x20, 0x28);
+  idt_setup();
 
   cls();
 
@@ -629,23 +1012,38 @@ void kmain(void *mbd, unsigned int magic) {
   /* itoa(-123, test, 10); */
   /* print_string(test); */
 
-  printf("\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer: %d\n",
-         "test", 'c', 123, -123);
+  // printf("\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer:
+  // %d\n",
+  //       "test", 'c', 123, -123);
 
-  /* print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu " */
+  /* print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu "
+   */
   /*              "gehen\n\n\n\n4 neue zeilen"); */
 
-  printf("some hex: 3=%x 15=%x 16=%x 27=%x 26=%x 32=%x\n", 3, 15, 16, 17, 26, 32);
+  // printf("some hex: 3=%x 15=%x 16=%x 27=%x 26=%x 32=%x\n", 3, 15, 16, 17,
+  // 26, 32);
 
   // I validated that this prints IP at nop after int3
   __asm__ volatile("int $0x3");
 
   apic_setup();
+  ioapic_setup();
+  //  acpi_rsdp_t* rsdp = locate_rsdp();
+  //  if (rsdp == NULL) {
+  //    // panic
+  //  }
+  //  printf("rsdp: revision: %d, rsdt_addr: %x\n", rsdp->revision,
+  //  rsdp->rsdt);
+  //  acpi_sdt_header_t* rsdt = rsdp->rsdt;
+  //  printf("rsdt: %.*s", 4, rsdt->signature);
+  //  list_tables(rsdt);
   return 0xDEADBABA;
 }
 
-/* // Note: I found using bitfields strongly discouraged, but I will still try to */
-/* // use them. ref: https://news.ycombinator.com/item?id=17056301 and many more. */
+/* // Note: I found using bitfields strongly discouraged, but I will still try
+ * to */
+/* // use them. ref: https://news.ycombinator.com/item?id=17056301 and many
+ * more. */
 
 /* // Paging table entry is 64 bits / 8 byte on a 64 bit system. */
 /* struct pml4_entry { */
@@ -678,7 +1076,8 @@ void kmain(void *mbd, unsigned int magic) {
 /*   unsigned int directory_ptr : 40; */
 /*   unsigned int reserved_2 : 12; */
 /* }; */
-/* typedef page_directory_pointer_table_entry page_directory_pointer_table_entry_t; */
+/* typedef page_directory_pointer_table_entry
+ * page_directory_pointer_table_entry_t; */
 
 /* struct page_directory_entry { */
 /*   unsigned int present : 1; */
@@ -713,15 +1112,17 @@ void kmain(void *mbd, unsigned int magic) {
 /* }; */
 /* typedef struct page_table_entry page_table_entry_t; */
 
-
-/* // Each paging table has 512 entries of size 8 bytes on a 64bit architecture. */
+/* // Each paging table has 512 entries of size 8 bytes on a 64bit
+ * architecture.
+ */
 /* // Section 4.2 in Intel Developer Manual. */
 /* // Root paging structure needs to be put into CR3. */
 /* // We will do 4 level paging. Section 4.5. */
 /* // To enable we have to set */
 /* // CR0.PG = 1, CR4.PAE = 1, IA32_EFER.LME = 1, and CR4.LA57 = 0. */
 /* // Paging maps linear address space to physical address space. */
-/* // PML4[PML4Entries] -> Page Directory Pointer Table[PDPTEntries] -> 1Gb page | Page Directory */
+/* // PML4[PML4Entries] -> Page Directory Pointer Table[PDPTEntries] -> 1Gb
+ * page | Page Directory */
 /* // Page Directory -> 2Mb page | Page Table */
 /* // Page Table Entry -> 4kb Page */
 /* pml4_entry_t pml4[512]; */
@@ -742,4 +1143,6 @@ void kmain(void *mbd, unsigned int magic) {
 /* } */
 
 /* // Can we link 32 and 64 bit code into the same binary? */
-/* // https://stackoverflow.com/questions/49473061/linking-32-and-64-bit-code-together-into-a-single-binary */
+/* //
+ * https://stackoverflow.com/questions/49473061/linking-32-and-64-bit-code-together-into-a-single-binary
+ */

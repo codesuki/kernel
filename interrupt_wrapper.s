@@ -52,6 +52,7 @@ ISR_NOERRCODE 29
 ISR_NOERRCODE 30
 ISR_NOERRCODE 31
 ISR_NOERRCODE 32
+ISR_NOERRCODE 0x31
 
 global isr_wrapper
 isr_wrapper:
@@ -88,5 +89,6 @@ isr_wrapper:
 	;; Remove error code and interrupt number from the stack.
 	add rsp, 16
 
-	;;sti maybe add for hardwar einterrupts, doesnt matter for software
+	;; Re-enable hardware interrupts that we disabled with cli.
+	sti
 	iretq
