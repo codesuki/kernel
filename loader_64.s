@@ -18,9 +18,6 @@ asm_main:
 	mov rax, 0x2f592f412f4b2f4f
 	mov qword [0xb8000], rax
 
-	push rax                           ; pass Multiboot magic number
-	push rbx                           ; pass Multiboot info structure
-
 	call kmain                       ; call kernel proper
 
 	; cli

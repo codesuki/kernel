@@ -7,13 +7,22 @@ section .text
 extern asm_main
 global loader
 loader:
-	call check_multiboot
-
 	; set up the stack. Could use label after stack instead of addition
 	mov esp, stack+STACKSIZE
 
+	; here ebx contains the address of the multiboot structure and eax the
+	; magic number
+	call check_multiboot
+	push eax
+	push ebx
+
 	call setup_paging
 	lgdt [gdt64.pointer]
+
+	; put the multiboot structure address and magic numbers into x64 calling
+	; convention registers for when we call kmain
+	pop edi
+	pop esi
 
 	jmp gdt64.code:asm_main ; long jump to set cs register
 

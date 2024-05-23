@@ -54,6 +54,7 @@ char* itoa(int value, char* buffer, unsigned int base) {
   return buffer;
 }
 
+// ref: https://en.wikipedia.org/wiki/VGA_text_mode#Access_methods
 unsigned char* videoram = (unsigned char*)0xb8000;
 
 int xpos = 0;
@@ -62,13 +63,12 @@ int ypos = 0;
 void new_line() {
   xpos = 0;
   ++ypos;
-  if (ypos == 25) {
-    cls();
+  if (ypos > 25) {
     ypos = 0;
   }
 }
 
-void print_character(char c) {
+void print_character_color(char c, char color) {
   switch (c) {
     case '\n':
       new_line();
@@ -77,10 +77,26 @@ void print_character(char c) {
       if (xpos > 80 * 2) {
 	new_line();
       }
-      videoram[ypos * 80 * 2 + xpos] = (int)c;
-      videoram[ypos * 80 * 2 + xpos + 1] = 0x07;
-      xpos += 2;
+      videoram[ypos * 80 * 2 + xpos * 2] = (int)c;
+      videoram[ypos * 80 * 2 + xpos * 2 + 1] = color;
+      xpos++;
   }
+}
+
+void print_character(char c) {
+  /* switch (c) { */
+  /*   case '\n': */
+  /*     new_line(); */
+  /*     break; */
+  /*   default: */
+  /*     if (xpos > 80 * 2) { */
+  /*	new_line(); */
+  /*     } */
+  /*     videoram[ypos * 80 * 2 + xpos] = (int)c; */
+  /*     videoram[ypos * 80 * 2 + xpos + 1] = 0x07; */
+  /*     xpos += 2; */
+  /* } */
+  print_character_color(c, 0x07);
 }
 
 void print_string_n(char* s, int limit) {
@@ -115,6 +131,12 @@ void cls() {
   int i = 0;
   for (i = 0; i < 80 * 25 * 2; ++i) {
     videoram[i] = 0;
+  }
+}
+
+void cll(int line) {
+  for (int i = 0; i < 80 * 2; i++) {
+    videoram[line * 80 * 2 + i] = 0;
   }
 }
 
@@ -341,6 +363,7 @@ extern void isr13(void);  // general protection fault, error code, fault
 extern void isr14(void);  // page fault, error code, fault
 extern void isr32(void);
 extern void isr0x31(void);
+extern void isr0x32(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
@@ -410,25 +433,168 @@ static inline uint8 inb(uint16 port) {
   return ret;
 }
 
+void ps2_wait_ready() {
+  while (inb(0x64) & 0x2) {
+  };
+}
+
+void ps2_wait_data() {
+  while (!(inb(0x64) & 0x1)) {
+  };
+}
+
+int mouse_x = 0;
+int mouse_y = 0;
+
+int max(int x, int y) {
+  if (x > y) {
+    return x;
+  }
+  return y;
+}
+
+int min(int x, int y) {
+  if (x < y) {
+    return x;
+  }
+  return y;
+}
+
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
+  if (regs->int_no == 0x32) {  // mouse IRQ
+    // data:
+    // bit 0:
+    // bit 1:
+    // bit 2:
+    // bit 3:
+    // bit 4: x sign
+    // bit 5: y sign
+    // bit 6: x overflow
+    // bit 7: y overflow
+    uint8_t data, x, y;
+    ps2_wait_data();
+    data = inb(0x60);
+    ps2_wait_data();
+    x = inb(0x60);
+    ps2_wait_data();
+    y = inb(0x60);
+
+    // the 9 bit two's complements relative x,y values come in 2 pieces.
+    // an 8 bit value and a sign bit.
+    // wikipedia says to subtract the sign bit. extract and subtract.
+
+    int16_t rel_x = x - ((data << 4) & 0x100);
+
+    int16_t rel_y = -(y - ((data << 3) & 0x100));
+
+    mouse_x = min(max(0, mouse_x + rel_x), 79);
+    mouse_y = min(max(1, mouse_y + rel_y), 24);
+
+    ypos = mouse_y;
+    xpos = mouse_x;
+    print_character_color('o', 0x04);
+
+    cll(0);
+    ypos = 0;
+    xpos = 0;
+    printf("data: %x x: %d, y: %d, rel_x: %d, rel_y: %d", data, mouse_x,
+	   mouse_y, rel_x, rel_y);
+    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    *local_apic_eoi = 0;
+    return;
+  }
   if (regs->int_no == 0x31) {  // keyboard IRQ
     // ref: https://wiki.osdev.org/%228042%22_PS/2_Controller
     // read from port 0x60? this is the data port
     // 0x64 is the status register if read and command register if written.
     uint8 scancode = inb(0x60);
+    // key released
+    // It seems this is numbered from top left to bottom right.
     switch (scancode) {
+      case 0x1c:  // enter
+	printf("\n");
+	break;
+      case 0xb9:  // space
+	printf(" ");
+	break;
       case 0x9e:
 	printf("a");
 	break;
-      case 0x23:
+      case 0xb0:
+	printf("b");
+	break;
+      case 0xae:
+	printf("c");
+	break;
+      case 0xa0:
+	printf("d");
+	break;
+      case 0x92:
+	printf("e");
+	break;
+      case 0xa1:
+	printf("f");
+	break;
+      case 0xa2:
+	printf("g");
+	break;
+      case 0xa3:
 	printf("h");
 	break;
-      case 0x17:
+      case 0x97:
 	printf("i");
 	break;
-      case 0x1C:  // enter
-	printf("\n");
+      case 0xa4:
+	printf("j");
+	break;
+      case 0xa5:
+	printf("k");
+	break;
+      case 0xa6:
+	printf("l");
+	break;
+      case 0xb2:
+	printf("m");
+	break;
+      case 0xb1:
+	printf("n");
+	break;
+      case 0x98:
+	printf("o");
+	break;
+      case 0x99:
+	printf("p");
+	break;
+      case 0x90:
+	printf("q");
+	break;
+      case 0x93:
+	printf("r");
+	break;
+      case 0x9f:
+	printf("s");
+	break;
+      case 0x94:
+	printf("t");
+	break;
+      case 0x96:
+	printf("u");
+	break;
+      case 0xaf:
+	printf("v");
+	break;
+      case 0x91:
+	printf("w");
+	break;
+      case 0xad:
+	printf("x");
+	break;
+      case 0x95:
+	printf("y");
+	break;
+      case 0xac:
+	printf("z");
 	break;
     }
     volatile uint32_t* local_apic_eoi = 0xfee000b0;
@@ -531,7 +697,8 @@ void idt_setup() {
   idt_set_gate(30, 0, 0x08, 0x0E);
   idt_set_gate(31, 0, 0x08, 0x0E);
   idt_set_gate(32, isr32, 0x08, 0x8E);
-  idt_set_gate(0x31, isr0x31, 0x08, 0x8E);
+  idt_set_gate(0x31, isr0x31, 0x08, 0x8E);  // keyboard
+  idt_set_gate(0x32, isr0x32, 0x08, 0x8E);  // mouse
 
   idt_update(&idt);
 }
@@ -828,6 +995,11 @@ void ioapic_write_register(uint32_t reg, ioapic_redirection_register_t* r) {
   ioregsel[4] = r->upper;
 }
 
+// keyboard
+#define IOAPIC_IRQ1 0x12
+// mouse
+#define IOAPIC_IRQ12 0x28
+
 void ioapic_setup() {
   msr_apic_base_t apic_base;
   apic_base.raw = rdmsr(MSR_APIC_BASE);
@@ -844,14 +1016,154 @@ void ioapic_setup() {
   // find apic id
   apic_registers_t* regs = (apic_registers_t*)0xFEE00000;
   printf("apic id: %d\n", regs->local_apic_id >> 24);
+  // mask irq 0
+  /* ioapic_redirection_register_t r0 = {0}; */
+  /* r0.upper_bits.destination = regs->local_apic_id >> 24;  // apic id */
+  /* r0.lower_bits.interrupt_mask = 1; */
+  /* ioapic_write_register(0x10, &r0); */
+  // printf("ioapic irq 0 vector: %d\n", ioapic_read_register(0x10) &
+  // 0x000000FF);
+  //  map irq 1 to user defined interrupt vector
   ioapic_redirection_register_t r = {0};
   r.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
   r.lower_bits.interrupt_vector = 0x31;
   ioapic_write_register(0x12, &r);
-  printf("ioapic irq 1 destination: %d\n",
-	 (ioapic_read_register(0x13) & 0xFF000000) >> 24);
-  // map irq 1 to user defined interrupt vector
+  printf("ioapic irq 1 vector: %d\n", ioapic_read_register(0x12) & 0x000000FF);
+  // map irq to user defined interrupt vector
+  ioapic_redirection_register_t r2 = {0};
+  r2.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
+  r2.lower_bits.interrupt_vector = 0x32;
+  ioapic_write_register(IOAPIC_IRQ12, &r2);
+  printf("ioapic irq 12 vector: %d\n",
+	 ioapic_read_register(IOAPIC_IRQ12) & 0x000000FF);
 
+  // Setup ps2 controller, mouse and keyboard.
+  // Sometimes ps2_wait_data can hang until a key is pressed. Not sure why.
+  // do we need to enable ps2 port 2? mouse
+  // ps2 controller spec:
+  // https://web.archive.org/web/20210417040153/http://www.diakom.ru/el/elfirms/datashts/Smsc/42w11.pdf
+  // write command to
+  // command port 0x64
+  // and then read from
+  // data port 0x60
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  uint8 config = inb(0x60);
+  printf("config byte 0: %x\n", config);
+  ps2_wait_ready();
+
+  ps2_wait_ready();
+  outb(0x64, 0xAD);  // disable first port
+  ps2_wait_ready();
+  outb(0x64, 0xA7);  // disable second port
+
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  config = inb(0x60);
+  printf("config byte 1: %x\n", config);
+  ps2_wait_ready();
+  outb(0x64, 0x60);  // set
+  ps2_wait_ready();
+  //  outb(0x60, (config | 0x2) & ~0x20);
+  outb(0x60,
+       config & ~0x43);  // disable translation and interrupts, bit 1,2 and 6
+  // returns 0x61 = 0b1100001
+  // bit 0: first ps2 port interrupt enabled
+  // bit 1: second ps2 port interrupt enabled
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  config = inb(0x60);
+  printf("config byte 2: %x\n", config);
+
+  ps2_wait_ready();
+  outb(0x64, 0xAA);  // self test
+  ps2_wait_data();
+  uint8 resp = inb(0x60);
+  printf("self test response: %x\n", resp);
+
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  config = inb(0x60);
+  printf("config byte 3: %x\n", config);
+
+  ps2_wait_ready();
+  outb(0x64, 0xAB);  // test first */
+  ps2_wait_data();
+  uint8 response = inb(0x60);
+  // printf("response 1: %x\n", response);
+
+  ps2_wait_ready();
+  outb(0x64, 0xA9);  // test second
+  ps2_wait_data();
+  response = inb(0x60);
+  // printf("response 2: %x\n", response);
+
+  ps2_wait_ready();
+  outb(0x64, 0xAE);  // enable first port
+
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  config = inb(0x60);
+  printf("config byte 4: %x\n", config);
+
+  ps2_wait_ready();
+  outb(0x64, 0xA8);  // enable second port
+
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  config = inb(0x60);
+  printf("config byte 5: %x\n", config);
+
+  ps2_wait_ready();
+  outb(0x60, 0xFF);  // reset device 1
+  ps2_wait_data();
+  response = inb(0x60);
+  // printf("reset response 1: %x\n", response);
+  ps2_wait_data();
+  response = inb(0x60);
+  // printf("reset response 1: %x\n", response);
+
+  ps2_wait_ready();
+  outb(0x64, 0xD4);
+  ps2_wait_ready();
+  outb(0x60, 0xFF);  // reset device 2
+  ps2_wait_data();
+  response = inb(0x60);
+  //  printf("reset response 1: %x\n", response);
+  ps2_wait_data();
+  response = inb(0x60);
+  // printf("reset response 1: %x\n", response);
+  ps2_wait_data();
+  response = inb(0x60);
+  // printf("reset response 1: %x\n", response);
+
+  ps2_wait_ready();
+  outb(0x64, 0xD4);
+  ps2_wait_ready();
+  outb(0x60, 0xF4);  // enable mouse data reporting
+  ps2_wait_data();
+  response = inb(0x60);
+  // printf("enable response: %x\n", response);
+
+  // enable IRQs
+  printf("setting config to: %x\n", config | 0x3);
+  ps2_wait_ready();
+  outb(0x64, 0x60);  // set
+  ps2_wait_ready();
+  outb(0x60, config | 0x3);  // enable interrupts. bits 1,2
+  ps2_wait_ready();
+  outb(0x64, 0x20);  // 0x20 = read config byte
+  ps2_wait_data();
+  config = inb(0x60);
+  printf("config byte 6: %x", config);
+
+  // returns: 0x41 = 0b1000001
   // we can find irq that are remapped in the ioapic from the default.
   // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#interrupt-source-override-structure
 }
@@ -986,10 +1298,9 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 }
 
 void kmain(void* mbd, unsigned int magic) {
-  if (magic != 0x2BADB002) {
-    /* Something went not according to specs. Print an error */
-    /* message and halt, but do *not* rely on the multiboot */
-    /* data structure. */
+  if (magic != 0x36d76289) {
+    printf("multiboot error: %x\n", magic);
+    asm volatile("hlt");
   }
 
   /* You could either use multiboot.h */
@@ -1146,3 +1457,5 @@ void kmain(void* mbd, unsigned int magic) {
 /* //
  * https://stackoverflow.com/questions/49473061/linking-32-and-64-bit-code-together-into-a-single-binary
  */
+
+// Bochs: CTRL-F for "long mode activated"

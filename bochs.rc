@@ -48,7 +48,7 @@ info: action=report
 error: action=report
 panic: action=ask
 keyboard: type=mf, serial_delay=150, paste_delay=100000, user_shortcut=none
-mouse: type=ps2, enabled=false, toggle=ctrl+mbutton
+mouse: type=ps2, enabled=true, toggle=ctrl+mbutton
 com1: enabled=true, mode=null
 com2: enabled=false
 com3: enabled=false
