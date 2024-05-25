@@ -31,7 +31,9 @@ run:
 # shorthand for -gdb tcp::1234
 # -S is
 # freeze CPU at startup (use 'c' to start execution)
-	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -no-shutdown -monitor stdio
+	sudo qemu-system-x86_64 -d int \
+	-no-reboot -cdrom $(ISO) -s -no-shutdown -monitor stdio \
+	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet
 
 debug:
 	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -S

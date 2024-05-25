@@ -944,6 +944,7 @@ struct ioapic_redirection_register {
       uint32_t delivery_mode : 3;
       uint32_t destination_mode : 1;
       uint32_t delivery_status : 1;
+      uint32_t pin_polarity : 1;
       uint32_t remote_irr : 1;
       uint32_t trigger_mode : 1;  // 1=level, 0=edge
       uint32_t interrupt_mask : 1;
@@ -1010,17 +1011,15 @@ void ioapic_setup() {
   printf("ioapic version: %d\n", ioapic_read_register(1) & 0xFF);  // version
   // = first 8 bits.
 
-  // manually validated. This reads back 123.
-
   // next steps:
   // find apic id
   apic_registers_t* regs = (apic_registers_t*)0xFEE00000;
   printf("apic id: %d\n", regs->local_apic_id >> 24);
-  // mask irq 0
+  // mask irq 2, this is already masked
   /* ioapic_redirection_register_t r0 = {0}; */
   /* r0.upper_bits.destination = regs->local_apic_id >> 24;  // apic id */
   /* r0.lower_bits.interrupt_mask = 1; */
-  /* ioapic_write_register(0x10, &r0); */
+  /* ioapic_write_register(0x14, &r0); */
   // printf("ioapic irq 0 vector: %d\n", ioapic_read_register(0x10) &
   // 0x000000FF);
   //  map irq 1 to user defined interrupt vector
@@ -1257,6 +1256,15 @@ struct acpi_ics_ioapic {
 } __attribute__((packed));
 typedef struct acpi_ics_ioapic acpi_ics_ioapic_t;
 
+struct acpi_ics_input_source_override {
+  acpi_ics_header_t header;
+  uint8_t bus;
+  uint8_t source;
+  uint32_t global_system_interrupt;
+  uint16_t flags;
+} __attribute__((packed));
+typedef struct acpi_ics_input_source_override acpi_ics_input_source_override_t;
+
 // note: take care when taking references of a pointer.
 void list_tables(acpi_sdt_header_t* rsdt) {
   int count = (rsdt->length - sizeof(acpi_sdt_header_t) + sizeof(uint32_t)) /
@@ -1288,10 +1296,264 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	  // To reach 0xfec00000 we need to map the 2038th 2mb range.
 	  // Skip number 2 and 3 and set up page 502.
 	}
+	if (h->type == 2) {
+	  printf("interrupt source overrides\n");
+	  acpi_ics_input_source_override_t* iso = h;
+	  printf("source: %x, interrupt: %x\n", iso->source,
+		 iso->global_system_interrupt);
+	}
 	j++;
 	if (j == 10) {
 	  return;
 	}
+      }
+    }
+  }
+}
+
+#define PCI_CONFIG_ADDRESS 0xcf8
+#define PCI_CONFIG_DATA 0xcfc
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint32_t offset : 8;
+    uint32_t function : 3;
+    uint32_t device : 5;
+    uint32_t bus : 8;
+    uint32_t reserved : 7;
+    uint32_t enabled : 1;
+  } bits;
+} pci_config_address_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint16_t vendor_id;
+    uint16_t device_id;
+  } __attribute__((packed)) fields;
+} pci_config_register_0_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    union {
+      uint16_t command;
+      struct {
+	uint16_t io_space : 1;
+	uint16_t memory_space : 1;
+	uint16_t bus_master : 1;
+	uint16_t reserved : 13;
+      } command_bits;
+    };
+    union {
+      uint16_t status;
+      struct {
+	uint16_t reserved : 16;
+      } status_bits;
+    };
+  } __attribute__((packed)) fields;
+} pci_config_register_1_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint8_t revision_id;
+    uint8_t prog_if;
+    uint8_t subclass;
+    uint8_t class;
+  } __attribute__((packed)) fields;
+} pci_config_register_2_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint8_t cache_line_size;
+    uint8_t latency_timer;
+    uint8_t header_type;
+    uint8_t bist;
+  } __attribute__((packed)) fields;
+} pci_config_register_3_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint32_t is_io_space : 1;
+    uint32_t type : 2;
+    uint32_t prefetchable : 1;
+    uint32_t address : 28;
+  } __attribute__((packed)) memory_space;
+  struct {
+    uint32_t is_io_space : 1;
+    uint32_t reserved : 1;
+    uint32_t address : 30;
+  } __attribute__((packed)) io_space;
+} pci_config_register_4_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint32_t is_io_space : 1;
+    uint32_t type : 2;
+    uint32_t prefetchable : 1;
+    uint32_t address : 28;
+  } __attribute__((packed)) memory_space;
+  struct {
+    uint32_t is_io_space : 1;
+    uint32_t reserved : 1;
+    uint32_t io_size : 6;
+    uint32_t address : 24;
+  } __attribute__((packed)) io_space;
+} pci_config_register_4_rtl8139_t;
+
+typedef union {
+  uint32_t raw;
+  struct {
+    uint8_t interrupt_line;
+    uint8_t interrupt_pin;
+    uint8_t min_grant;
+    uint8_t max_latency;
+  } __attribute__((packed)) fields;
+} pci_config_register_f_t;
+
+static inline void outl(uint16_t port, uint32_t val) {
+  __asm__ volatile("outl %k0, %w1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+static inline uint32_t inl(uint16_t port) {
+  uint32_t ret;
+  __asm__ volatile("inl %w1, %k0" : "=a"(ret) : "Nd"(port) : "memory");
+  return ret;
+}
+
+#define RTL8139_MAC 0x0
+#define RTL8139_MAR 0x8
+#define RTL8139_RBSTART 0x30
+#define RTL8139_CMD 0x37
+#define RTL8139_IMR 0x3c
+#define RTL8139_ISR 0x3e
+
+#define RTL8139_CONFIG_1 0x52
+
+// PCI vendor
+// - device
+// 0x8086 Intel
+// - 0x1237 440FX - 82441FX PMC [Natoma]
+// - 0x7000 82371SB PIIX3 ISA [Natoma/Triton II]
+// 0x1234 Bochs
+// - 0x1111 Bochs Graphic Adapter
+// 0x10ec Realtek
+// - 0x8139 RTL-8100/8101L/8139 PCI Fast Ethernet Adapter
+
+// PCI class
+// - subclass
+// 0x2 Network controller
+// - 0x0 Ethernet controller
+// 0x3 Display controller
+// - 0x0 VGA compatible
+// 0x6 Bridge
+// - 0x0 Host Bridge
+// - 0x1 ISA Bridge
+//
+
+void pci_enumerate() {
+  pci_config_address_t a = {0};
+  a.bits.enabled = 1;
+  a.bits.bus = 0;
+  a.bits.device = 0;
+
+  // Root bus is apparently always 0 so we could scan from there.
+  for (int bus = 0; bus < 256; bus++) {
+    a.bits.bus = bus;
+    for (int device = 0; device < 32; device++) {
+      a.bits.device = device;
+      a.bits.offset = 0;
+      outl(PCI_CONFIG_ADDRESS, a.raw);
+      pci_config_register_0_t h1;
+      h1.raw = inl(PCI_CONFIG_DATA);
+
+      if (h1.fields.device_id == 0xffff) {
+	continue;
+      }
+      printf("pci vendor: %x, device: %x\n", h1.fields.vendor_id,
+	     h1.fields.device_id);
+
+      a.bits.offset = 0x8;
+      outl(PCI_CONFIG_ADDRESS, a.raw);
+      pci_config_register_2_t h2;
+      h2.raw = inl(PCI_CONFIG_DATA);
+      printf("pci class: %x, subclass: %x\n", h2.fields.class,
+	     h2.fields.subclass);
+
+      a.bits.offset = 0xc;
+      outl(PCI_CONFIG_ADDRESS, a.raw);
+      pci_config_register_3_t h3;
+      h3.raw = inl(PCI_CONFIG_DATA);
+      //    printf("pci header: %x\n", h3.fields.header_type);
+
+      if (h1.fields.vendor_id == 0x10ec && h1.fields.device_id == 0x8139) {
+	// found ethernet controller
+	a.bits.offset = 0x4;
+	outl(PCI_CONFIG_ADDRESS, a.raw);
+	pci_config_register_1_t h1;
+	h1.raw = inl(PCI_CONFIG_DATA);
+	//	printf("pci status: %x, command: %x, bus master: %d\n",
+	//    h1.fields.status, h1.fields.command,
+	//  h1.fields.command_bits.bus_master);
+
+	h1.fields.command_bits.bus_master = 1;
+	outl(PCI_CONFIG_ADDRESS, a.raw);
+	outl(PCI_CONFIG_DATA, h1.raw);
+
+	outl(PCI_CONFIG_ADDRESS, a.raw);
+	h1.raw = inl(PCI_CONFIG_DATA);
+	//	printf("pci status: %x, command: %x, bus master: %d\n",
+	//     h1.fields.status, h1.fields.command,
+	//   h1.fields.command_bits.bus_master);
+
+	a.bits.offset = 0x10;
+	outl(PCI_CONFIG_ADDRESS, a.raw);
+	pci_config_register_4_rtl8139_t h4;
+	h4.raw = inl(PCI_CONFIG_DATA);
+	printf("pci header: address 1: %x\n", h4.raw);
+	uint32_t base = h4.raw & 0xFFFFFFFC;
+	if (h4.io_space.is_io_space) {
+	  // printf("pci header: io space: address: %x, base: %x\n",
+	  //	 h4.io_space.address, base);
+
+	  uint8_t config_1 = inb(base + RTL8139_CONFIG_1);
+	  //  printf("ethernet: config 1: %x\n", config_1);
+
+	  uint8_t cmd = inb(base + RTL8139_CMD);
+	  printf("ethernet: cmd: %x\n", cmd);
+
+	  /* // power on */
+	  // outb(h4.io_space.address + RTL8139_CONFIG_1, 0x0); */
+	  /* // soft reset */
+	  outb(base + RTL8139_CMD, 0x10);
+	  // cmd = inb(base + RTL8139_CMD);
+	  //  printf("ethernet: cmd 3: %x\n", cmd);
+	  while ((inb(base + RTL8139_CMD) & 0x10) != 0) {
+	  }
+	  printf("reset \n");
+	} else {
+	  printf("pci header: memory space: %d, type: %d, address: %x\n",
+		 h4.memory_space.is_io_space, h4.memory_space.type,
+		 h4.memory_space.address);
+	}
+
+	a.bits.offset = 0x14;
+	outl(PCI_CONFIG_ADDRESS, a.raw);
+	h4.raw = inl(PCI_CONFIG_DATA);
+	printf("pci header: address 2: %x, addr: %x\n", h4.raw,
+	       h4.memory_space.address);
+
+	a.bits.offset = 0x3c;
+	outl(PCI_CONFIG_ADDRESS, a.raw);
+	pci_config_register_f_t hf;
+	hf.raw = inl(PCI_CONFIG_DATA);
+	printf("pci header: interrupt line: %d, interrupt pin: %d\n",
+	       hf.fields.interrupt_line, hf.fields.interrupt_pin);
       }
     }
   }
@@ -1302,6 +1564,12 @@ void kmain(void* mbd, unsigned int magic) {
     printf("multiboot error: %x\n", magic);
     asm volatile("hlt");
   }
+
+  // set pit 0 to one shot mode
+  // bit 4-5 = access mode
+  // bit 2-3 = mode
+  // ref: https://www.diamondsystems.com/files/binaries/har82c54.pdf
+  outb(0x43, 0b110010);
 
   /* You could either use multiboot.h */
   /* (http://www.gnu.org/software/grub/manual/multiboot/multiboot.html#multiboot_002eh)
@@ -1337,17 +1605,18 @@ void kmain(void* mbd, unsigned int magic) {
   // I validated that this prints IP at nop after int3
   __asm__ volatile("int $0x3");
 
-  apic_setup();
-  ioapic_setup();
-  //  acpi_rsdp_t* rsdp = locate_rsdp();
+  // apic_setup();
+  // ioapic_setup();
+  acpi_rsdp_t* rsdp = locate_rsdp();
   //  if (rsdp == NULL) {
   //    // panic
   //  }
   //  printf("rsdp: revision: %d, rsdt_addr: %x\n", rsdp->revision,
   //  rsdp->rsdt);
-  //  acpi_sdt_header_t* rsdt = rsdp->rsdt;
+  acpi_sdt_header_t* rsdt = rsdp->rsdt;
   //  printf("rsdt: %.*s", 4, rsdt->signature);
   //  list_tables(rsdt);
+  pci_enumerate();
   return 0xDEADBABA;
 }
 
@@ -1459,3 +1728,10 @@ void kmain(void* mbd, unsigned int magic) {
  */
 
 // Bochs: CTRL-F for "long mode activated"
+
+// networking
+// # Connect e1000-82540em - Intel Gigabit Ethernet to VM
+// qemu-system-xxx -netdev vmnet-bridged,id=vmnet,ifname=en0 -device
+// e1000-82540em,netdev=vmnet
+// sudo qemu-system-x86_64 -netdev vmnet-bridged,id=vmnet,ifname=en0 -device
+// rtl8139,netdev=vmnet
