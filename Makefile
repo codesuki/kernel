@@ -33,7 +33,7 @@ run:
 # freeze CPU at startup (use 'c' to start execution)
 	sudo qemu-system-x86_64 -d int \
 	-no-reboot -cdrom $(ISO) -s -no-shutdown -monitor stdio \
-	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet
+	-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
 
 debug:
 	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -S

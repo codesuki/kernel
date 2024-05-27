@@ -64,6 +64,7 @@ void new_line() {
   xpos = 0;
   ++ypos;
   if (ypos > 25) {
+    // cls();
     ypos = 0;
   }
 }
@@ -364,6 +365,7 @@ extern void isr14(void);  // page fault, error code, fault
 extern void isr32(void);
 extern void isr0x31(void);
 extern void isr0x32(void);
+extern void isr0x33(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
@@ -462,6 +464,13 @@ int min(int x, int y) {
 
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
+  if (regs->int_no == 0x33) {  // network IRQ
+    // read ISR and figure out which interrupt triggered.
+
+    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    *local_apic_eoi = 0;
+    return;
+  }
   if (regs->int_no == 0x32) {  // mouse IRQ
     // data:
     // bit 0:
@@ -699,6 +708,7 @@ void idt_setup() {
   idt_set_gate(32, isr32, 0x08, 0x8E);
   idt_set_gate(0x31, isr0x31, 0x08, 0x8E);  // keyboard
   idt_set_gate(0x32, isr0x32, 0x08, 0x8E);  // mouse
+  idt_set_gate(0x33, isr0x33, 0x08, 0x8e);  // ethernet
 
   idt_update(&idt);
 }
@@ -998,6 +1008,8 @@ void ioapic_write_register(uint32_t reg, ioapic_redirection_register_t* r) {
 
 // keyboard
 #define IOAPIC_IRQ1 0x12
+// ethernet
+#define IOAPIC_IRQ11 0x26
 // mouse
 #define IOAPIC_IRQ12 0x28
 
@@ -1035,6 +1047,13 @@ void ioapic_setup() {
   ioapic_write_register(IOAPIC_IRQ12, &r2);
   printf("ioapic irq 12 vector: %d\n",
 	 ioapic_read_register(IOAPIC_IRQ12) & 0x000000FF);
+
+  ioapic_redirection_register_t r3 = {0};
+  r3.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
+  r3.lower_bits.interrupt_vector = 0x33;
+  // r3.lower_bits.trigger_mode = 1;
+  ioapic_write_register(IOAPIC_IRQ11, &r3);
+  printf("ioapic irq 11: %x\n", ioapic_read_register(IOAPIC_IRQ11));
 
   // Setup ps2 controller, mouse and keyboard.
   // Sometimes ps2_wait_data can hang until a key is pressed. Not sure why.
@@ -1287,7 +1306,7 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	printf("type: %d, length: %d\n", h->type, h->length);
 	if (h->type == 1) {
 	  acpi_ics_ioapic_t* ioapic = h;
-	  printf("ioapic: %x\n", ioapic->address);
+	  printf("ioapic: id: %d address: %x\n", ioapic->id, ioapic->address);
 	  // 0x000000e3, e3 implies dirty flag is set
 	  // 0x00200083, this is a normal page with dirty flag not set
 	  // 0xFEC00000 is beyond 4GB.
@@ -1426,6 +1445,16 @@ static inline uint32_t inl(uint16_t port) {
   return ret;
 }
 
+static inline void outw(uint16_t port, uint16_t val) {
+  __asm__ volatile("outw %w0, %w1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+static inline uint16_t inw(uint16_t port) {
+  uint16_t ret;
+  __asm__ volatile("inw %w1, %w0" : "=a"(ret) : "Nd"(port) : "memory");
+  return ret;
+}
+
 #define RTL8139_MAC 0x0
 #define RTL8139_MAR 0x8
 #define RTL8139_RBSTART 0x30
@@ -1456,6 +1485,8 @@ static inline uint32_t inl(uint16_t port) {
 // - 0x1 ISA Bridge
 //
 
+char network_rx_buffer[8208];
+
 void pci_enumerate() {
   pci_config_address_t a = {0};
   a.bits.enabled = 1;
@@ -1464,6 +1495,10 @@ void pci_enumerate() {
 
   // Root bus is apparently always 0 so we could scan from there.
   for (int bus = 0; bus < 256; bus++) {
+    if (bus > 1) {
+      break;
+    }
+    // printf("pci: scanning bus %d\n", bus);
     a.bits.bus = bus;
     for (int device = 0; device < 32; device++) {
       a.bits.device = device;
@@ -1472,18 +1507,19 @@ void pci_enumerate() {
       pci_config_register_0_t h1;
       h1.raw = inl(PCI_CONFIG_DATA);
 
-      if (h1.fields.device_id == 0xffff) {
+      if (h1.fields.vendor_id == 0xffff) {
 	continue;
       }
-      printf("pci vendor: %x, device: %x\n", h1.fields.vendor_id,
-	     h1.fields.device_id);
+      //    printf("pci: %d\n", device);
+      //    printf("pci: vendor: %x, device: %x\n", h1.fields.vendor_id,
+      //	     h1.fields.device_id);
 
       a.bits.offset = 0x8;
       outl(PCI_CONFIG_ADDRESS, a.raw);
       pci_config_register_2_t h2;
       h2.raw = inl(PCI_CONFIG_DATA);
-      printf("pci class: %x, subclass: %x\n", h2.fields.class,
-	     h2.fields.subclass);
+      //      printf("pci: class: %x, subclass: %x\n", h2.fields.class,
+      //	     h2.fields.subclass);
 
       a.bits.offset = 0xc;
       outl(PCI_CONFIG_ADDRESS, a.raw);
@@ -1497,9 +1533,9 @@ void pci_enumerate() {
 	outl(PCI_CONFIG_ADDRESS, a.raw);
 	pci_config_register_1_t h1;
 	h1.raw = inl(PCI_CONFIG_DATA);
-	//	printf("pci status: %x, command: %x, bus master: %d\n",
-	//    h1.fields.status, h1.fields.command,
-	//  h1.fields.command_bits.bus_master);
+	/* printf("pci status: %x, command: %x, bus master: %d\n", */
+	/*        h1.fields.status, h1.fields.command, */
+	/*        h1.fields.command_bits.bus_master); */
 
 	h1.fields.command_bits.bus_master = 1;
 	outl(PCI_CONFIG_ADDRESS, a.raw);
@@ -1507,35 +1543,79 @@ void pci_enumerate() {
 
 	outl(PCI_CONFIG_ADDRESS, a.raw);
 	h1.raw = inl(PCI_CONFIG_DATA);
-	//	printf("pci status: %x, command: %x, bus master: %d\n",
-	//     h1.fields.status, h1.fields.command,
-	//   h1.fields.command_bits.bus_master);
+	/* printf("pci status: %x, command: %x, bus master: %d\n", */
+	/*        h1.fields.status, h1.fields.command, */
+	/*        h1.fields.command_bits.bus_master); */
 
 	a.bits.offset = 0x10;
 	outl(PCI_CONFIG_ADDRESS, a.raw);
 	pci_config_register_4_rtl8139_t h4;
 	h4.raw = inl(PCI_CONFIG_DATA);
-	printf("pci header: address 1: %x\n", h4.raw);
 	uint32_t base = h4.raw & 0xFFFFFFFC;
+	//	printf("pci header: address 1: %x\n", base);
 	if (h4.io_space.is_io_space) {
 	  // printf("pci header: io space: address: %x, base: %x\n",
 	  //	 h4.io_space.address, base);
+	  //	  outb(base + 0x52, 0x0);  // start?
 
-	  uint8_t config_1 = inb(base + RTL8139_CONFIG_1);
-	  //  printf("ethernet: config 1: %x\n", config_1);
+	  uint8_t mac[6] = {0};
+	  mac[0] = inb(base + 0x00);
+	  mac[1] = inb(base + 0x01);
+	  mac[2] = inb(base + 0x02);
+	  mac[3] = inb(base + 0x03);
+	  mac[4] = inb(base + 0x04);
+	  mac[5] = inb(base + 0x05);
+
+	  printf("ethernet: mac: %x:%x:%x:%x:%x:%x\n", mac[0], mac[1], mac[2],
+		 mac[3], mac[4], mac[5]);
+
+	  //	  uint8_t config_1 = inb(base + RTL8139_CONFIG_1);
+	  //	  printf("ethernet: config 1: %x\n", config_1);
+
+	  //	  uint8_t config_3 = inb(base + 0x59);
+	  //	  printf("ethernet: config 3: %x\n", config_3);
+
+	  //	  uint8_t config_4 = inb(base + 0x5A);
+	  //	  printf("ethernet: config 4: %x\n", config_4);
 
 	  uint8_t cmd = inb(base + RTL8139_CMD);
+	  // here reset is 1 as written on osdev. qemu bug.
 	  printf("ethernet: cmd: %x\n", cmd);
 
-	  /* // power on */
-	  // outb(h4.io_space.address + RTL8139_CONFIG_1, 0x0); */
-	  /* // soft reset */
+	  // soft reset
 	  outb(base + RTL8139_CMD, 0x10);
-	  // cmd = inb(base + RTL8139_CMD);
-	  //  printf("ethernet: cmd 3: %x\n", cmd);
 	  while ((inb(base + RTL8139_CMD) & 0x10) != 0) {
 	  }
-	  printf("reset \n");
+	  printf("ethernet: reset successful \n");
+
+	  // 0x30 is a 4 byte receive buffer start address register.
+	  //	  outl(base + 0x30, network_rx_buffer);
+
+	  // Interrupt Mask Register
+	  // 0x3c 16 bit
+	  // bit 0: rx OK
+	  // note: it is important to read / write the right size, i.e.
+	  // outb/outw/outl. using the wrong one results in no action.
+	  outw(base + 0x3c, 0x1);
+
+	  // Receive Configuration Register
+	  // 0x44
+	  // Bit 1: Accept all packets
+	  // Bit 2: Accept physical match packets
+	  // Bit 3: Accept multicast packets
+	  // Bit 4: Accept broadcast packets
+	  // Bit 11, 12: decide receive buffer length.
+	  // 00 = 8k + 16 byte
+	  // 01 = 16k + 16 byte
+	  // 10 = 32K + 16 byte
+	  // 11 = 64K + 16 byte
+
+	  outl(base + 0x44,
+	       0xf | (1 << 7));  // wrap bit and rx flags
+
+	  outb(base + 0x37, 0x0C);  // Enable RX and TX in command register
+
+	  // everything until here works.
 	} else {
 	  printf("pci header: memory space: %d, type: %d, address: %x\n",
 		 h4.memory_space.is_io_space, h4.memory_space.type,
@@ -1557,6 +1637,111 @@ void pci_enumerate() {
       }
     }
   }
+}
+
+struct pcmp_processor_entry {
+  uint8_t type;  // 0
+  uint8_t local_apic_id;
+  uint8_t local_apic_version;
+  uint8_t cpu_flags;
+  uint32_t signature;
+  uint32_t feature_flags;
+  uint64_t reserved;
+} __attribute__((packed));
+typedef struct pcmp_processor_entry pcmp_processor_entry_t;
+
+// TODO: since we use sizeof later during parsing we need to make sure this
+// actually is the right size.
+struct pcmp_bus_entry {
+  uint32_t type : 8;  // 1
+  uint32_t bus_id : 8;
+  uint64_t bus_type : 48;
+} __attribute__((packed));
+typedef struct pcmp_bus_entry pcmp_bus_entry_t;
+
+struct pcmp_ioapic_entry {
+  uint8_t type;  // 2
+  uint8_t apic_io;
+  uint8_t apic_version;
+  uint8_t apic_flags;
+  uint32_t address;
+} __attribute__((packed));
+typedef struct pcmp_ioapic_entry pcmp_ioapic_entry_t;
+
+struct pcmp_interrupt_entry {
+  uint8_t type;  // 3
+  uint8_t interrupt_type;
+  uint16_t interrupt_flags;
+  uint8_t source_bus_id;
+  struct {
+    uint8_t signal_type : 2;
+    uint8_t pci_device_number : 5;
+    uint8_t reserved : 1;
+  } source_bus_irq;
+  uint8_t destination_apic_id;
+  uint8_t destination_apic_int;
+} __attribute__((packed));
+typedef struct pcmp_interrupt_entry pcmp_interrupt_entry_t;
+
+void locate_pcmp() {
+  // ref:
+  // https://web.archive.org/web/20121002210153/http://download.intel.com/design/archives/processors/pro/docs/24201606.pdf
+  uint8_t* start = 0xE0000;
+  uint8_t* end = 0xFFFFF;
+
+  // "RSD PTR "
+  for (; start < end; start += 1) {
+    uint8_t* s = start;
+    if (s[0] == 'P' && s[1] == 'C' && s[2] == 'M' && s[3] == 'P') {
+      // find PCI interrupt on I/O apic
+      uint16_t count = *(uint16_t*)(start + 34);
+      start += 44;  // skip header
+      printf("first entry: %x count: %d\n", start, count);
+      s = start;
+      for (int i = 0; i < count; i++) {
+	if (*s == 0) {
+	  //	  printf("cpu header\n");
+	  s += sizeof(pcmp_processor_entry_t);
+	} else if (*s == 1) {
+	  pcmp_bus_entry_t* b = s;
+	  //	  printf("bus header: %d\n", b->bus_id);
+	  s += sizeof(pcmp_bus_entry_t);
+	} else if (*s == 2) {
+	  //	  printf("io apic header\n");
+	  s += sizeof(pcmp_ioapic_entry_t);
+	} else if (*s == 3) {
+	  //	  printf("interrupt header\n");
+	  pcmp_interrupt_entry_t* e = s;
+	  printf(
+	      "type: %x, flags: %x, bus: %x, "
+	      "irq.t: %x, irq.d: %x, id: %x, "
+	      "int: %x\n",
+	      e->interrupt_type, e->interrupt_flags, e->source_bus_id,
+	      e->source_bus_irq.signal_type,
+	      e->source_bus_irq.pci_device_number, e->destination_apic_id,
+	      e->destination_apic_int);
+	  s += sizeof(pcmp_interrupt_entry_t);
+	} else if (*s == 4) {
+	  // printf("interrupt 2 header\n");
+	  pcmp_interrupt_entry_t* e = s;
+	  /* printf( */
+	  /*     "interrupt_type: %x, interrupt_flags: %x, source_bus_id: %x, "
+	   */
+	  /*     "source_bus_irq: %x, destination_apic_id: %x, " */
+	  /*     "destination_apic_int %x\n", */
+	  /*     e->interrupt_type, e->interrupt_flags, e->source_bus_id, */
+	  /*     e->source_bus_irq, e->destination_apic_id, */
+	  /*     e->destination_apic_int); */
+	  s += sizeof(pcmp_interrupt_entry_t);
+	} else {
+	  printf("other %d\n", *s);
+	}
+      }
+
+      return;
+    }
+  }
+  return;
 }
 
 void kmain(void* mbd, unsigned int magic) {
@@ -1606,7 +1791,7 @@ void kmain(void* mbd, unsigned int magic) {
   __asm__ volatile("int $0x3");
 
   // apic_setup();
-  // ioapic_setup();
+  ioapic_setup();
   acpi_rsdp_t* rsdp = locate_rsdp();
   //  if (rsdp == NULL) {
   //    // panic
@@ -1617,6 +1802,9 @@ void kmain(void* mbd, unsigned int magic) {
   //  printf("rsdt: %.*s", 4, rsdt->signature);
   //  list_tables(rsdt);
   pci_enumerate();
+  // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
+  // to.
+  //  TODO: check delivery mode. IRQ 11 (0xB).
   return 0xDEADBABA;
 }
 
