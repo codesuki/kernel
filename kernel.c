@@ -506,6 +506,26 @@ static inline uint8 inb(uint16 port) {
   return ret;
 }
 
+static inline void outl(uint16_t port, uint32_t val) {
+  __asm__ volatile("outl %k0, %w1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+static inline uint32_t inl(uint16_t port) {
+  uint32_t ret;
+  __asm__ volatile("inl %w1, %k0" : "=a"(ret) : "Nd"(port) : "memory");
+  return ret;
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+  __asm__ volatile("outw %w0, %w1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+static inline uint16_t inw(uint16_t port) {
+  uint16_t ret;
+  __asm__ volatile("inw %w1, %w0" : "=a"(ret) : "Nd"(port) : "memory");
+  return ret;
+}
+
 void ps2_wait_ready() {
   while (inb(0x64) & 0x2) {
   };
@@ -533,15 +553,204 @@ int min(int x, int y) {
   return y;
 }
 
+void memcpy(void* src, void* dst, size_t len) {
+  for (int i = 0; i < len; i++) {
+    ((uint8_t*)dst)[i] = ((uint8_t*)src)[i];
+  }
+}
+
+#define RX_BUFFER_SIZE 8192
+// with alignment
+// 000000000010d0cc g     O .bss   0000000000002010 network_rx_buffer
+// without alignment (also actually aligned I think)
+// 000000000010d0e0 g     O .bss   0000000000002010 network_rx_buffer
+uint8_t network_rx_buffer[8208] __attribute__((aligned(4))) = {0};
+uint16_t network_rx_buffer_index = {0};
+
+uint8_t network_packet[1518] = {0};
+
+uint16_t num_packets = 0;
+
+// Now it's starting to get super dirty.
+uint32_t base = 0;
+
+uint16_t ntohs(uint16_t netshort) {
+  return (netshort >> 8) | (netshort << 8);
+}
+
+// uint8_t ipv4_version()
+
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
   if (regs->int_no == 0x33) {  // network IRQ
-    // read ISR and figure out which interrupt triggered.
+    /*
+      packet header from network card
+      ref: https://www.cs.usfca.edu/~cruse/cs326f04/RTL8139_ProgrammersGuide.pdf
 
+      Bit R/W Symbol Description
+
+      15 R MAR Multicast Address Received: Set to 1 indicates that a multicast
+      packet is received.
+
+      14 R PAM Physical Address Matched: Set to 1 indicates that the destination
+      address of this packet matches the value written in ID registers.
+
+      13 R BAR Broadcast Address Received: Set to 1 indicates that a broadcast
+      packet is received. BAR, MAR bit will not be set simultaneously. 12-6 - -
+      Reserved
+
+      5 R ISE Invalid Symbol Error: (100BASE-TX only) An invalid symbol was
+      encountered during the reception of this packet if this bit set to 1.
+
+      4 R RUNT Runt Packet Received: Set to 1 indicates that the received packet
+      length is smaller than 64 bytes ( i.e. media header + data + CRC < 64
+      bytes )
+
+      3 R LONG Long Packet: Set to 1 indicates that the size of the received
+      packet exceeds 4k bytes.
+
+      2 R CRC CRC Error: When set, indicates that a CRC error occurred on the
+      received packet.
+
+      1 R FAE Frame Alignment Error: When set, indicates that a frame alignment
+      error occurred on this received packet.
+
+      0 R ROK Receive OK: When set, indicates that a good packet is received.
+     */
+
+    /*
+      The receive path of RTL8139(A/B) is designed as a ring buffer. This ring
+      buffer is in a physical continuous memory. Data coming from line is first
+      stored in a Receive FIFO in the chip, and then move to the receive buffer
+      when the early receive threshold is met. The register CBA keeps the
+      current address of data moved to buffer. CAPR is the read pointer which
+      keeps the address of data that driver had read. The status of receiving a
+      packet is stored in front of the packet(packet header).
+      */
+
+    uint16_t isr = inw(base + 0x3e);
+    cls();
+    printf("isr: %x\n", isr);
+    // although the docs say we only need to read, we actually need to write to
+    // reset
+    // TODO: does it make sense to write 0xffff?
+    printf("resetting\n");
+    outw(base + 0x3e, isr);
+    if (isr & 0x1) {
+      printf("isr: Rx OK\n");
+    } else {
+      goto eth_return;
+    }
+
+    int i = 0;
+    while (true) {
+      uint8_t cmd = inb(base + 0x37);
+      if (cmd & 0x1) {
+	break;
+      }
+      printf("cmd: %d, %x\n", i++, cmd);
+      uint16_t capr = inw(base + 0x38);
+      printf("capr: %x\n", capr);
+
+      uint16_t cbr = inw(base + 0x3a);
+      printf("cbr: %x\n", cbr);
+
+      // RX buffer content
+      // packet header | packet length | ethernet frame
+      // 2 bytes         | 2 bytes        |
+
+      // ethernet frame
+      // MAC dest | MAC src | Tag (optional) | EtherType / length | Payload   |
+      // CRC/FCS 6 bytes   | 6 bytes | 4 bytes          | 2 bytes              |
+      // 42–1500  | 4 bytes
+
+      // ether type
+      // 0x0800	Internet Protocol version 4 (IPv4)
+      // 0x86DD	Internet Protocol Version 6 (IPv6)
+
+      // we get 0x45 = 0b0100 0101 in big endian / network byte order
+      // I assume we get protocol ipv4 so the left part is the 4 and right is 5
+      // which is the header size of a header without options.
+
+      // Note: network byte order
+
+      uint16_t* packet_status = network_rx_buffer + network_rx_buffer_index;
+
+      printf("network interrupt: num: %d, status: %x\n", num_packets++,
+	     *packet_status);
+
+      uint16_t* length = network_rx_buffer + network_rx_buffer_index +
+			 2;  // first two bytes are the rx header
+
+      uint8_t* p = network_rx_buffer + network_rx_buffer_index + 4 + 6 +
+		   6;  // Points at EtherType
+
+      printf("network: idx before: %x\n", network_rx_buffer_index);
+
+      network_rx_buffer_index +=
+	  *length + 4;  // length seems to not include the header and size which
+			// are 2 bytes each
+
+      // it seems we need to align on dword boundaries.
+      // this means the first 2 bits should be 0, because 1 2 or 3 would not be
+      // 4 which is dword. just cutting them off would mean we inside are the
+      // packet we just read. is this bad? the programming guide adds 3 to make
+      // sure we are outside.
+
+      // according to qemu code there is a 4byte checksum
+      // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1161-L1165
+
+      // ~ is the complement meaning all 1s except the first 2 bits.
+      network_rx_buffer_index = (network_rx_buffer_index + 3) & ~3;
+      // Result: network_rx_buffer_index == cbr in the first run. Later cbr
+      // grows much faster. After looping until BUFFER_EMPTY == 1, CRB always
+      // matches with network_rx_buffer_index. The - 0x10 adjustment was also
+      // necessary. Otherwise BUFFER_EMPTY never gets set.
+      // ref: https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1384
+
+      // wrap
+      if (network_rx_buffer_index > RX_BUFFER_SIZE) {
+	// network_rx_buffer_index -= RX_BUFFER_SIZE;
+
+	// because we configure the controller to write after the buffer, the
+	// next packet should start at 0
+	network_rx_buffer_index = 0;
+      }
+
+      // TODO: handle packet that exceeds the end of the ring.
+
+      printf("network length: %x, idx: %x\n", *length, network_rx_buffer_index);
+
+      uint16_t ether_type = ntohs(*(uint16_t*)p);
+
+      printf("ethertype: host byte order: %x network byte order: %x\n",
+	     ether_type, *(uint16_t*)p);
+
+      // TODO: seems to be the packet where it wraps is broken.
+      if (ether_type == 0x0800) {
+	// handle ipv4
+	p += 2;  // ipv4 header
+	printf("ipv4: version: %x ihl: %x\n", *p >> 4, *p & 0x0f);
+
+	p += 9;  // protocol field
+	printf("ipv4: protocol: %x\n", *p);
+      }
+
+      //  __asm__ volatile("hlt" : :);
+
+      // the doc says to subtract 0x10 to avoid overflow. also, given we use
+      // network_rx_buffer_index which is now bigger, won't this break us
+      // reading packets? for some reason this is added back
+      // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L2522 so if
+      // we don't subtract the numbers don't match. who knows why this is done.
+      outw(base + 0x38, network_rx_buffer_index - 0x10);
+    }
+  eth_return:
     volatile uint32_t* local_apic_eoi = 0xfee000b0;
     *local_apic_eoi = 0;
     return;
   }
+
   if (regs->int_no == 0x32) {  // mouse IRQ
     // data:
     // bit 0:
@@ -1510,26 +1719,6 @@ typedef union {
   } __attribute__((packed)) fields;
 } pci_config_register_f_t;
 
-static inline void outl(uint16_t port, uint32_t val) {
-  __asm__ volatile("outl %k0, %w1" : : "a"(val), "Nd"(port) : "memory");
-}
-
-static inline uint32_t inl(uint16_t port) {
-  uint32_t ret;
-  __asm__ volatile("inl %w1, %k0" : "=a"(ret) : "Nd"(port) : "memory");
-  return ret;
-}
-
-static inline void outw(uint16_t port, uint16_t val) {
-  __asm__ volatile("outw %w0, %w1" : : "a"(val), "Nd"(port) : "memory");
-}
-
-static inline uint16_t inw(uint16_t port) {
-  uint16_t ret;
-  __asm__ volatile("inw %w1, %w0" : "=a"(ret) : "Nd"(port) : "memory");
-  return ret;
-}
-
 #define RTL8139_MAC 0x0
 #define RTL8139_MAR 0x8
 #define RTL8139_RBSTART 0x30
@@ -1559,8 +1748,6 @@ static inline uint16_t inw(uint16_t port) {
 // - 0x0 Host Bridge
 // - 0x1 ISA Bridge
 //
-
-char network_rx_buffer[8208];
 
 void pci_enumerate() {
   pci_config_address_t a = {0};
@@ -1626,7 +1813,7 @@ void pci_enumerate() {
 	outl(PCI_CONFIG_ADDRESS, a.raw);
 	pci_config_register_4_rtl8139_t h4;
 	h4.raw = inl(PCI_CONFIG_DATA);
-	uint32_t base = h4.raw & 0xFFFFFFFC;
+	base = h4.raw & 0xFFFFFFFC;
 	//	printf("pci header: address 1: %x\n", base);
 	if (h4.io_space.is_io_space) {
 	  // printf("pci header: io space: address: %x, base: %x\n",
@@ -1664,7 +1851,7 @@ void pci_enumerate() {
 	  printf("ethernet: reset successful \n");
 
 	  // 0x30 is a 4 byte receive buffer start address register.
-	  //	  outl(base + 0x30, network_rx_buffer);
+	  outl(base + 0x30, network_rx_buffer);
 
 	  // Interrupt Mask Register
 	  // 0x3c 16 bit
