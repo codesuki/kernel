@@ -1135,12 +1135,16 @@ void ioapic_setup() {
   // command port 0x64
   // and then read from
   // data port 0x60
-  ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
-  ps2_wait_data();
-  uint8 config = inb(0x60);
-  printf("config byte 0: %x\n", config);
-  ps2_wait_ready();
+  uint8_t status = inb(0x64);
+  printf("configuring ps2: %x\n", status);
+
+  /* ps2_wait_ready(); */
+  /* outb(0x64, 0x20);  // 0x20 = read config byte */
+  /* status = inb(0x64); */
+  /* ps2_wait_data(); */
+  uint8 config;  // = inb(0x60); */
+  /* printf("config byte 0: %x\n", config); */
+  /* ps2_wait_ready(); */
 
   ps2_wait_ready();
   outb(0x64, 0xAD);  // disable first port
@@ -1198,7 +1202,7 @@ void ioapic_setup() {
   outb(0x64, 0x20);  // 0x20 = read config byte
   ps2_wait_data();
   config = inb(0x60);
-  printf("config byte 4: %x\n", config);
+  //  printf("config byte 4: %x\n", config);
 
   ps2_wait_ready();
   outb(0x64, 0xA8);  // enable second port
@@ -1207,7 +1211,7 @@ void ioapic_setup() {
   outb(0x64, 0x20);  // 0x20 = read config byte
   ps2_wait_data();
   config = inb(0x60);
-  printf("config byte 5: %x\n", config);
+  //  printf("config byte 5: %x\n", config);
 
   ps2_wait_ready();
   outb(0x60, 0xFF);  // reset device 1
@@ -1248,7 +1252,7 @@ void ioapic_setup() {
   outb(0x60, config | 0x3);  // enable interrupts. bits 1,2
   ps2_wait_ready();
   outb(0x64, 0x20);  // 0x20 = read config byte
-  ps2_wait_data();
+		     // ps2_wait_data();   // this hangs with qemu
   config = inb(0x60);
   printf("config byte 6: %x", config);
 
