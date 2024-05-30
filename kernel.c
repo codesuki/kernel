@@ -96,9 +96,9 @@ void display() {
       // contract: at minimum we want to start at terminal_buffer_start default
       // is cursor locked at last line so we want to subtract 25 lines, but only
       // if we are over 25.
-      bool is_after_first_page = terminal_cursor_index > 25;
+      bool is_after_first_page = terminal_cursor_index > 24;
       int adjusted_cursor_index =
-	  (terminal_cursor_index - is_after_first_page * 25);
+	  (terminal_cursor_index - is_after_first_page * 24);
       int terminal_buffer_offset =
 	  terminal_buffer_start + adjusted_cursor_index * 80 * 2;
       int idx = y * 80 * 2 + x * 2;
