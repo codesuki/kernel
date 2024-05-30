@@ -54,19 +54,73 @@ char* itoa(int value, char* buffer, unsigned int base) {
   return buffer;
 }
 
+// Do we have a memory problem?
+
+/*
+  without terminal buffer
+  000000000010d0e0 g     O .bss   0000000000002010 network_rx_buffer
+
+  with terminal buffer
+  000000000041a500 g     O .bss   0000000000002010 network_rx_buffer
+  000000000010c020 g     O .bss   000000000030d400 terminal_buffer
+ */
+
 // ref: https://en.wikipedia.org/wiki/VGA_text_mode#Access_methods
 unsigned char* videoram = (unsigned char*)0xb8000;
 
 int xpos = 0;
 int ypos = 0;
 
-void new_line() {
-  xpos = 0;
-  ++ypos;
-  if (ypos > 25) {
-    // cls();
-    ypos = 0;
+// How can we improve this?
+// Have a ring buffer that holds N pages 25*80
+// How do we write to it? Printf should do what?
+// Just write to that buffer instead of the video ram.
+// Write that buffer to video ram, could be optimized, but not needed, yet.
+// Have a pointer/"cursor" that says which line is the top/bottom line on the
+// screen. Can control the pointer with arrow keys to scroll up and down.
+
+uint8_t* terminal_buffer[80 * 25 * 2 * 100] = {0};  // 100 pages
+
+// ring buffer start. once we are at the end it needs to wrap. should be aligned
+// to start of line I guess.
+uint16_t terminal_buffer_start = 0;
+uint16_t terminal_buffer_row_index = 0;
+uint16_t terminal_buffer_column_index = 0;
+uint16_t terminal_cursor_index = 0;
+
+// TODO: once we wrap there will be old data in the buffer. we need to clear it.
+// E.g. at the end of the line there is noise.
+void display() {
+  for (int y = 0; y < 25; y++) {
+    for (int x = 0; x < 80; x++) {
+      // contract: at minimum we want to start at terminal_buffer_start default
+      // is cursor locked at last line so we want to subtract 25 lines, but only
+      // if we are over 25.
+      bool is_after_first_page = terminal_cursor_index > 25;
+      int adjusted_cursor_index =
+	  (terminal_cursor_index - is_after_first_page * 25);
+      int terminal_buffer_offset =
+	  terminal_buffer_start + adjusted_cursor_index * 80 * 2;
+      int idx = y * 80 * 2 + x * 2;
+      videoram[idx] = terminal_buffer[terminal_buffer_offset + idx];
+      videoram[idx + 1] = terminal_buffer[terminal_buffer_offset + idx + 1];
+    }
   }
+}
+
+void new_line() {
+  // reset to first column
+  terminal_buffer_column_index = 0;
+  // one line down
+  ++terminal_buffer_row_index;
+  // lock cursor at last line
+  terminal_cursor_index = terminal_buffer_row_index;
+  /* // super hacky */
+  /* if (terminal_buffer_row_index % 25 == 0) { */
+  /*   // cls(); */
+  /*   // automatically move cursor */
+  /*   terminal_buffer_row_index++; */
+  /* } */
 }
 
 void print_character_color(char c, char color) {
@@ -75,28 +129,41 @@ void print_character_color(char c, char color) {
       new_line();
       break;
     default:
-      if (xpos > 80 * 2) {
-	new_line();
-      }
-      videoram[ypos * 80 * 2 + xpos * 2] = (int)c;
-      videoram[ypos * 80 * 2 + xpos * 2 + 1] = color;
-      xpos++;
+      /* if (xpos > 80 * 2) { */
+      /*	new_line(); */
+      /* } */
+      int idx =
+	  terminal_buffer_row_index * 80 * 2 + terminal_buffer_column_index * 2;
+      terminal_buffer[idx] = (int)c;
+      terminal_buffer[idx + 1] = color;
+      terminal_buffer_column_index++;
   }
 }
 
+/* void new_line() { */
+/*   xpos = 0; */
+/*   ++ypos; */
+/*   if (ypos > 25) { */
+/*     ypos = 0; */
+/*   } */
+/* } */
+
+/* void print_character_color(char c, char color) { */
+/*   switch (c) { */
+/*     case '\n': */
+/*       new_line(); */
+/*       break; */
+/*     default: */
+/*       if (xpos > 80 * 2) { */
+/*	new_line(); */
+/*       } */
+/*       videoram[ypos * 80 * 2 + xpos * 2] = (int)c; */
+/*       videoram[ypos * 80 * 2 + xpos * 2 + 1] = color; */
+/*       xpos++; */
+/*   } */
+/* } */
+
 void print_character(char c) {
-  /* switch (c) { */
-  /*   case '\n': */
-  /*     new_line(); */
-  /*     break; */
-  /*   default: */
-  /*     if (xpos > 80 * 2) { */
-  /*	new_line(); */
-  /*     } */
-  /*     videoram[ypos * 80 * 2 + xpos] = (int)c; */
-  /*     videoram[ypos * 80 * 2 + xpos + 1] = 0x07; */
-  /*     xpos += 2; */
-  /* } */
   print_character_color(c, 0x07);
 }
 
@@ -128,11 +195,14 @@ void print_hex(int d) {
   print_string(number_buffer);
 }
 
+// memset with vectorized implementation can be faster
 void cls() {
   int i = 0;
   for (i = 0; i < 80 * 25 * 2; ++i) {
     videoram[i] = 0;
   }
+  xpos = 0;
+  ypos = 0;
 }
 
 void cll(int line) {
@@ -201,6 +271,7 @@ int printf(const char* format, ...) {
     ++format;
   }
   va_end(args);
+  display();
 }
 
 /* available colors
@@ -1769,23 +1840,23 @@ void kmain(void* mbd, unsigned int magic) {
 
   cls();
 
-  /* char test[10]; */
-  /* itoa(123, test, 10); */
-  /* print_string(test); */
+  char test[10];
+  itoa(123, test, 10);
+  print_string(test);
 
-  /* itoa(-123, test, 10); */
-  /* print_string(test); */
+  itoa(-123, test, 10);
+  print_string(test);
 
-  // printf("\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer:
-  // %d\n",
-  //       "test", 'c', 123, -123);
+  printf(
+      "\nstring: %s\nchar: %c\npositive integer: %d\nnegative integer: % d\n",
+      "test", 'c', 123, -123);
 
-  /* print_string("hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu "
-   */
-  /*              "gehen\n\n\n\n4 neue zeilen"); */
+  print_string(
+      "hello world\nneue Zeile\nnoch eine neue Zeile\nscheint zu "
+      "gehen\n\n\n\n4 neue zeilen");
 
-  // printf("some hex: 3=%x 15=%x 16=%x 27=%x 26=%x 32=%x\n", 3, 15, 16, 17,
-  // 26, 32);
+  printf("some hex: 3=%x 15=%x 16=%x 27=%x 26=%x 32=%x\n", 3, 15, 16, 17, 26,
+	 32);
 
   // I validated that this prints IP at nop after int3
   __asm__ volatile("int $0x3");
