@@ -629,15 +629,17 @@ void interrupt_handler(struct interrupt_registers* regs) {
       */
 
     uint16_t isr = inw(base + 0x3e);
-    cls();
+
     printf("isr: %x\n", isr);
     // although the docs say we only need to read, we actually need to write to
     // reset
-    // TODO: does it make sense to write 0xffff?
     printf("resetting\n");
     outw(base + 0x3e, isr);
     if (isr & 0x1) {
       printf("isr: Rx OK\n");
+    } else if (isr & 0x2) {
+      printf("isr: Tx OK");
+      goto eth_return;
     } else {
       goto eth_return;
     }
@@ -1872,8 +1874,9 @@ void pci_enumerate() {
 	  // 10 = 32K + 16 byte
 	  // 11 = 64K + 16 byte
 
+	  // 0xf is promiscuous mode, 0xe is normal.
 	  outl(base + 0x44,
-	       0xf | (1 << 7));  // wrap bit and rx flags
+	       0xe | (1 << 7));  // wrap bit and rx flags
 
 	  outb(base + 0x37, 0x0C);  // Enable RX and TX in command register
 
@@ -2006,6 +2009,92 @@ void locate_pcmp() {
   return;
 }
 
+struct ethernet_frame {
+  uint8_t source_mac[6];
+  uint8_t destination_mac[6];
+  uint16_t ethertype;  // network byte order
+  // payload
+  // crc?
+} __attribute__((packed));
+typedef struct ethernet_frame ethernet_frame_t;
+
+struct ipv4_header {
+  uint8_t version : 4;
+  uint8_t ihl : 4;
+  uint8_t dscp : 6;  // type of service. so routers can see what to prioritize
+  uint8_t ecn : 2;   // congestion notification
+  // minimum is 20 with is just the ipv4 header.
+  uint16_t length;                // network byte order
+  uint16_t identification;        // network byte order
+  uint16_t flags : 3;             // network byte order
+  uint16_t fragment_offset : 13;  // network byte order
+  uint8_t ttl;
+  uint8_t
+      protocol;  // ref:
+		 // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
+  uint16_t checksum;
+  uint32_t source_address;       // network byte order
+  uint32_t destination_address;  // network byte order
+} __attribute__((packed));
+typedef struct ipv4_header ipv4_header_t;
+
+struct udp_header {
+  uint16_t source_port;       // network byte order
+  uint16_t destination_port;  // network byte order
+  uint16_t length;            // network byte order
+  uint16_t checksum;          // network byte order
+} __attribute__((packed));
+typedef struct udp_header udp_header_t;
+
+struct dhcp_message {
+  uint8_t op;
+  uint8_t htype;
+  uint8_t hlen;
+  uint8_t hops;
+  uint32_t xid;        // network byte order
+  uint16_t secs;       // network byte order
+  uint16_t flags;      // network byte order
+  uint32_t ciaddr;     // network byte order
+  uint32_t yiaddr;     // network byte order
+  uint32_t siaddr;     // network byte order
+  uint32_t giaddr;     // network byte order
+  uint32_t chaddr[4];  // network byte order
+  uint8_t reserved[192];
+} __attribute__((packed));
+typedef struct dhcp_message dhcp_message_t;
+
+uint16_t htons(uint16_t hostshort) {
+  return (hostshort >> 8) | (hostshort << 8);
+}
+
+// source: https://datatracker.ietf.org/doc/html/rfc1071#section-4.1
+uint16_t ipv4_checksum(void* addr, uint8_t count) {
+  /* Compute Internet Checksum for "count" bytes
+   *         beginning at location "addr".
+   */
+  uint32_t sum = 0;
+
+  while (count > 1) {
+    /*  This is the inner loop */
+    sum += *(uint16_t*)addr++;
+    count -= 2;
+  }
+
+  /*  Add left-over byte, if any */
+  if (count > 0) {
+    sum += *(uint8_t*)addr;
+  }
+
+  /*  Fold 32-bit sum to 16 bits */
+  while (sum >> 16) {
+    sum = (sum & 0xffff) + (sum >> 16);
+  }
+
+  return ~sum;
+}
+
+uint8_t packet[1024] = {0};
+
 void kmain(void* mbd, unsigned int magic) {
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
@@ -2064,9 +2153,61 @@ void kmain(void* mbd, unsigned int magic) {
   //  printf("rsdt: %.*s", 4, rsdt->signature);
   //  list_tables(rsdt);
   pci_enumerate();
+
   // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
   // to.
   //  TODO: check delivery mode. IRQ 11 (0xB).
+
+  // build a DHCP packet and send it.
+
+  ethernet_frame_t* ef = packet;
+  ef->source_mac[0] = 1;
+  ef->source_mac[1] = 1;
+  ef->source_mac[2] = 1;
+  ef->source_mac[3] = 1;
+  ef->source_mac[4] = 1;
+  ef->source_mac[5] = 1;
+
+  ef->destination_mac[0] = 0xff;
+  ef->destination_mac[1] = 0xff;
+  ef->destination_mac[2] = 0xff;
+  ef->destination_mac[3] = 0xff;
+  ef->destination_mac[4] = 0xff;
+  ef->destination_mac[5] = 0xff;
+
+  ef->ethertype = htons(0x0800);
+
+  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  iph->version = 4;
+  iph->ihl = 5;  // no options
+  iph->length = 20;
+  iph->ttl = 100;
+  iph->protocol = 0x11;  // UDP
+  iph->source_address = 0;
+  iph->destination_address = 0xffffffff;
+  iph->checksum = ipv4_checksum(iph, iph->length);
+
+  // try to send the above first.
+  // set address to descriptor
+  // set size
+  // set 0 to own
+  int i = 0;
+
+  while (true) {
+    outl(base + 0x20 + i * 4, packet);
+    //  uint32_t a = inl(base + 0x20);
+    // printf("TX addr: %x\n", a);
+    // bit 0-12 = size, bit 13 = own
+    outl(base + 0x10 + i * 4, sizeof(ethernet_frame_t) + iph->length);
+    // wait for TOK
+    while (inl(base + 0x10 + i * 4) & (1 << 15) == 0) {
+    }
+    // printf("SENT!\n");
+    i = (i + 1) % 4;
+  }
+  // printf("TX bits: %x\n", a);
+  //  udp
+  //  dhcp
   return 0xDEADBABA;
 }
 
