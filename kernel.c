@@ -437,6 +437,7 @@ extern void isr32(void);
 extern void isr0x31(void);
 extern void isr0x32(void);
 extern void isr0x33(void);
+extern void isr0x34(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
@@ -574,6 +575,8 @@ uint16_t num_packets = 0;
 // Now it's starting to get super dirty.
 uint32_t base = 0;
 
+uint8_t mac[6] = {0};
+
 uint16_t ntohs(uint16_t netshort) {
   return (netshort >> 8) | (netshort << 8);
 }
@@ -582,6 +585,12 @@ uint16_t ntohs(uint16_t netshort) {
 
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
+  if (regs->int_no == 0x34) {  // timer IRQ
+    printf("timer\n");
+    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    *local_apic_eoi = 0;
+    return;
+  }
   if (regs->int_no == 0x33) {  // network IRQ
     /*
       packet header from network card
@@ -630,19 +639,20 @@ void interrupt_handler(struct interrupt_registers* regs) {
 
     uint16_t isr = inw(base + 0x3e);
 
+    if (isr & 0x1) {
+      printf("isr: Rx OK\n");
+    } else if (isr & 0x4) {
+      //      printf("isr: Tx OK");
+      goto eth_return;
+    } else {
+      goto eth_return;
+    }
+
     printf("isr: %x\n", isr);
     // although the docs say we only need to read, we actually need to write to
     // reset
     printf("resetting\n");
     outw(base + 0x3e, isr);
-    if (isr & 0x1) {
-      printf("isr: Rx OK\n");
-    } else if (isr & 0x2) {
-      printf("isr: Tx OK");
-      goto eth_return;
-    } else {
-      goto eth_return;
-    }
 
     int i = 0;
     while (true) {
@@ -991,6 +1001,7 @@ void idt_setup() {
   idt_set_gate(0x31, isr0x31, 0x08, 0x8E);  // keyboard
   idt_set_gate(0x32, isr0x32, 0x08, 0x8E);  // mouse
   idt_set_gate(0x33, isr0x33, 0x08, 0x8e);  // ethernet
+  idt_set_gate(0x34, isr0x34, 0x08, 0x8e);  // timer
 
   idt_update(&idt);
 }
@@ -1290,6 +1301,8 @@ void ioapic_write_register(uint32_t reg, ioapic_redirection_register_t* r) {
 
 // keyboard
 #define IOAPIC_IRQ1 0x12
+// timer
+#define IOAPIC_IRQ4 0x18
 // ethernet
 #define IOAPIC_IRQ11 0x26
 // mouse
@@ -1322,6 +1335,7 @@ void ioapic_setup() {
   r.lower_bits.interrupt_vector = 0x31;
   ioapic_write_register(0x12, &r);
   printf("ioapic irq 1 vector: %d\n", ioapic_read_register(0x12) & 0x000000FF);
+
   // map irq to user defined interrupt vector
   ioapic_redirection_register_t r2 = {0};
   r2.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
@@ -1336,6 +1350,12 @@ void ioapic_setup() {
   // r3.lower_bits.trigger_mode = 1;
   ioapic_write_register(IOAPIC_IRQ11, &r3);
   printf("ioapic irq 11: %x\n", ioapic_read_register(IOAPIC_IRQ11));
+
+  ioapic_redirection_register_t r4 = {0};
+  r4.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
+  r4.lower_bits.interrupt_vector = 0x34;
+  ioapic_write_register(IOAPIC_IRQ4, &r4);
+  printf("ioapic irq 4: %x\n", ioapic_read_register(IOAPIC_IRQ4));
 
   // Setup ps2 controller, mouse and keyboard.
   // Sometimes ps2_wait_data can hang until a key is pressed. Not sure why.
@@ -1570,6 +1590,24 @@ struct acpi_ics_input_source_override {
 } __attribute__((packed));
 typedef struct acpi_ics_input_source_override acpi_ics_input_source_override_t;
 
+struct acpi_generic_address_structure {
+  uint8_t address_space_id;
+  uint8_t register_bit_width;
+  uint8_t register_bit_offset;
+  uint8_t reserved;
+  uint64_t address;
+} __attribute__((packed));
+typedef struct acpi_generic_address_structure acpi_generic_address_structure_t;
+
+struct acpi_hpet_header {
+  uint32_t event_timer_block_id;
+  acpi_generic_address_structure_t base_address;
+  uint8_t hpet_number;
+  uint16_t main_counter_minimum_clock_tick;
+  uint8_t page_attribution;
+} __attribute__((packed));
+typedef struct acpi_hpet_header acpi_hpet_header_t;
+
 // note: take care when taking references of a pointer.
 void list_tables(acpi_sdt_header_t* rsdt) {
   int count = (rsdt->length - sizeof(acpi_sdt_header_t) + sizeof(uint32_t)) /
@@ -1609,9 +1647,15 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	}
 	j++;
 	if (j == 10) {
-	  return;
+	  break;
 	}
       }
+    } else if (strncmp(h->signature, "HPET", 4)) {
+      // note: without uint8_t case here we go too far.
+      acpi_hpet_header_t* hpet = (uint8_t*)h + sizeof(acpi_sdt_header2_t);
+      printf("HPET: hpet number: %d\n", hpet->hpet_number);
+      printf("HPET: address space: %d base: %x\n",
+	     hpet->base_address.address_space_id, hpet->base_address.address);
     }
   }
 }
@@ -1822,7 +1866,6 @@ void pci_enumerate() {
 	  //	 h4.io_space.address, base);
 	  //	  outb(base + 0x52, 0x0);  // start?
 
-	  uint8_t mac[6] = {0};
 	  mac[0] = inb(base + 0x00);
 	  mac[1] = inb(base + 0x01);
 	  mac[2] = inb(base + 0x02);
@@ -1858,9 +1901,10 @@ void pci_enumerate() {
 	  // Interrupt Mask Register
 	  // 0x3c 16 bit
 	  // bit 0: rx OK
+	  // bit 2: tx OK
 	  // note: it is important to read / write the right size, i.e.
 	  // outb/outw/outl. using the wrong one results in no action.
-	  outw(base + 0x3c, 0x1);
+	  outw(base + 0x3c, 0x5);
 
 	  // Receive Configuration Register
 	  // 0x44
@@ -2010,8 +2054,8 @@ void locate_pcmp() {
 }
 
 struct ethernet_frame {
-  uint8_t source_mac[6];
   uint8_t destination_mac[6];
+  uint8_t source_mac[6];
   uint16_t ethertype;  // network byte order
   // payload
   // crc?
@@ -2019,20 +2063,20 @@ struct ethernet_frame {
 typedef struct ethernet_frame ethernet_frame_t;
 
 struct ipv4_header {
-  uint8_t version : 4;
   uint8_t ihl : 4;
-  uint8_t dscp : 6;  // type of service. so routers can see what to prioritize
+  uint8_t version : 4;
   uint8_t ecn : 2;   // congestion notification
+  uint8_t dscp : 6;  // type of service. so routers can see what to prioritize
   // minimum is 20 with is just the ipv4 header.
   uint16_t length;                // network byte order
   uint16_t identification;        // network byte order
-  uint16_t flags : 3;             // network byte order
   uint16_t fragment_offset : 13;  // network byte order
+  uint16_t flags : 3;             // network byte order
   uint8_t ttl;
   uint8_t
       protocol;  // ref:
 		 // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
-  uint16_t checksum;
+  uint16_t checksum;             // network byte order?
   uint32_t source_address;       // network byte order
   uint32_t destination_address;  // network byte order
 } __attribute__((packed));
@@ -2060,6 +2104,7 @@ struct dhcp_message {
   uint32_t giaddr;     // network byte order
   uint32_t chaddr[4];  // network byte order
   uint8_t reserved[192];
+  uint8_t magic[4];
 } __attribute__((packed));
 typedef struct dhcp_message dhcp_message_t;
 
@@ -2094,6 +2139,48 @@ uint16_t ipv4_checksum(void* addr, uint8_t count) {
 }
 
 uint8_t packet[1024] = {0};
+
+#define HPET_CONFIG_REG 0x10
+#define HPET_BASE 0xfed00000
+
+void setup_hpet() {
+  // bit 0 is enable flag
+  uint32_t* c = HPET_BASE + HPET_CONFIG_REG;
+  printf("hpet: config %x\n", *c);
+
+  // Timer 0: 100h – 107h, Timer 1: 120h – 127h, Timer 2: 140h – 147h
+  uint32_t* available_interrupts = HPET_BASE + 0x104;
+  printf("hpet: interrupts timer 0: %x\n", *available_interrupts);
+
+  uint32_t* timer_0 = HPET_BASE + 0x100;  // set bit 2 and maybe 9-13
+  printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
+  *timer_0 = (*timer_0) | (1 << 2) | (4 << 9);
+  printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
+
+  uint32_t* timer_period = HPET_BASE + 0x4;
+  printf("hpet: femto: %d\n", *timer_period);
+
+  uint32_t _1ms = 100000;  // we need this many timer periods to have 1 ms
+  uint32_t _1s = _1ms * 1000;
+
+  // main counter 0xf0
+  uint64_t* counter_value = HPET_BASE + 0xf0;
+  printf("hpet: counter: %d", *counter_value);
+
+  // comparator timer 0 0x108
+  printf("hpet: setting timer to %x %d\n", _1s, _1s);
+  uint64_t* comparator_0 = HPET_BASE + 0x108;
+  *comparator_0 = _1s;
+  printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
+
+  *c = (*c) | 0x1;
+  printf("hpet: config %x\n", *c);
+  printf("hpet: counter: %d\n", *counter_value);
+
+  while (*((uint32_t*)(HPET_BASE + 0x20)) == 0) {
+  }
+  printf("hpet: interrupt came! %d\n", *((uint32_t*)(HPET_BASE + 0x20)));
+}
 
 void kmain(void* mbd, unsigned int magic) {
   if (magic != 0x36d76289) {
@@ -2154,19 +2241,33 @@ void kmain(void* mbd, unsigned int magic) {
   //  list_tables(rsdt);
   pci_enumerate();
 
+  setup_hpet();
+
   // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
   // to.
   //  TODO: check delivery mode. IRQ 11 (0xB).
 
+  // timer
+  // ref:
+  // http://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/software-developers-hpet-spec-1-0a.pdf
+  // 0xfed00000 HPET
+  // how to configure:
+  // 1. set timer type one shot / periodic
+  // 2. set interrupt enable
+  //  edge seems easier, level needs to be acknowledged like PCI.
+  // 3. set comparator match
+  // 4. set overall enable bit
+
   // build a DHCP packet and send it.
 
+  // need memcpy
   ethernet_frame_t* ef = packet;
-  ef->source_mac[0] = 1;
-  ef->source_mac[1] = 1;
-  ef->source_mac[2] = 1;
-  ef->source_mac[3] = 1;
-  ef->source_mac[4] = 1;
-  ef->source_mac[5] = 1;
+  ef->source_mac[0] = mac[0];
+  ef->source_mac[1] = mac[1];
+  ef->source_mac[2] = mac[2];
+  ef->source_mac[3] = mac[3];
+  ef->source_mac[4] = mac[4];
+  ef->source_mac[5] = mac[5];
 
   ef->destination_mac[0] = 0xff;
   ef->destination_mac[1] = 0xff;
@@ -2180,34 +2281,74 @@ void kmain(void* mbd, unsigned int magic) {
   ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
   iph->version = 4;
   iph->ihl = 5;  // no options
-  iph->length = 20;
   iph->ttl = 100;
   iph->protocol = 0x11;  // UDP
   iph->source_address = 0;
   iph->destination_address = 0xffffffff;
-  iph->checksum = ipv4_checksum(iph, iph->length);
 
+  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  udph->source_port = htons(68);
+  udph->destination_port = htons(67);
+
+  dhcp_message_t* dhcpm =
+      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
+
+  // DHCPDISCOVER
+  dhcpm->op = 0x01;
+  dhcpm->htype = 0x01;
+  dhcpm->hlen = 0x06;
+  dhcpm->hops = 0x00;
+  dhcpm->xid = 123;
+  dhcpm->secs = 0;
+  dhcpm->flags = 0;
+  // MAC
+  dhcpm->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  dhcpm->chaddr[1] = (mac[5] << 8) | mac[4];
+  dhcpm->magic[0] = 0x63;
+  dhcpm->magic[1] = 0x82;
+  dhcpm->magic[2] = 0x53;
+  dhcpm->magic[3] = 0x63;
+
+  uint8_t* options = packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
+		     sizeof(udp_header_t) + sizeof(dhcp_message_t);
+
+  options[0] = 53;
+  options[1] = 1;
+  options[2] = 1;
+  options[3] = 0xff;
+
+  udph->length =
+      htons(8 + sizeof(dhcp_message_t) + 4);  // minimum, only header.
+  // TODO: this is not correct
+  // Checksum is the 16-bit one's complement of the one's complement sum of a
+  // pseudo header of information from the IP header, the UDP header, and the
+  // data, padded with zero octets at the end (if necessary) to make a multiple
+  // of two octets.
+  // ref: https://datatracker.ietf.org/doc/html/rfc768
+  udph->checksum = ipv4_checksum(udph, sizeof(udp_header_t));
+
+  iph->length = htons(20 + ntohs(udph->length));
+  printf("using length: %d", ntohs(iph->length));
+  iph->checksum = ipv4_checksum(iph, ntohs(iph->length));
   // try to send the above first.
   // set address to descriptor
   // set size
   // set 0 to own
   int i = 0;
 
-  while (true) {
-    outl(base + 0x20 + i * 4, packet);
-    //  uint32_t a = inl(base + 0x20);
-    // printf("TX addr: %x\n", a);
-    // bit 0-12 = size, bit 13 = own
-    outl(base + 0x10 + i * 4, sizeof(ethernet_frame_t) + iph->length);
-    // wait for TOK
-    while (inl(base + 0x10 + i * 4) & (1 << 15) == 0) {
-    }
-    // printf("SENT!\n");
-    i = (i + 1) % 4;
+  // while (true) {
+  outl(base + 0x20 + i * 4, packet);
+  //  uint32_t a = inl(base + 0x20);
+  // printf("TX addr: %x\n", a);
+  // bit 0-12 = size, bit 13 = own
+  outl(base + 0x10 + i * 4, sizeof(ethernet_frame_t) + ntohs(iph->length));
+  // wait for TOK
+  while (inl(base + 0x10 + i * 4) & (1 << 15) == 0) {
   }
+  // printf("SENT!\n");
+  i = (i + 1) % 4;
+  //  }
   // printf("TX bits: %x\n", a);
-  //  udp
-  //  dhcp
   return 0xDEADBABA;
 }
 
