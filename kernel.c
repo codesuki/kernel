@@ -561,11 +561,18 @@ void memcpy(void* src, void* dst, size_t len) {
 }
 
 #define RX_BUFFER_SIZE 8192
-// with alignment
-// 000000000010d0cc g     O .bss   0000000000002010 network_rx_buffer
-// without alignment (also actually aligned I think)
-// 000000000010d0e0 g     O .bss   0000000000002010 network_rx_buffer
-uint8_t network_rx_buffer[8208] __attribute__((aligned(4))) = {0};
+// 00 = 8k + 16 byte
+// wrap bit = 1
+//
+// When set to 1: The RTL8139D(L) will keep moving the rest of the packet data
+// into the memory immediately after the end of the Rx buffer, if this packet
+// has not been completely moved into the Rx buffer and the transfer has arrived
+// at the end of the Rx buffer. The software driver must reserve at least 1.5K
+// bytes buffer to accept the remainder of the packet. We assume that the
+// remainder of the packet is X bytes. The next packet will be moved into the
+// memory from the X byte offset at the top of the Rx buffer.
+uint8_t network_rx_buffer[RX_BUFFER_SIZE + 16 + 1500]
+    __attribute__((aligned(4))) = {0};
 uint16_t network_rx_buffer_index = {0};
 
 uint8_t network_packet[1518] = {0};
@@ -578,6 +585,13 @@ uint16_t num_packets = 0;
 uint32_t base = 0;
 
 uint8_t mac[6] = {0};
+uint8_t ip[4] = {0};
+
+uint8_t dhcp_identifier[4];
+uint8_t dhcp_subnet_mask[4];
+uint8_t dhcp_router[4];
+uint8_t dhcp_dns[4];
+uint32_t dhcp_offer_xid;
 
 uint16_t ntohs(uint16_t netshort) {
   return (netshort >> 8) | (netshort << 8);
@@ -639,7 +653,7 @@ struct dhcp_message {
   uint16_t secs;       // network byte order
   uint16_t flags;      // network byte order
   uint32_t ciaddr;     // network byte order
-  uint32_t yiaddr;     // network byte order
+  uint8_t yiaddr[4];   // network byte order
   uint32_t siaddr;     // network byte order
   uint32_t giaddr;     // network byte order
   uint32_t chaddr[4];  // network byte order
@@ -733,7 +747,7 @@ void set_timer0() {
   // printf("hpet: counter: %d", *counter_value);
 
   // comparator timer 0 0x108
-  printf("hpet: setting timer to %x %d\n", _1s, _1s);
+  // printf("hpet: setting timer to %x %d\n", _1s, _1s);
   uint64_t* comparator_0 = HPET_BASE + 0x108;
   // TODO: how is wrapping handled? By GPE :D
   *comparator_0 = *counter_value + _1s;
@@ -781,7 +795,7 @@ void setup_hpet() {
 
 uint8_t packet[1024] = {0};
 
-void send_dhcp() {
+void send_dhcp_discover() {
   // build a DHCP packet and send it.
   for (int i = 0; i < 1024; i++) {
     packet[i] = 0;
@@ -863,7 +877,8 @@ void send_dhcp() {
   // set address to descriptor
   // set size
   // set 0 to own
-  printf("network: tx: using descriptor %d\n", network_current_tx_descriptor);
+  // printf("network: tx: using descriptor %d\n",
+  // network_current_tx_descriptor);
   outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
   // uint32_t a = inl(base + 0x20);
   // printf("TX addr: %x\n", a);
@@ -877,16 +892,129 @@ void send_dhcp() {
 
   network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
 }
-// uint8_t ipv4_version()
+
+void send_dhcp_request() {
+  // we have the DHCPOFFER reply parameters in the global variables
+
+  // TODO: now lots of duplication starts. refactor.
+  // build a DHCP packet and send it.
+  for (int i = 0; i < 1024; i++) {
+    packet[i] = 0;
+  }
+
+  // TODO: duplicated
+  ethernet_frame_t* ef = packet;
+  ef->source_mac[0] = mac[0];
+  ef->source_mac[1] = mac[1];
+  ef->source_mac[2] = mac[2];
+  ef->source_mac[3] = mac[3];
+  ef->source_mac[4] = mac[4];
+  ef->source_mac[5] = mac[5];
+
+  ef->destination_mac[0] = 0xff;
+  ef->destination_mac[1] = 0xff;
+  ef->destination_mac[2] = 0xff;
+  ef->destination_mac[3] = 0xff;
+  ef->destination_mac[4] = 0xff;
+  ef->destination_mac[5] = 0xff;
+
+  ef->ethertype = htons(0x0800);
+
+  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  iph->version = 4;
+  iph->ihl = 5;  // no options
+  iph->ttl = 100;
+  iph->protocol = 0x11;                   // UDP
+  iph->source_address = 0;                // should be network byte order
+  iph->destination_address = 0xffffffff;  // should be network byte order
+
+  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  udph->source_port = htons(68);
+  udph->destination_port = htons(67);
+
+  dhcp_message_t* dhcpm =
+      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
+
+  // DHCPDISCOVER
+  dhcpm->op = 0x03;  // DIFFERENT
+  dhcpm->htype = 0x01;
+  dhcpm->hlen = 0x06;
+  dhcpm->hops = 0x00;
+  dhcpm->xid = dhcp_offer_xid;
+  dhcpm->secs = 0;
+  dhcpm->flags = 0;
+  dhcpm->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  dhcpm->chaddr[1] = (mac[5] << 8) | mac[4];
+  dhcpm->siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
+		  (dhcp_router[1] << 8) | dhcp_router[0];
+  dhcpm->magic[0] = 0x63;
+  dhcpm->magic[1] = 0x82;
+  dhcpm->magic[2] = 0x53;
+  dhcpm->magic[3] = 0x63;
+
+  uint8_t* options = packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
+		     sizeof(udp_header_t) + sizeof(dhcp_message_t);
+
+  options[0] = 53;  // DHCPREQUEST
+  options[1] = 1;
+  options[2] = 3;
+  options[3] = 50;  // ip request
+  options[4] = 4;
+  options[5] = ip[0];
+  options[6] = ip[1];
+  options[7] = ip[2];
+  options[8] = ip[3];
+  options[9] = 54;  // dhcp server
+  options[10] = 4;
+  options[11] = dhcp_router[0];
+  options[12] = dhcp_router[1];
+  options[13] = dhcp_router[2];
+  options[14] = dhcp_router[3];
+  options[15] = 0xff;
+
+  udph->length = htons(sizeof(udp_header_t) + sizeof(dhcp_message_t) +
+		       16 /* options */);  // minimum, only header.
+
+  // TODO: this is not correct
+  // Checksum is the 16-bit one's complement of the one's complement sum of a
+  // pseudo header of information from the IP header, the UDP header, and the
+  // data, padded with zero octets at the end (if necessary) to make a multiple
+  // of two octets.
+  // ref: https://datatracker.ietf.org/doc/html/rfc768
+  udph->checksum = udp_checksum(iph, udph);
+
+  iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
+
+  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+
+  // try to send the above first.
+  // set address to descriptor
+  // set size
+  // set 0 to own
+  // printf("network: tx: using descriptor %d\n",
+  // network_current_tx_descriptor);
+  outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
+  // uint32_t a = inl(base + 0x20);
+  // printf("TX addr: %x\n", a);
+  // bit 0-12 = size, bit 13 = own
+  outl(base + 0x10 + network_current_tx_descriptor * 4,
+       sizeof(ethernet_frame_t) + ntohs(iph->length));
+  // wait for TOK
+  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
+	 (1 << 15) == 0) {
+  }
+
+  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+}
 
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
   if (regs->int_no == 0x34) {  // timer IRQ
-    printf("timer\n");
+			       //  printf("timer\n");
     // todo:
     // send packet
     // set timer
-    send_dhcp();
+    //  send_dhcp_discover();
     set_timer0();
 
     //    __asm__ volatile("hlt" : :);
@@ -942,9 +1070,14 @@ void interrupt_handler(struct interrupt_registers* regs) {
       */
 
     uint16_t isr = inw(base + 0x3e);
+    printf("isr: %x\n", isr);
+    // although the docs say we only need to read, we actually need to write to
+    // reset
+    //   printf("resetting\n");
+    outw(base + 0x3e, isr);
 
     if (isr & 0x1) {
-      printf("isr: Rx OK\n");
+      // printf("isr: Rx OK\n");
     } else if (isr & 0x4) {
       //      printf("isr: Tx OK");
       goto eth_return;
@@ -952,21 +1085,19 @@ void interrupt_handler(struct interrupt_registers* regs) {
       goto eth_return;
     }
 
-    printf("isr: %x\n", isr);
-    // although the docs say we only need to read, we actually need to write to
-    // reset
-    printf("resetting\n");
-    outw(base + 0x3e, isr);
-
     int i = 0;
     while (true) {
       uint8_t cmd = inb(base + 0x37);
-      if (cmd & 0x1) {
+      if (cmd & 0x1) {  // Buffer Empty = 1
 	break;
       }
       printf("cmd: %d, %x\n", i++, cmd);
+      if (cmd != 0xC) {
+	__asm__ volatile("hlt" : :);
+      }
+
       uint16_t capr = inw(base + 0x38);
-      printf("capr: %x\n", capr);
+      // printf("capr: %x\n", capr);
 
       uint16_t cbr = inw(base + 0x3a);
       printf("cbr: %x\n", cbr);
@@ -992,20 +1123,43 @@ void interrupt_handler(struct interrupt_registers* regs) {
 
       uint16_t* packet_status = network_rx_buffer + network_rx_buffer_index;
 
-      printf("network interrupt: num: %d, status: %x\n", num_packets++,
-	     *packet_status);
+      printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
+	     num_packets++, *packet_status, network_rx_buffer_index);
+
+      if (i > 2) {
+	__asm__ volatile("hlt" : :);
+      }
+
+      // CRC, RUNT, LONG, FAE, BAD SYMBOL errors
+      if (*packet_status & (1 << 1) || *packet_status & (1 << 2) ||
+	  *packet_status & (1 << 3) || *packet_status & (1 << 4) ||
+	  *packet_status & (1 << 5)) {
+	break;
+      }
+
+      if (*packet_status & 1 == 0) {
+	__asm__ volatile("hlt" : :);
+      }
 
       uint16_t* length = network_rx_buffer + network_rx_buffer_index +
 			 2;  // first two bytes are the rx header
 
+      printf("length: %d\n", *length);
+
       uint8_t* p = network_rx_buffer + network_rx_buffer_index + 4 + 6 +
 		   6;  // Points at EtherType
 
-      printf("network: idx before: %x\n", network_rx_buffer_index);
+      //     printf("network: idx before: %x\n", network_rx_buffer_index);
 
       network_rx_buffer_index +=
 	  *length + 4;  // length seems to not include the header and size which
 			// are 2 bytes each
+
+      // wrap
+      if (network_rx_buffer_index > RX_BUFFER_SIZE) {
+	// the controller expects us to not reset it to 0 for some reason.
+	network_rx_buffer_index -= RX_BUFFER_SIZE;
+      }
 
       // it seems we need to align on dword boundaries.
       // this means the first 2 bits should be 0, because 1 2 or 3 would not be
@@ -1024,36 +1178,120 @@ void interrupt_handler(struct interrupt_registers* regs) {
       // necessary. Otherwise BUFFER_EMPTY never gets set.
       // ref: https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1384
 
-      // wrap
-      if (network_rx_buffer_index > RX_BUFFER_SIZE) {
-	// network_rx_buffer_index -= RX_BUFFER_SIZE;
-
-	// because we configure the controller to write after the buffer, the
-	// next packet should start at 0
-	network_rx_buffer_index = 0;
-      }
-
-      // TODO: handle packet that exceeds the end of the ring.
-
-      printf("network length: %x, idx: %x\n", *length, network_rx_buffer_index);
+      printf("new buffer index: %x %d\n", network_rx_buffer_index,
+	     network_rx_buffer_index);
 
       uint16_t ether_type = ntohs(*(uint16_t*)p);
 
       printf("ethertype: host byte order: %x network byte order: %x\n",
 	     ether_type, *(uint16_t*)p);
 
-      // TODO: seems to be the packet where it wraps is broken.
       if (ether_type == 0x0800) {
 	// handle ipv4
 	p += 2;  // ipv4 header
-	printf("ipv4: version: %x ihl: %x\n", *p >> 4, *p & 0x0f);
 
-	p += 9;  // protocol field
-	printf("ipv4: protocol: %x\n", *p);
+	ipv4_header_t* iph = p;
+	printf("ipv4: version: %x ihl: %x\n", iph->version, iph->ihl);
+
+	// 0x11 UDP
+	//	printf("ipv4: protocol: %x\n", iph->protocol);
+
+	if (iph->protocol == 0x11) {
+	  udp_header_t* udph = iph + 1;
+	  printf("udp: src port: %d dst port: %d\n", ntohs(udph->source_port),
+		 ntohs(udph->destination_port));
+
+	  if (ntohs(udph->source_port) == 67 &&
+	      ntohs(udph->destination_port) == 68) {
+	    // dhcp
+	    dhcp_message_t* m = udph + 1;
+	    printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op,
+		   m->htype, m->hlen, m->hops, m->xid);
+
+	    if (m->op != 2) {  // reply
+	      goto next;
+	    }
+
+	    uint8_t* o = m + 1;  // end of dhcp message for options
+
+	    // TODO: double check that we don't go over length of message.
+
+	    uint8 dhcp_type = 0;
+
+	    bool done = false;
+	    while (!done) {
+	      switch (*o++) {
+		case 1:  // subnet mask
+		  if (*o++ != 4) {
+		    // panic
+		  }
+		  memcpy(o, dhcp_subnet_mask, 4);
+		  o += 4;
+		  break;
+		case 3:  // router
+		  if (*o++ != 4) {
+		    // panic
+		  }
+		  memcpy(o, dhcp_router, 4);
+		  o += 4;
+		  break;
+		case 6:  // dns
+		  if (*o++ != 4) {
+		    // panic
+		  }
+		  memcpy(o, dhcp_dns, 4);
+		  o += 4;
+		  break;
+		case 53:  // type
+		  if (*o++ != 1) {
+		    // panic
+		  }
+		  dhcp_type = *o++;
+		  break;
+		case 54:            // server identifier (dhcp server ip)
+		  if (*o++ != 4) {  // what about ipv6?
+		    // panic
+		  }
+		  memcpy(o, dhcp_identifier, 4);
+		  o += 4;
+		  break;
+		case 51:  // lease time (2 days, so low priority to implement)
+		  break;
+		case 0xff:
+		  done = true;
+		  break;
+	      }
+	    }
+
+#define DHCP_OFFER 2
+#define DHCP_ACK 5
+	    if (dhcp_type == DHCP_OFFER) {
+	      for (int i = 0; i < 4; i++) {
+		ip[i] = m->yiaddr[i];
+	      }
+	      printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2],
+		     ip[3], ip[4]);
+	      printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0],
+		     dhcp_router[1], dhcp_router[2], dhcp_router[3],
+		     dhcp_router[4]);
+	      printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1],
+		     dhcp_dns[2], dhcp_dns[3], dhcp_dns[4]);
+	      printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
+		     dhcp_subnet_mask[1], dhcp_subnet_mask[2],
+		     dhcp_subnet_mask[3], dhcp_subnet_mask[4]);
+
+	      printf("dhcp: sending DHCPREQUEST\n");
+	      dhcp_offer_xid = m->xid;
+	      send_dhcp_request();
+	    } else if (dhcp_type == DHCP_ACK) {
+	      printf("dhcp: received DHCPACK\n");
+	      // send arp?
+	    }
+	  }
+	}
       }
 
-      //  __asm__ volatile("hlt" : :);
-
+    next:
       // the doc says to subtract 0x10 to avoid overflow. also, given we use
       // network_rx_buffer_index which is now bigger, won't this break us
       // reading packets? for some reason this is added back
@@ -2433,7 +2671,7 @@ void kmain(void* mbd, unsigned int magic) {
   // 3. set comparator match
   // 4. set overall enable bit
 
-  send_dhcp();
+  send_dhcp_discover();
   return 0xDEADBABA;
 }
 
