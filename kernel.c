@@ -570,6 +570,8 @@ uint16_t network_rx_buffer_index = {0};
 
 uint8_t network_packet[1518] = {0};
 
+uint8_t network_current_tx_descriptor = 0;
+
 uint16_t num_packets = 0;
 
 // Now it's starting to get super dirty.
@@ -581,12 +583,273 @@ uint16_t ntohs(uint16_t netshort) {
   return (netshort >> 8) | (netshort << 8);
 }
 
+struct ethernet_frame {
+  uint8_t destination_mac[6];
+  uint8_t source_mac[6];
+  uint16_t ethertype;  // network byte order
+  // payload
+  // crc?
+} __attribute__((packed));
+typedef struct ethernet_frame ethernet_frame_t;
+
+struct ipv4_header {
+  uint8_t ihl : 4;
+  uint8_t version : 4;
+  uint8_t ecn : 2;   // congestion notification
+  uint8_t dscp : 6;  // type of service. so routers can see what to prioritize
+  // minimum is 20 with is just the ipv4 header.
+  uint16_t length;                // network byte order
+  uint16_t identification;        // network byte order
+  uint16_t fragment_offset : 13;  // network byte order
+  uint16_t flags : 3;             // network byte order
+  uint8_t ttl;
+  uint8_t
+      protocol;  // ref:
+		 // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
+  uint16_t checksum;             // network byte order?
+  uint32_t source_address;       // network byte order
+  uint32_t destination_address;  // network byte order
+} __attribute__((packed));
+typedef struct ipv4_header ipv4_header_t;
+
+struct udp_header {
+  uint16_t source_port;       // network byte order
+  uint16_t destination_port;  // network byte order
+  uint16_t length;            // network byte order
+  uint16_t checksum;          // network byte order
+} __attribute__((packed));
+typedef struct udp_header udp_header_t;
+
+// ref: http://www.faqs.org/rfcs/rfc768.html
+struct udp_pseudo_ip_header {
+  uint16_t source_address;       // network byte order
+  uint16_t destination_address;  // network byte order
+  uint8_t zero;
+  uint8_t protocol;
+  uint16_t udp_length;  // network byte order
+} __attribute__((packed));
+typedef struct udp_pseudo_ip_header udp_pseudo_ip_header_t;
+
+struct dhcp_message {
+  uint8_t op;
+  uint8_t htype;
+  uint8_t hlen;
+  uint8_t hops;
+  uint32_t xid;        // network byte order
+  uint16_t secs;       // network byte order
+  uint16_t flags;      // network byte order
+  uint32_t ciaddr;     // network byte order
+  uint32_t yiaddr;     // network byte order
+  uint32_t siaddr;     // network byte order
+  uint32_t giaddr;     // network byte order
+  uint32_t chaddr[4];  // network byte order
+  uint8_t reserved[192];
+  uint8_t magic[4];
+} __attribute__((packed));
+typedef struct dhcp_message dhcp_message_t;
+
+uint16_t htons(uint16_t hostshort) {
+  return (hostshort >> 8) | (hostshort << 8);
+}
+
+// source: https://datatracker.ietf.org/doc/html/rfc1071#section-4.1
+uint16_t ipv4_checksum(uint16_t* addr, uint8_t count) {
+  /* Compute Internet Checksum for "count" bytes
+   *         beginning at location "addr".
+   */
+  uint32_t sum = 0;
+
+  while (count > 1) {
+    /*  This is the inner loop */
+    sum += *addr++;
+    count -= 2;
+  }
+
+  /*  Add left-over byte, if any */
+  if (count > 0) {
+    sum += *(uint8_t*)addr;
+  }
+
+  /*  Fold 32-bit sum to 16 bits */
+  while (sum >> 16) {
+    sum = (sum & 0xffff) + (sum >> 16);
+  }
+
+  return ~sum;
+}
+
+#define HPET_CONFIG_REG 0x10
+#define HPET_BASE 0xfed00000
+
+const uint64_t _1ms = 100000;  // we need this many timer periods to have 1 ms
+const uint64_t _1s = _1ms * 1000;
+
+void set_timer0() {
+  // main counter 0xf0
+  uint64_t* counter_value = HPET_BASE + 0xf0;
+  // TODO: crash because of large number
+  // printf("hpet: counter: %d", *counter_value);
+
+  // comparator timer 0 0x108
+  printf("hpet: setting timer to %x %d\n", _1s, _1s);
+  uint64_t* comparator_0 = HPET_BASE + 0x108;
+  // TODO: how is wrapping handled? By GPE :D
+  *comparator_0 = *counter_value + _1s;
+
+  // TODO: this crashes when wrapping 64bit value. Probably formatting code
+  // wrong.
+  // printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
+}
+
+uint64_t get_global_timer_value() {
+  return *(uint64_t*)(HPET_BASE + 0xf0);
+}
+
+void setup_hpet() {
+  // bit 0 is enable flag
+  uint32_t* c = HPET_BASE + HPET_CONFIG_REG;
+  printf("hpet: config %x\n", *c);
+
+  // Timer 0: 100h – 107h, Timer 1: 120h – 127h, Timer 2: 140h – 147h
+  uint32_t* available_interrupts = HPET_BASE + 0x104;
+  printf("hpet: interrupts timer 0: %x\n", *available_interrupts);
+
+  uint32_t* timer_0 = HPET_BASE + 0x100;  // set bit 2 and maybe 9-13
+  printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
+  *timer_0 = (*timer_0) | (1 << 2) | (4 << 9);
+  printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
+
+  uint32_t* timer_period = HPET_BASE + 0x4;
+  printf("hpet: femto: %d\n", *timer_period);
+
+  // main counter 0xf0
+  uint64_t* counter_value = HPET_BASE + 0xf0;
+  printf("hpet: counter: %d", *counter_value);
+
+  // comparator timer 0 0x108
+  printf("hpet: setting timer to %x %d\n", _1s, _1s);
+  uint64_t* comparator_0 = HPET_BASE + 0x108;
+  *comparator_0 = _1s;
+  printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
+
+  *c = (*c) | 0x1;
+  printf("hpet: config %x\n", *c);
+  printf("hpet: counter: %d\n", *counter_value);
+}
+
+uint8_t packet[1024] = {0};
+
+void send_dhcp() {
+  // build a DHCP packet and send it.
+  for (int i = 0; i < 1024; i++) {
+    packet[i] = 0;
+  }
+
+  // need memcpy
+  ethernet_frame_t* ef = packet;
+  ef->source_mac[0] = mac[0];
+  ef->source_mac[1] = mac[1];
+  ef->source_mac[2] = mac[2];
+  ef->source_mac[3] = mac[3];
+  ef->source_mac[4] = mac[4];
+  ef->source_mac[5] = mac[5];
+
+  ef->destination_mac[0] = 0xff;
+  ef->destination_mac[1] = 0xff;
+  ef->destination_mac[2] = 0xff;
+  ef->destination_mac[3] = 0xff;
+  ef->destination_mac[4] = 0xff;
+  ef->destination_mac[5] = 0xff;
+
+  ef->ethertype = htons(0x0800);
+
+  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  iph->version = 4;
+  iph->ihl = 5;  // no options
+  iph->ttl = 100;
+  iph->protocol = 0x11;                   // UDP
+  iph->source_address = 0;                // should be network byte order
+  iph->destination_address = 0xffffffff;  // should be network byte order
+
+  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  udph->source_port = htons(68);
+  udph->destination_port = htons(67);
+
+  dhcp_message_t* dhcpm =
+      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
+
+  // DHCPDISCOVER
+  dhcpm->op = 0x01;
+  dhcpm->htype = 0x01;
+  dhcpm->hlen = 0x06;
+  dhcpm->hops = 0x00;
+  dhcpm->xid = (uint32_t)get_global_timer_value();
+  dhcpm->secs = 0;
+  dhcpm->flags = 0;
+  // MAC
+  dhcpm->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  dhcpm->chaddr[1] = (mac[5] << 8) | mac[4];
+  dhcpm->magic[0] = 0x63;
+  dhcpm->magic[1] = 0x82;
+  dhcpm->magic[2] = 0x53;
+  dhcpm->magic[3] = 0x63;
+
+  uint8_t* options = packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
+		     sizeof(udp_header_t) + sizeof(dhcp_message_t);
+
+  options[0] = 53;
+  options[1] = 1;
+  options[2] = 1;
+  options[3] = 0xff;
+
+  udph->length = htons(sizeof(udp_header_t) + sizeof(dhcp_message_t) +
+		       4 /* options */);  // minimum, only header.
+  // TODO: this is not correct
+  // Checksum is the 16-bit one's complement of the one's complement sum of a
+  // pseudo header of information from the IP header, the UDP header, and the
+  // data, padded with zero octets at the end (if necessary) to make a multiple
+  // of two octets.
+  // ref: https://datatracker.ietf.org/doc/html/rfc768
+  // udph->checksum = ipv4_checksum(udph, sizeof(udp_header_t));
+
+  iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
+  uint16_t check = ipv4_checksum(iph, iph->ihl * 4);
+  uint16_t ncheck = htons(check);
+  printf("checksum: host: %x network: %x\n", check, ncheck);
+  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+
+  // try to send the above first.
+  // set address to descriptor
+  // set size
+  // set 0 to own
+  printf("network: tx: using descriptor %d\n", network_current_tx_descriptor);
+  outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
+  // uint32_t a = inl(base + 0x20);
+  // printf("TX addr: %x\n", a);
+  // bit 0-12 = size, bit 13 = own
+  outl(base + 0x10 + network_current_tx_descriptor * 4,
+       sizeof(ethernet_frame_t) + ntohs(iph->length));
+  // wait for TOK
+  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
+	 (1 << 15) == 0) {
+  }
+
+  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+}
 // uint8_t ipv4_version()
 
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
   if (regs->int_no == 0x34) {  // timer IRQ
     printf("timer\n");
+    // todo:
+    // send packet
+    // set timer
+    send_dhcp();
+    set_timer0();
+
+    //    __asm__ volatile("hlt" : :);
+
     volatile uint32_t* local_apic_eoi = 0xfee000b0;
     *local_apic_eoi = 0;
     return;
@@ -2053,135 +2316,6 @@ void locate_pcmp() {
   return;
 }
 
-struct ethernet_frame {
-  uint8_t destination_mac[6];
-  uint8_t source_mac[6];
-  uint16_t ethertype;  // network byte order
-  // payload
-  // crc?
-} __attribute__((packed));
-typedef struct ethernet_frame ethernet_frame_t;
-
-struct ipv4_header {
-  uint8_t ihl : 4;
-  uint8_t version : 4;
-  uint8_t ecn : 2;   // congestion notification
-  uint8_t dscp : 6;  // type of service. so routers can see what to prioritize
-  // minimum is 20 with is just the ipv4 header.
-  uint16_t length;                // network byte order
-  uint16_t identification;        // network byte order
-  uint16_t fragment_offset : 13;  // network byte order
-  uint16_t flags : 3;             // network byte order
-  uint8_t ttl;
-  uint8_t
-      protocol;  // ref:
-		 // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
-  uint16_t checksum;             // network byte order?
-  uint32_t source_address;       // network byte order
-  uint32_t destination_address;  // network byte order
-} __attribute__((packed));
-typedef struct ipv4_header ipv4_header_t;
-
-struct udp_header {
-  uint16_t source_port;       // network byte order
-  uint16_t destination_port;  // network byte order
-  uint16_t length;            // network byte order
-  uint16_t checksum;          // network byte order
-} __attribute__((packed));
-typedef struct udp_header udp_header_t;
-
-struct dhcp_message {
-  uint8_t op;
-  uint8_t htype;
-  uint8_t hlen;
-  uint8_t hops;
-  uint32_t xid;        // network byte order
-  uint16_t secs;       // network byte order
-  uint16_t flags;      // network byte order
-  uint32_t ciaddr;     // network byte order
-  uint32_t yiaddr;     // network byte order
-  uint32_t siaddr;     // network byte order
-  uint32_t giaddr;     // network byte order
-  uint32_t chaddr[4];  // network byte order
-  uint8_t reserved[192];
-  uint8_t magic[4];
-} __attribute__((packed));
-typedef struct dhcp_message dhcp_message_t;
-
-uint16_t htons(uint16_t hostshort) {
-  return (hostshort >> 8) | (hostshort << 8);
-}
-
-// source: https://datatracker.ietf.org/doc/html/rfc1071#section-4.1
-uint16_t ipv4_checksum(void* addr, uint8_t count) {
-  /* Compute Internet Checksum for "count" bytes
-   *         beginning at location "addr".
-   */
-  uint32_t sum = 0;
-
-  while (count > 1) {
-    /*  This is the inner loop */
-    sum += *(uint16_t*)addr++;
-    count -= 2;
-  }
-
-  /*  Add left-over byte, if any */
-  if (count > 0) {
-    sum += *(uint8_t*)addr;
-  }
-
-  /*  Fold 32-bit sum to 16 bits */
-  while (sum >> 16) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-
-  return ~sum;
-}
-
-uint8_t packet[1024] = {0};
-
-#define HPET_CONFIG_REG 0x10
-#define HPET_BASE 0xfed00000
-
-void setup_hpet() {
-  // bit 0 is enable flag
-  uint32_t* c = HPET_BASE + HPET_CONFIG_REG;
-  printf("hpet: config %x\n", *c);
-
-  // Timer 0: 100h – 107h, Timer 1: 120h – 127h, Timer 2: 140h – 147h
-  uint32_t* available_interrupts = HPET_BASE + 0x104;
-  printf("hpet: interrupts timer 0: %x\n", *available_interrupts);
-
-  uint32_t* timer_0 = HPET_BASE + 0x100;  // set bit 2 and maybe 9-13
-  printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
-  *timer_0 = (*timer_0) | (1 << 2) | (4 << 9);
-  printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
-
-  uint32_t* timer_period = HPET_BASE + 0x4;
-  printf("hpet: femto: %d\n", *timer_period);
-
-  uint32_t _1ms = 100000;  // we need this many timer periods to have 1 ms
-  uint32_t _1s = _1ms * 1000;
-
-  // main counter 0xf0
-  uint64_t* counter_value = HPET_BASE + 0xf0;
-  printf("hpet: counter: %d", *counter_value);
-
-  // comparator timer 0 0x108
-  printf("hpet: setting timer to %x %d\n", _1s, _1s);
-  uint64_t* comparator_0 = HPET_BASE + 0x108;
-  *comparator_0 = _1s;
-  printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
-
-  *c = (*c) | 0x1;
-  printf("hpet: config %x\n", *c);
-  printf("hpet: counter: %d\n", *counter_value);
-
-  while (*((uint32_t*)(HPET_BASE + 0x20)) == 0) {
-  }
-  printf("hpet: interrupt came! %d\n", *((uint32_t*)(HPET_BASE + 0x20)));
-}
-
 void kmain(void* mbd, unsigned int magic) {
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
@@ -2258,97 +2392,7 @@ void kmain(void* mbd, unsigned int magic) {
   // 3. set comparator match
   // 4. set overall enable bit
 
-  // build a DHCP packet and send it.
-
-  // need memcpy
-  ethernet_frame_t* ef = packet;
-  ef->source_mac[0] = mac[0];
-  ef->source_mac[1] = mac[1];
-  ef->source_mac[2] = mac[2];
-  ef->source_mac[3] = mac[3];
-  ef->source_mac[4] = mac[4];
-  ef->source_mac[5] = mac[5];
-
-  ef->destination_mac[0] = 0xff;
-  ef->destination_mac[1] = 0xff;
-  ef->destination_mac[2] = 0xff;
-  ef->destination_mac[3] = 0xff;
-  ef->destination_mac[4] = 0xff;
-  ef->destination_mac[5] = 0xff;
-
-  ef->ethertype = htons(0x0800);
-
-  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
-  iph->version = 4;
-  iph->ihl = 5;  // no options
-  iph->ttl = 100;
-  iph->protocol = 0x11;  // UDP
-  iph->source_address = 0;
-  iph->destination_address = 0xffffffff;
-
-  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
-  udph->source_port = htons(68);
-  udph->destination_port = htons(67);
-
-  dhcp_message_t* dhcpm =
-      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
-
-  // DHCPDISCOVER
-  dhcpm->op = 0x01;
-  dhcpm->htype = 0x01;
-  dhcpm->hlen = 0x06;
-  dhcpm->hops = 0x00;
-  dhcpm->xid = 123;
-  dhcpm->secs = 0;
-  dhcpm->flags = 0;
-  // MAC
-  dhcpm->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  dhcpm->chaddr[1] = (mac[5] << 8) | mac[4];
-  dhcpm->magic[0] = 0x63;
-  dhcpm->magic[1] = 0x82;
-  dhcpm->magic[2] = 0x53;
-  dhcpm->magic[3] = 0x63;
-
-  uint8_t* options = packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
-		     sizeof(udp_header_t) + sizeof(dhcp_message_t);
-
-  options[0] = 53;
-  options[1] = 1;
-  options[2] = 1;
-  options[3] = 0xff;
-
-  udph->length =
-      htons(8 + sizeof(dhcp_message_t) + 4);  // minimum, only header.
-  // TODO: this is not correct
-  // Checksum is the 16-bit one's complement of the one's complement sum of a
-  // pseudo header of information from the IP header, the UDP header, and the
-  // data, padded with zero octets at the end (if necessary) to make a multiple
-  // of two octets.
-  // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = ipv4_checksum(udph, sizeof(udp_header_t));
-
-  iph->length = htons(20 + ntohs(udph->length));
-  printf("using length: %d", ntohs(iph->length));
-  iph->checksum = ipv4_checksum(iph, ntohs(iph->length));
-  // try to send the above first.
-  // set address to descriptor
-  // set size
-  // set 0 to own
-  int i = 0;
-
-  // while (true) {
-  outl(base + 0x20 + i * 4, packet);
-  //  uint32_t a = inl(base + 0x20);
-  // printf("TX addr: %x\n", a);
-  // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + i * 4, sizeof(ethernet_frame_t) + ntohs(iph->length));
-  // wait for TOK
-  while (inl(base + 0x10 + i * 4) & (1 << 15) == 0) {
-  }
-  // printf("SENT!\n");
-  i = (i + 1) % 4;
-  //  }
-  // printf("TX bits: %x\n", a);
+  send_dhcp();
   return 0xDEADBABA;
 }
 
