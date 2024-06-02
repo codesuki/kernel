@@ -678,6 +678,48 @@ uint16_t ipv4_checksum(uint16_t* addr, uint8_t count) {
   return ~sum;
 }
 
+// ref: http://www.faqs.org/rfcs/rfc768.html
+uint16_t udp_checksum(ipv4_header_t* ipv4h, uint16_t* addr) {
+  // build pseudo header
+  udp_header_t* udph = (udp_header_t*)addr;
+
+  udp_pseudo_ip_header_t ps = {0};
+  ps.source_address = ipv4h->source_address;
+  ps.destination_address = ipv4h->destination_address;
+  ps.protocol = ipv4h->protocol;
+  ps.udp_length = udph->length;
+
+  /* Compute Internet Checksum for "count" bytes
+   *         beginning at location "addr".
+   */
+  uint32_t sum = 0;
+
+  uint16_t* first = &ps;
+  for (int i = 0; i < 4; i++) {
+    sum += *first++;
+  }
+
+  uint16_t count = ntohs(udph->length);
+
+  while (count > 1) {
+    /*  This is the inner loop */
+    sum += *addr++;
+    count -= 2;
+  }
+
+  /*  Add left-over byte, if any */
+  if (count > 0) {
+    sum += *(uint8_t*)addr;
+  }
+
+  /*  Fold 32-bit sum to 16 bits */
+  while (sum >> 16) {
+    sum = (sum & 0xffff) + (sum >> 16);
+  }
+
+  return ~sum;
+}
+
 #define HPET_CONFIG_REG 0x10
 #define HPET_BASE 0xfed00000
 
@@ -804,18 +846,17 @@ void send_dhcp() {
 
   udph->length = htons(sizeof(udp_header_t) + sizeof(dhcp_message_t) +
 		       4 /* options */);  // minimum, only header.
+
   // TODO: this is not correct
   // Checksum is the 16-bit one's complement of the one's complement sum of a
   // pseudo header of information from the IP header, the UDP header, and the
   // data, padded with zero octets at the end (if necessary) to make a multiple
   // of two octets.
   // ref: https://datatracker.ietf.org/doc/html/rfc768
-  // udph->checksum = ipv4_checksum(udph, sizeof(udp_header_t));
+  udph->checksum = udp_checksum(iph, udph);
 
   iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
-  uint16_t check = ipv4_checksum(iph, iph->ihl * 4);
-  uint16_t ncheck = htons(check);
-  printf("checksum: host: %x network: %x\n", check, ncheck);
+
   iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
 
   // try to send the above first.
