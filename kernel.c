@@ -585,8 +585,9 @@ uint16_t num_packets = 0;
 uint32_t base = 0;
 
 uint8_t mac[6] = {0};
+uint8_t broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 uint8_t ip[4] = {0};
-uint32_t ip_2 = {0};
+uint8_t broadcast_ip[4] = {0xff, 0xff, 0xff, 0xff};
 
 // How are IPs stored in memory?
 // ip global
@@ -624,7 +625,7 @@ struct ethernet_frame {
   uint8_t source_mac[6];
   uint16_t ethertype;  // network byte order
   // payload
-  // crc?
+  // crc
 } __attribute__((packed));
 typedef struct ethernet_frame ethernet_frame_t;
 
@@ -741,6 +742,19 @@ struct arp_message {
   uint16_t target_protocol_address_2;
 } __attribute__((packed));
 typedef struct arp_message arp_message_t;
+
+struct icmp_header {
+  uint8_t type;  // 8 = echo, 0 = echo reply
+  uint8_t code;  // 0 = echo(?)
+  uint16_t checksum;
+};
+typedef struct icmp_header icmp_header_t;
+
+struct icmp_echo_message {
+  uint16_t identifier;
+  uint16_t sequence_number;
+};
+typedef struct icmp_echo_message icmp_echo_message_t;
 
 uint16_t htons(uint16_t hostshort) {
   return (hostshort >> 8) | (hostshort << 8);
@@ -897,19 +911,8 @@ void send_dhcp_discover() {
 
   // need memcpy
   ethernet_frame_t* ef = packet;
-  ef->source_mac[0] = mac[0];
-  ef->source_mac[1] = mac[1];
-  ef->source_mac[2] = mac[2];
-  ef->source_mac[3] = mac[3];
-  ef->source_mac[4] = mac[4];
-  ef->source_mac[5] = mac[5];
-
-  ef->destination_mac[0] = 0xff;
-  ef->destination_mac[1] = 0xff;
-  ef->destination_mac[2] = 0xff;
-  ef->destination_mac[3] = 0xff;
-  ef->destination_mac[4] = 0xff;
-  ef->destination_mac[5] = 0xff;
+  memcpy(mac, ef->source_mac, 6);
+  memcpy(broadcast_mac, ef->destination_mac, 6);
 
   ef->ethertype = htons(0x0800);
 
@@ -967,24 +970,7 @@ void send_dhcp_discover() {
 
   iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
 
-  // try to send the above first.
-  // set address to descriptor
-  // set size
-  // set 0 to own
-  // printf("network: tx: using descriptor %d\n",
-  // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
-  // uint32_t a = inl(base + 0x20);
-  // printf("TX addr: %x\n", a);
-  // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + network_current_tx_descriptor * 4,
-       sizeof(ethernet_frame_t) + ntohs(iph->length));
-  // wait for TOK
-  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
-	 (1 << 15) == 0) {
-  }
-
-  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
 
 void send_dhcp_request() {
@@ -998,19 +984,8 @@ void send_dhcp_request() {
 
   // TODO: duplicated
   ethernet_frame_t* ef = packet;
-  ef->source_mac[0] = mac[0];
-  ef->source_mac[1] = mac[1];
-  ef->source_mac[2] = mac[2];
-  ef->source_mac[3] = mac[3];
-  ef->source_mac[4] = mac[4];
-  ef->source_mac[5] = mac[5];
-
-  ef->destination_mac[0] = 0xff;
-  ef->destination_mac[1] = 0xff;
-  ef->destination_mac[2] = 0xff;
-  ef->destination_mac[3] = 0xff;
-  ef->destination_mac[4] = 0xff;
-  ef->destination_mac[5] = 0xff;
+  memcpy(mac, ef->source_mac, 6);
+  memcpy(broadcast_mac, ef->destination_mac, 6);
 
   ef->ethertype = htons(0x0800);
 
@@ -1083,26 +1058,11 @@ void send_dhcp_request() {
 
   iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
 
-  // try to send the above first.
-  // set address to descriptor
-  // set size
-  // set 0 to own
-  // printf("network: tx: using descriptor %d\n",
-  // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
-  // uint32_t a = inl(base + 0x20);
-  // printf("TX addr: %x\n", a);
-  // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + network_current_tx_descriptor * 4,
-       sizeof(ethernet_frame_t) + ntohs(iph->length));
-  // wait for TOK
-  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
-	 (1 << 15) == 0) {
-  }
-
-  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
 
+#define ETHERTYPE_IP4 0x0800
+#define ETHERTYPE_ARP 0x0806
 void send_dns_request() {
   // TODO: more duplication!
   for (int i = 0; i < 1024; i++) {
@@ -1114,8 +1074,6 @@ void send_dns_request() {
   memcpy(mac, ef->source_mac, 6);
   memcpy(dhcp_router_mac, ef->destination_mac, 6);
 
-#define ETHERTYPE_IP4 0x0800
-
   ef->ethertype = htons(ETHERTYPE_IP4);
 
   // TODO: factory function
@@ -1125,11 +1083,8 @@ void send_dns_request() {
   iph->ttl = 100;
   iph->protocol = 0x11;  // UDP
   iph->source_address = (ip[3] << 24) | (ip[2] << 16) | (ip[1] << 8) | ip[0];
-  ip_2 = (ip[3] << 24) | (ip[2] << 16) | (ip[1] << 8) | ip[0];
-  //*((uint32_t*)ip);
   iph->destination_address = (dhcp_dns[3] << 24) | (dhcp_dns[2] << 16) |
 			     (dhcp_dns[1] << 8) | dhcp_dns[0];
-  //*((uint32_t*)dhcp_dns);
 
   udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
   udph->source_port = htons(53);
@@ -1173,28 +1128,8 @@ void send_dns_request() {
 
   iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
 
-  // try to send the above first.
-  // set address to descriptor
-  // set size
-  // set 0 to own
-  // printf("network: tx: using descriptor %d\n",
-  // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
-  // uint32_t a = inl(base + 0x20);
-  // printf("TX addr: %x\n", a);
-  // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + network_current_tx_descriptor * 4,
-       sizeof(ethernet_frame_t) + ntohs(iph->length));
-  // wait for TOK
-  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
-	 (1 << 15) == 0) {
-  }
-
-  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
-
-#define ETHERTYPE_IP4 0x0800
-#define ETHERTYPE_ARP 0x0806
 
 void send_arp_response(uint8_t sender_mac[6], uint8_t sender_ip[4]) {
   // TODO: more duplication!
@@ -1221,23 +1156,222 @@ void send_arp_response(uint8_t sender_mac[6], uint8_t sender_ip[4]) {
   memcpy(sender_mac, &a->target_mac_1, 6);
   memcpy(sender_ip, &a->target_protocol_address_1, 4);
 
+  net_transmit(packet, sizeof(ethernet_frame_t) + sizeof(arp_message_t));
+}
+
+void send_echo() {
+  // TODO: more duplication!
+  for (int i = 0; i < 1024; i++) {
+    packet[i] = 0;
+  }
+
+  // TODO: duplicated
+  ethernet_frame_t* ef = packet;
+  memcpy(mac, ef->source_mac, 6);
+  memcpy(dhcp_router_mac, ef->destination_mac, 6);
+
+  ef->ethertype = htons(ETHERTYPE_IP4);
+
+  uint8_t google_ip[4] = {142, 250, 207, 46};
+  // TODO: factory function
+  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  iph->version = 4;
+  iph->ihl = 5;  // no options
+  iph->ttl = 100;
+  iph->protocol = 0x1;  // ICMP
+  iph->source_address = (ip[3] << 24) | (ip[2] << 16) | (ip[1] << 8) | ip[0];
+  //  iph->destination_address = 0xffffffff;  // should be network byte order
+  iph->destination_address = (google_ip[3] << 24) | (google_ip[2] << 16) |
+			     (google_ip[1] << 8) | google_ip[0];
+
+  icmp_header_t* h = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  h->type = 8;
+  h->code = 0;
+
+  icmp_echo_message_t* m = h + 1;
+  m->identifier = 0x1;
+  m->sequence_number = 0;
+
+  h->checksum =
+      ipv4_checksum(h, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+
+  iph->length =
+      htons(iph->ihl * 4 + sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+
+  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+
+  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
+}
+
+void net_transmit(void* data, uint32_t length) {
   // set address to descriptor
   // set size
   // set 0 to own
   // printf("network: tx: using descriptor %d\n",
   // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, packet);
+  outl(base + 0x20 + network_current_tx_descriptor * 4, data);
   // uint32_t a = inl(base + 0x20);
   // printf("TX addr: %x\n", a);
   // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + network_current_tx_descriptor * 4,
-       sizeof(ethernet_frame_t) + sizeof(arp_message_t));
+  outl(base + 0x10 + network_current_tx_descriptor * 4, length);
   // wait for TOK
   while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
 	 (1 << 15) == 0) {
   }
 
   network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+}
+
+void net_handle_arp(arp_message_t* a) {
+  printf("arp: htype: %x, ptype: %x, hlen: %x, plen: %x, oper: %x\n",
+	 ntohs(a->htype), ntohs(a->ptype), a->hlen, a->plen, ntohs(a->oper));
+
+  if (ntohs(a->oper) == 1) {  // request
+    // check if our IP matches
+    uint8_t target_ip[4] = {0};
+    memcpy(&a->target_protocol_address_1, target_ip, 4);
+    printf("arp: target IP: %d.%d.%d.%d\n", target_ip[0], target_ip[1],
+	   target_ip[2], target_ip[3]);
+
+    // because my strncmp works different than stdlib this works
+    uint8_t sender_mac[6] = {0};
+    memcpy(&a->sender_mac_1, sender_mac, 6);
+    uint8_t sender_ip[4] = {0};
+    memcpy(&a->sender_protocol_address_1, sender_ip, 4);
+    if (strncmp(target_ip, ip, 4)) {
+      send_arp_response(sender_mac, sender_ip);
+    }
+  }
+}
+
+void net_handle_dns(dns_header_t* h) {
+  printf("dns: id: %x, opcode: %x, qr: %x acount: %x\n", ntohs(h->id),
+	 h->opcode, h->qr, ntohs(h->ancount));
+
+  // read questions (are repeated in response messages)
+  for (int i = 0; i < ntohs(h->qdcount); i++) {
+  }
+  // read answers
+  for (int i = 0; i < ntohs(h->ancount); i++) {
+  }
+  send_echo();
+}
+
+void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
+  printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op, m->htype,
+	 m->hlen, m->hops, m->xid);
+
+  if (m->op != 2) {  // reply
+    return;
+  }
+
+  uint8_t* o = m + 1;  // end of dhcp message for options
+
+  // TODO: double check that we don't go over length of message.
+
+  uint8 dhcp_type = 0;
+
+  bool done = false;
+  while (!done) {
+    switch (*o++) {
+      case 1:  // subnet mask
+	if (*o++ != 4) {
+	  // panic
+	}
+	memcpy(o, dhcp_subnet_mask, 4);
+	o += 4;
+	break;
+      case 3:  // router
+	if (*o++ != 4) {
+	  // panic
+	}
+	memcpy(o, dhcp_router, 4);
+	o += 4;
+	break;
+      case 6:  // dns
+	if (*o++ != 4) {
+	  // panic
+	}
+	memcpy(o, dhcp_dns, 4);
+	o += 4;
+	break;
+      case 53:  // type
+	if (*o++ != 1) {
+	  // panic
+	}
+	dhcp_type = *o++;
+	break;
+      case 54:            // server identifier (dhcp server ip)
+	if (*o++ != 4) {  // what about ipv6?
+			  // panic
+	}
+	memcpy(o, dhcp_identifier, 4);
+	o += 4;
+	break;
+      case 51:  // lease time (2 days, so low priority to implement)
+	break;
+      case 0xff:
+	done = true;
+	break;
+    }
+  }
+
+#define DHCP_OFFER 2
+#define DHCP_ACK 5
+  if (dhcp_type == DHCP_OFFER) {
+    memcpy(m->yiaddr, ip, 4);
+    /* for (int i = 0; i < 4; i++) { */
+    /*   ip[i] = m->yiaddr[i]; */
+    /* } */
+    printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
+    printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0], dhcp_router[1],
+	   dhcp_router[2], dhcp_router[3]);
+    printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
+	   dhcp_dns[3]);
+    printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
+	   dhcp_subnet_mask[1], dhcp_subnet_mask[2], dhcp_subnet_mask[3]);
+
+    printf("dhcp: sending DHCPREQUEST\n");
+    dhcp_offer_xid = m->xid;
+    send_dhcp_request();
+  } else if (dhcp_type == DHCP_ACK) {
+    printf("dhcp: received DHCPACK\n");
+    printf("dhcp: target_mac: %x:%x:%x:%x:%x:%x\n", ef->destination_mac[0],
+	   ef->destination_mac[1], ef->destination_mac[2],
+	   ef->destination_mac[3], ef->destination_mac[4],
+	   ef->destination_mac[5]);
+    printf("dhcp: source_mac: %x:%x:%x:%x:%x:%x\n", ef->source_mac[0],
+	   ef->source_mac[1], ef->source_mac[2], ef->source_mac[3],
+	   ef->source_mac[4], ef->source_mac[5]);
+    memcpy(ef->source_mac, dhcp_router_mac, 6);
+    send_dns_request();
+  }
+}
+
+void net_handle_udp(ethernet_frame_t* ef, udp_header_t* udph) {
+  printf("udp: src port: %d dst port: %d\n", ntohs(udph->source_port),
+	 ntohs(udph->destination_port));
+
+  if (ntohs(udph->destination_port) == 53) {  // DNS
+    net_handle_dns(udph + 1);
+  } else if (ntohs(udph->source_port) == 67 &&
+	     ntohs(udph->destination_port) == 68) {  // DHCP
+    net_handle_dhcp(ef, udph + 1);
+  }
+}
+
+#define NET_PROTOCOL_ICMP 0x1
+#define NET_PROTOCOL_UDP 0x11
+
+void net_handle_ipv4(ethernet_frame_t* ef, ipv4_header_t* iph) {
+  printf("ipv4: version: %x ihl: %x\n", iph->version, iph->ihl);
+
+  // printf("ipv4: protocol: %x\n", iph->protocol);
+
+  if (iph->protocol == NET_PROTOCOL_ICMP) {
+  } else if (iph->protocol == NET_PROTOCOL_UDP) {
+    net_handle_udp(ef, iph + 1);
+  }
 }
 
 // regs is passed via rdi
@@ -1259,26 +1393,28 @@ void interrupt_handler(struct interrupt_registers* regs) {
   if (regs->int_no == 0x33) {  // network IRQ
     /*
       packet header from network card
-      ref: https://www.cs.usfca.edu/~cruse/cs326f04/RTL8139_ProgrammersGuide.pdf
+      ref:
+      https://www.cs.usfca.edu/~cruse/cs326f04/RTL8139_ProgrammersGuide.pdf
 
       Bit R/W Symbol Description
 
       15 R MAR Multicast Address Received: Set to 1 indicates that a multicast
       packet is received.
 
-      14 R PAM Physical Address Matched: Set to 1 indicates that the destination
-      address of this packet matches the value written in ID registers.
+      14 R PAM Physical Address Matched: Set to 1 indicates that the
+      destination address of this packet matches the value written in ID
+      registers.
 
       13 R BAR Broadcast Address Received: Set to 1 indicates that a broadcast
-      packet is received. BAR, MAR bit will not be set simultaneously. 12-6 - -
-      Reserved
+      packet is received. BAR, MAR bit will not be set simultaneously. 12-6 -
+      - Reserved
 
       5 R ISE Invalid Symbol Error: (100BASE-TX only) An invalid symbol was
       encountered during the reception of this packet if this bit set to 1.
 
-      4 R RUNT Runt Packet Received: Set to 1 indicates that the received packet
-      length is smaller than 64 bytes ( i.e. media header + data + CRC < 64
-      bytes )
+      4 R RUNT Runt Packet Received: Set to 1 indicates that the received
+      packet length is smaller than 64 bytes ( i.e. media header + data + CRC
+      < 64 bytes )
 
       3 R LONG Long Packet: Set to 1 indicates that the size of the received
       packet exceeds 4k bytes.
@@ -1286,39 +1422,38 @@ void interrupt_handler(struct interrupt_registers* regs) {
       2 R CRC CRC Error: When set, indicates that a CRC error occurred on the
       received packet.
 
-      1 R FAE Frame Alignment Error: When set, indicates that a frame alignment
-      error occurred on this received packet.
+      1 R FAE Frame Alignment Error: When set, indicates that a frame
+      alignment error occurred on this received packet.
 
       0 R ROK Receive OK: When set, indicates that a good packet is received.
      */
 
     /*
       The receive path of RTL8139(A/B) is designed as a ring buffer. This ring
-      buffer is in a physical continuous memory. Data coming from line is first
-      stored in a Receive FIFO in the chip, and then move to the receive buffer
-      when the early receive threshold is met. The register CBA keeps the
-      current address of data moved to buffer. CAPR is the read pointer which
-      keeps the address of data that driver had read. The status of receiving a
-      packet is stored in front of the packet(packet header).
+      buffer is in a physical continuous memory. Data coming from line is
+      first stored in a Receive FIFO in the chip, and then move to the receive
+      buffer when the early receive threshold is met. The register CBA keeps
+      the current address of data moved to buffer. CAPR is the read pointer
+      which keeps the address of data that driver had read. The status of
+      receiving a packet is stored in front of the packet(packet header).
       */
 
     uint16_t isr = inw(base + 0x3e);
     // printf("isr: %x\n", isr);
-    // although the docs say we only need to read, we actually need to write to
-    // reset
+    // although the docs say we only need to read, we actually need to write
+    // to reset
     //   printf("resetting\n");
     outw(base + 0x3e, isr);
 
     if (isr & 0x1) {
       // printf("isr: Rx OK\n");
     } else if (isr & 0x4) {
-      //      printf("isr: Tx OK");
+      // printf("isr: Tx OK");
       goto eth_return;
     } else {
       goto eth_return;
     }
 
-    int i = 0;
     while (true) {
       uint8_t cmd = inb(base + 0x37);
       if (cmd & 0x1) {  // Buffer Empty = 1
@@ -1336,9 +1471,9 @@ void interrupt_handler(struct interrupt_registers* regs) {
       // 2 bytes         | 2 bytes        |
 
       // ethernet frame
-      // MAC dest | MAC src | Tag (optional) | EtherType / length | Payload   |
-      // CRC/FCS 6 bytes   | 6 bytes | 4 bytes          | 2 bytes              |
-      // 42–1500  | 4 bytes
+      // MAC dest | MAC src | Tag (optional) | EtherType / length | Payload |
+      // CRC/FCS 6 bytes   | 6 bytes | 4 bytes          | 2 bytes | 42–1500  |
+      // 4 bytes
 
       // ether type
       // 0x0800	Internet Protocol version 4 (IPv4)
@@ -1346,8 +1481,8 @@ void interrupt_handler(struct interrupt_registers* regs) {
       // 0x0806      ARP
 
       // we get 0x45 = 0b0100 0101 in big endian / network byte order
-      // I assume we get protocol ipv4 so the left part is the 4 and right is 5
-      // which is the header size of a header without options.
+      // I assume we get protocol ipv4 so the left part is the 4 and right is
+      // 5 which is the header size of a header without options.
 
       // Note: network byte order
 
@@ -1356,10 +1491,6 @@ void interrupt_handler(struct interrupt_registers* regs) {
       //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
       //	     num_packets++, *packet_status, network_rx_buffer_index);
 
-      if (i > 2) {
-	__asm__ volatile("hlt" : :);
-      }
-
       // CRC, RUNT, LONG, FAE, BAD SYMBOL errors
       if (*packet_status & (1 << 1) || *packet_status & (1 << 2) ||
 	  *packet_status & (1 << 3) || *packet_status & (1 << 4) ||
@@ -1367,27 +1498,31 @@ void interrupt_handler(struct interrupt_registers* regs) {
 	break;
       }
 
+      // TODO: pull length and etheretype from this.
+      ethernet_frame_t* ef = network_rx_buffer + network_rx_buffer_index +
+			     4;  // first two bytes are the rx header followed
+				 // by 2 bytes for length
+
       uint16_t* length = network_rx_buffer + network_rx_buffer_index +
 			 2;  // first two bytes are the rx header
-
       //  printf("length: %d\n", *length);
 
       uint8_t* p = network_rx_buffer + network_rx_buffer_index +
-		   4;  // points at source MAC
+		   4;  // points at destination MAC
 
-      uint8_t destination_mac[6] = {0};
-      memcpy(p, destination_mac, 6);
+      //  uint8_t destination_mac[6] = {0};
+      //   memcpy(p, destination_mac, 6);
       p += 6;
 
-      uint8_t source_mac[6] = {0};
-      memcpy(p, source_mac, 6);
+      //   uint8_t source_mac[6] = {0};
+      //  memcpy(p, source_mac, 6);
       p += 6;
 
       //     printf("network: idx before: %x\n", network_rx_buffer_index);
 
       network_rx_buffer_index +=
-	  *length + 4;  // length seems to not include the header and size which
-			// are 2 bytes each
+	  *length + 4;  // length seems to not include the header and size
+			// which are 2 bytes each
 
       // wrap
       if (network_rx_buffer_index > RX_BUFFER_SIZE) {
@@ -1396,10 +1531,10 @@ void interrupt_handler(struct interrupt_registers* regs) {
       }
 
       // it seems we need to align on dword boundaries.
-      // this means the first 2 bits should be 0, because 1 2 or 3 would not be
-      // 4 which is dword. just cutting them off would mean we inside are the
-      // packet we just read. is this bad? the programming guide adds 3 to make
-      // sure we are outside.
+      // this means the first 2 bits should be 0, because 1 2 or 3 would not
+      // be 4 which is dword. just cutting them off would mean we inside are
+      // the packet we just read. is this bad? the programming guide adds 3 to
+      // make sure we are outside.
 
       // according to qemu code there is a 4byte checksum
       // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1161-L1165
@@ -1412,151 +1547,28 @@ void interrupt_handler(struct interrupt_registers* regs) {
       // necessary. Otherwise BUFFER_EMPTY never gets set.
       // ref: https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1384
 
-      printf("new buffer index: %x %d\n", network_rx_buffer_index,
-	     network_rx_buffer_index);
+      // printf("new buffer index: %x %d\n", network_rx_buffer_index,
+      //	     network_rx_buffer_index);
 
       uint16_t ether_type = ntohs(*(uint16_t*)p);
 
-      printf("ethertype: host byte order: %x network byte order: %x\n",
-	     ether_type, *(uint16_t*)p);
+      // printf("ethertype: host byte order: %x network byte order: %x\n",
+      //	     ether_type, *(uint16_t*)p);
 
-      p += 2;  // ipv4 header
+      p += 2;  // protocol header
 
       if (ether_type == ETHERTYPE_ARP) {
-	arp_message_t* a = p;
-	printf("arp: htype: %x, ptype: %x, hlen: %x, plen: %x, oper: %x\n",
-	       ntohs(a->htype), ntohs(a->ptype), a->hlen, a->plen,
-	       ntohs(a->oper));
-
-	if (ntohs(a->oper) == 1) {  // request
-	  // check if our IP matches
-	  uint8_t target_ip[4] = {0};
-	  memcpy(&a->target_protocol_address_1, target_ip, 4);
-	  printf("arp: target IP: %d.%d.%d.%d\n", target_ip[0], target_ip[1],
-		 target_ip[2], target_ip[3]);
-
-	  // because my strncmp works different than stdlib this works
-
-	  uint8_t sender_mac[6] = {0};
-	  memcpy(&a->sender_mac_1, sender_mac, 6);
-	  uint8_t sender_ip[4] = {0};
-	  memcpy(&a->sender_protocol_address_1, sender_ip, 4);
-	  if (strncmp(target_ip, ip, 4)) {
-	    send_arp_response(sender_mac, sender_ip);
-	  }
-	}
-
-      } else if (ether_type == 0x0800) {
-	// handle ipv4
-
-	ipv4_header_t* iph = p;
-	printf("ipv4: version: %x ihl: %x\n", iph->version, iph->ihl);
-
-	// 0x11 UDP
-	//	printf("ipv4: protocol: %x\n", iph->protocol);
-
-	if (iph->protocol == 0x11) {
-	  udp_header_t* udph = iph + 1;
-	  printf("udp: src port: %d dst port: %d\n", ntohs(udph->source_port),
-		 ntohs(udph->destination_port));
-
-	  if (ntohs(udph->source_port) == 67 &&
-	      ntohs(udph->destination_port) == 68) {
-	    // dhcp
-	    dhcp_message_t* m = udph + 1;
-	    printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op,
-		   m->htype, m->hlen, m->hops, m->xid);
-
-	    if (m->op != 2) {  // reply
-	      goto next;
-	    }
-
-	    uint8_t* o = m + 1;  // end of dhcp message for options
-
-	    // TODO: double check that we don't go over length of message.
-
-	    uint8 dhcp_type = 0;
-
-	    bool done = false;
-	    while (!done) {
-	      switch (*o++) {
-		case 1:  // subnet mask
-		  if (*o++ != 4) {
-		    // panic
-		  }
-		  memcpy(o, dhcp_subnet_mask, 4);
-		  o += 4;
-		  break;
-		case 3:  // router
-		  if (*o++ != 4) {
-		    // panic
-		  }
-		  memcpy(o, dhcp_router, 4);
-		  o += 4;
-		  break;
-		case 6:  // dns
-		  if (*o++ != 4) {
-		    // panic
-		  }
-		  memcpy(o, dhcp_dns, 4);
-		  o += 4;
-		  break;
-		case 53:  // type
-		  if (*o++ != 1) {
-		    // panic
-		  }
-		  dhcp_type = *o++;
-		  break;
-		case 54:            // server identifier (dhcp server ip)
-		  if (*o++ != 4) {  // what about ipv6?
-		    // panic
-		  }
-		  memcpy(o, dhcp_identifier, 4);
-		  o += 4;
-		  break;
-		case 51:  // lease time (2 days, so low priority to implement)
-		  break;
-		case 0xff:
-		  done = true;
-		  break;
-	      }
-	    }
-
-#define DHCP_OFFER 2
-#define DHCP_ACK 5
-	    if (dhcp_type == DHCP_OFFER) {
-	      for (int i = 0; i < 4; i++) {
-		ip[i] = m->yiaddr[i];
-	      }
-	      printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2],
-		     ip[3]);
-	      printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0],
-		     dhcp_router[1], dhcp_router[2], dhcp_router[3]);
-	      printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1],
-		     dhcp_dns[2], dhcp_dns[3]);
-	      printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
-		     dhcp_subnet_mask[1], dhcp_subnet_mask[2],
-		     dhcp_subnet_mask[3]);
-
-	      printf("dhcp: sending DHCPREQUEST\n");
-	      dhcp_offer_xid = m->xid;
-	      send_dhcp_request();
-	    } else if (dhcp_type == DHCP_ACK) {
-	      printf("dhcp: received DHCPACK\n");
-	      memcpy(source_mac, dhcp_router_mac, 6);
-	      send_dns_request();
-	      // results in ARP request and checksum is wrong somehow
-	    }
-	  }
-	}
+	net_handle_arp(p);
+      } else if (ether_type == ETHERTYPE_IP4) {
+	net_handle_ipv4(ef, p);
       }
 
-    next:
       // the doc says to subtract 0x10 to avoid overflow. also, given we use
       // network_rx_buffer_index which is now bigger, won't this break us
       // reading packets? for some reason this is added back
       // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L2522 so if
-      // we don't subtract the numbers don't match. who knows why this is done.
+      // we don't subtract the numbers don't match. who knows why this is
+      // done.
       outw(base + 0x38, network_rx_buffer_index - 0x10);
     }
   eth_return:
@@ -2002,10 +2014,9 @@ void apic_setup() {
 
   printf("apic tmr0  addr: %x\n", &regs->cmci);
   printf("apic lvt_lint0 addr: %x\n", &regs->lvt_lint0);
-  // this just accesses the pointer. have to do [0] but then page fault because
-  // maybe not mapped.
-  // it's defined as 64 bit but I think it's just 32?
-  // aligned 16 worked.
+  // this just accesses the pointer. have to do [0] but then page fault
+  // because maybe not mapped. it's defined as 64 bit but I think it's just
+  // 32? aligned 16 worked.
 
   // TODO
   // set up spurious interrupt
@@ -2827,7 +2838,8 @@ void locate_pcmp() {
 	  // printf("interrupt 2 header\n");
 	  pcmp_interrupt_entry_t* e = s;
 	  /* printf( */
-	  /*     "interrupt_type: %x, interrupt_flags: %x, source_bus_id: %x, "
+	  /*     "interrupt_type: %x, interrupt_flags: %x, source_bus_id: %x,
+	   * "
 	   */
 	  /*     "source_bus_irq: %x, destination_apic_id: %x, " */
 	  /*     "destination_apic_int %x\n", */
