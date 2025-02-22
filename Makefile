@@ -11,7 +11,7 @@ LD = x86_64-elf-ld
 LDFLAGS = -T linker.ld -nostdlib -z max-page-size=0x1000
 
 CC = x86_64-elf-gcc
-CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone -mgeneral-regs-only
+CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone # -mgeneral-regs-only
 
 AS = nasm
 ASFLAGS = -f elf64 -g -F dwarf
@@ -24,7 +24,8 @@ clean:
 	@rm $(OBJECTS) $(KERNEL) $(ISO)
 	@rm -r dist/
 
-run:
+run: $(ISO)
+#	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet
 #-d int is
 # show interrupts/exceptions in short format
 # -s is
@@ -36,10 +37,10 @@ run:
 	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet -object filter-dump,id=f1,netdev=vmnet,file=dump.dat
 	#-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
 
-debug:
+debug: $(ISO)
 	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -S
 
-run-bochs:
+run-bochs: $(ISO)
 	bochs -f bochs.rc
 
 $(ISO): $(KERNEL)

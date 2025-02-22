@@ -66,7 +66,7 @@ char* itoa(int value, char* buffer, unsigned int base) {
  */
 
 // ref: https://en.wikipedia.org/wiki/VGA_text_mode#Access_methods
-unsigned char* videoram = (unsigned char*)0xb8000;
+uint8_t* videoram = (uint8_t*)0xb8000;
 
 int xpos = 0;
 int ypos = 0;
@@ -79,7 +79,7 @@ int ypos = 0;
 // Have a pointer/"cursor" that says which line is the top/bottom line on the
 // screen. Can control the pointer with arrow keys to scroll up and down.
 
-uint8_t* terminal_buffer[80 * 25 * 2 * 100] = {0};  // 100 pages
+uint8_t terminal_buffer[80 * 25 * 2 * 100] = {0};  // 100 pages
 
 // ring buffer start. once we are at the end it needs to wrap. should be aligned
 // to start of line I guess.
@@ -132,8 +132,7 @@ void print_character_color(char c, char color) {
       /* if (xpos > 80 * 2) { */
       /*	new_line(); */
       /* } */
-      int idx =
-	  terminal_buffer_row_index * 80 * 2 + terminal_buffer_column_index * 2;
+      uint16_t idx = terminal_buffer_row_index * 80 * 2 + terminal_buffer_column_index * 2;
       terminal_buffer[idx] = (int)c;
       terminal_buffer[idx + 1] = color;
       terminal_buffer_column_index++;
@@ -426,11 +425,11 @@ struct interrupt_registers_struct {
 } __attribute__((packed));
 typedef struct registers_struct interrupt_registers_t;
 
-extern isr0;             // divide error, no error code, fault
+extern int isr0;             // divide error, no error code, fault
 extern void isr3(void);  // breakpoint, no error code, trap
 extern void isr4(void);  // overflow, no error code, trap
 extern void isr8(void);
-extern isr12;             // stack-segment fault, error code, fault
+extern int isr12;             // stack-segment fault, error code, fault
 extern void isr13(void);  // general protection fault, error code, fault
 extern void isr14(void);  // page fault, error code, fault
 extern void isr32(void);
@@ -448,7 +447,7 @@ struct interrupt_registers {
 
 #define EXCEPTION_PAGE_FAULT 14
 
-char* interrupt_names[15] = {
+char* interrupt_names[22] = {
     "0",
     "1",
     "2",
@@ -816,7 +815,7 @@ uint16_t udp_checksum(ipv4_header_t* ipv4h, uint16_t* addr) {
    */
   uint32_t sum = 0;
 
-  uint16_t* first = &ps;
+  uint16_t* first = (uint16_t*)(&ps);
   for (int i = 0; i < sizeof(udp_pseudo_ip_header_t) / 2; i++) {
     sum += *first++;
   }
@@ -850,13 +849,13 @@ const uint64_t _1s = _1ms * 1000;
 
 void set_timer0() {
   // main counter 0xf0
-  uint64_t* counter_value = HPET_BASE + 0xf0;
+  uint64_t* counter_value = (uint64_t*)(HPET_BASE + 0xf0);
   // TODO: crash because of large number
   // printf("hpet: counter: %d", *counter_value);
 
   // comparator timer 0 0x108
   // printf("hpet: setting timer to %x %d\n", _1s, _1s);
-  uint64_t* comparator_0 = HPET_BASE + 0x108;
+  uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
   // TODO: how is wrapping handled? By GPE :D
   *comparator_0 = *counter_value + _1s;
 
@@ -871,34 +870,53 @@ uint64_t get_global_timer_value() {
 
 void setup_hpet() {
   // bit 0 is enable flag
-  uint32_t* c = HPET_BASE + HPET_CONFIG_REG;
+  uint32_t* c = (uint32_t*)(HPET_BASE + HPET_CONFIG_REG);
   printf("hpet: config %x\n", *c);
 
   // Timer 0: 100h – 107h, Timer 1: 120h – 127h, Timer 2: 140h – 147h
-  uint32_t* available_interrupts = HPET_BASE + 0x104;
+  uint32_t* available_interrupts = (uint32_t*)(HPET_BASE + 0x104);
   printf("hpet: interrupts timer 0: %x\n", *available_interrupts);
 
-  uint32_t* timer_0 = HPET_BASE + 0x100;  // set bit 2 and maybe 9-13
+  uint32_t* timer_0 = (uint32_t*)(HPET_BASE + 0x100);  // set bit 2 and maybe 9-13
   printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
   *timer_0 = (*timer_0) | (1 << 2) | (4 << 9);
   printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
 
-  uint32_t* timer_period = HPET_BASE + 0x4;
+  uint32_t* timer_period = (uint32_t*)(HPET_BASE + 0x4);
   printf("hpet: femto: %d\n", *timer_period);
 
   // main counter 0xf0
-  uint64_t* counter_value = HPET_BASE + 0xf0;
+  uint64_t* counter_value = (uint64_t*)(HPET_BASE + 0xf0);
   printf("hpet: counter: %d", *counter_value);
 
   // comparator timer 0 0x108
   printf("hpet: setting timer to %x %d\n", _1s, _1s);
-  uint64_t* comparator_0 = HPET_BASE + 0x108;
+  uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
   *comparator_0 = _1s;
   printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
 
   *c = (*c) | 0x1;
   printf("hpet: config %x\n", *c);
   printf("hpet: counter: %d\n", *counter_value);
+}
+
+void net_transmit(void* data, uint32_t length) {
+  // set address to descriptor
+  // set size
+  // set 0 to own
+  // printf("network: tx: using descriptor %d\n",
+  // network_current_tx_descriptor);
+  outl(base + 0x20 + network_current_tx_descriptor * 4, (uint32_t)data);
+  // uint32_t a = inl(base + 0x20);
+  // printf("TX addr: %x\n", a);
+  // bit 0-12 = size, bit 13 = own
+  outl(base + 0x10 + network_current_tx_descriptor * 4, length);
+  // wait for TOK
+  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
+	 (1 << 15) == 0) {
+  }
+
+  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
 }
 
 uint8_t packet[1024] = {0};
@@ -910,13 +928,13 @@ void send_dhcp_discover() {
   }
 
   // need memcpy
-  ethernet_frame_t* ef = packet;
+  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(broadcast_mac, ef->destination_mac, 6);
 
   ef->ethertype = htons(0x0800);
 
-  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
   iph->version = 4;
   iph->ihl = 5;  // no options
   iph->ttl = 100;
@@ -924,12 +942,12 @@ void send_dhcp_discover() {
   iph->source_address = 0;                // should be network byte order
   iph->destination_address = 0xffffffff;  // should be network byte order
 
-  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  udp_header_t* udph = (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   udph->source_port = htons(68);
   udph->destination_port = htons(67);
 
-  dhcp_message_t* dhcpm =
-      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
+  dhcp_message_t* dhcpm = (dhcp_message_t*)(
+					    packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t));
 
   // DHCPDISCOVER
   dhcpm->op = 0x01;
@@ -964,11 +982,11 @@ void send_dhcp_discover() {
   // data, padded with zero octets at the end (if necessary) to make a multiple
   // of two octets.
   // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = udp_checksum(iph, udph);
+  udph->checksum = udp_checksum(iph, (uint16_t*)udph);
 
   iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
 
-  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
 
   net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
@@ -983,13 +1001,13 @@ void send_dhcp_request() {
   }
 
   // TODO: duplicated
-  ethernet_frame_t* ef = packet;
+  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(broadcast_mac, ef->destination_mac, 6);
 
   ef->ethertype = htons(0x0800);
 
-  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
   iph->version = 4;
   iph->ihl = 5;  // no options
   iph->ttl = 100;
@@ -997,12 +1015,12 @@ void send_dhcp_request() {
   iph->source_address = 0;  // 0xfeffffff;       // should be network byte order
   iph->destination_address = 0xffffffff;  // should be network byte order
 
-  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  udp_header_t* udph = (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   udph->source_port = htons(68);
   udph->destination_port = htons(67);
 
-  dhcp_message_t* dhcpm =
-      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
+  dhcp_message_t* dhcpm = (dhcp_message_t*)(
+					    packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t));
 
   // DHCPDISCOVER
   dhcpm->op = 0x03;  // DIFFERENT
@@ -1017,7 +1035,7 @@ void send_dhcp_request() {
   dhcpm->siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
 		  (dhcp_router[1] << 8) | dhcp_router[0];
   //(dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
-  (dhcp_router[1] << 8) | dhcp_router[0];
+  // (dhcp_router[1] << 8) | dhcp_router[0];
   dhcpm->magic[0] = 0x63;
   dhcpm->magic[1] = 0x82;
   dhcpm->magic[2] = 0x53;
@@ -1052,11 +1070,11 @@ void send_dhcp_request() {
   // data, padded with zero octets at the end (if necessary) to make a multiple
   // of two octets.
   // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = udp_checksum(iph, udph);
+  udph->checksum = udp_checksum(iph, (uint16_t*)udph);
 
   iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
 
-  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
 
   net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
@@ -1070,14 +1088,14 @@ void send_dns_request() {
   }
 
   // TODO: duplicated
-  ethernet_frame_t* ef = packet;
+  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(dhcp_router_mac, ef->destination_mac, 6);
 
   ef->ethertype = htons(ETHERTYPE_IP4);
 
   // TODO: factory function
-  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
   iph->version = 4;
   iph->ihl = 5;  // no options
   iph->ttl = 100;
@@ -1086,18 +1104,18 @@ void send_dns_request() {
   iph->destination_address = (dhcp_dns[3] << 24) | (dhcp_dns[2] << 16) |
 			     (dhcp_dns[1] << 8) | dhcp_dns[0];
 
-  udp_header_t* udph = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  udp_header_t* udph = (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   udph->source_port = htons(53);
   udph->destination_port = htons(53);
 
-  dns_header_t* dnsh =
-      packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t);
+  dns_header_t* dnsh =(dns_header_t*)(
+				       packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t));
 
   dnsh->id = htons(5);
   dnsh->qdcount = htons(1);
   dnsh->rd = 1;
 
-  uint8_t* q = dnsh + 1;
+  uint8_t* q = (uint8_t*)(dnsh + 1);
   q[0] = 6;
   q[1] = 'g';
   q[2] = 'o';
@@ -1122,11 +1140,11 @@ void send_dns_request() {
   // data, padded with zero octets at the end (if necessary) to make a multiple
   // of two octets.
   // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = udp_checksum(iph, udph);
+  udph->checksum = udp_checksum(iph, (uint16_t*)udph);
 
   iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
 
-  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
 
   net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
@@ -1138,14 +1156,14 @@ void send_arp_response(uint8_t sender_mac[6], uint8_t sender_ip[4]) {
   }
 
   // TODO: duplicated
-  ethernet_frame_t* ef = packet;
+  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(sender_mac, ef->destination_mac, 6);
 
   ef->ethertype = htons(ETHERTYPE_ARP);
 
   // TODO: factory function
-  arp_message_t* a = packet + sizeof(ethernet_frame_t);
+  arp_message_t* a = (arp_message_t*)(packet + sizeof(ethernet_frame_t));
   a->htype = htons(1);  // ethernet
   a->hlen = 6;
   a->ptype = htons(ETHERTYPE_IP4);
@@ -1166,7 +1184,7 @@ void send_echo() {
   }
 
   // TODO: duplicated
-  ethernet_frame_t* ef = packet;
+  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(dhcp_router_mac, ef->destination_mac, 6);
 
@@ -1174,7 +1192,7 @@ void send_echo() {
 
   uint8_t google_ip[4] = {142, 250, 207, 46};
   // TODO: factory function
-  ipv4_header_t* iph = packet + sizeof(ethernet_frame_t);
+  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
   iph->version = 4;
   iph->ihl = 5;  // no options
   iph->ttl = 100;
@@ -1184,42 +1202,23 @@ void send_echo() {
   iph->destination_address = (google_ip[3] << 24) | (google_ip[2] << 16) |
 			     (google_ip[1] << 8) | google_ip[0];
 
-  icmp_header_t* h = packet + sizeof(ethernet_frame_t) + iph->ihl * 4;
+  icmp_header_t* h = (icmp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   h->type = 8;
   h->code = 0;
 
-  icmp_echo_message_t* m = h + 1;
+  icmp_echo_message_t* m = (icmp_echo_message_t*)(h + 1);
   m->identifier = 0x1;
   m->sequence_number = 0;
 
   h->checksum =
-      ipv4_checksum(h, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+      ipv4_checksum((uint16_t*)h, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
 
   iph->length =
       htons(iph->ihl * 4 + sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
 
-  iph->checksum = ipv4_checksum(iph, iph->ihl * 4);
+  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
 
   net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
-}
-
-void net_transmit(void* data, uint32_t length) {
-  // set address to descriptor
-  // set size
-  // set 0 to own
-  // printf("network: tx: using descriptor %d\n",
-  // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, data);
-  // uint32_t a = inl(base + 0x20);
-  // printf("TX addr: %x\n", a);
-  // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + network_current_tx_descriptor * 4, length);
-  // wait for TOK
-  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
-	 (1 << 15) == 0) {
-  }
-
-  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
 }
 
 void net_handle_arp(arp_message_t* a) {
@@ -1265,7 +1264,7 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
     return;
   }
 
-  uint8_t* o = m + 1;  // end of dhcp message for options
+  uint8_t* o = (uint8_t*)(m + 1);  // end of dhcp message for options
 
   // TODO: double check that we don't go over length of message.
 
@@ -1353,10 +1352,10 @@ void net_handle_udp(ethernet_frame_t* ef, udp_header_t* udph) {
 	 ntohs(udph->destination_port));
 
   if (ntohs(udph->destination_port) == 53) {  // DNS
-    net_handle_dns(udph + 1);
+    net_handle_dns((dns_header_t*)(udph + 1));
   } else if (ntohs(udph->source_port) == 67 &&
 	     ntohs(udph->destination_port) == 68) {  // DHCP
-    net_handle_dhcp(ef, udph + 1);
+    net_handle_dhcp(ef, (dhcp_message_t*)(udph + 1));
   }
 }
 
@@ -1370,23 +1369,29 @@ void net_handle_ipv4(ethernet_frame_t* ef, ipv4_header_t* iph) {
 
   if (iph->protocol == NET_PROTOCOL_ICMP) {
   } else if (iph->protocol == NET_PROTOCOL_UDP) {
-    net_handle_udp(ef, iph + 1);
+    net_handle_udp(ef, (udp_header_t*)(iph + 1));
   }
 }
 
 // regs is passed via rdi
 void interrupt_handler(struct interrupt_registers* regs) {
   if (regs->int_no == 0x34) {  // timer IRQ
-			       //  printf("timer\n");
+    printf("timer\n");
     // todo:
     // send packet
     // set timer
     //  send_dhcp_discover();
+
+    // reschedule?
+    // how do we know which interrupt causes reschedule?
+    // every time has its own interrupt?
+    // one timer is specifically for the os to reschedule?
+    // those are my assumptions
     set_timer0();
 
     //    __asm__ volatile("hlt" : :);
 
-    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
     *local_apic_eoi = 0;
     return;
   }
@@ -1486,7 +1491,7 @@ void interrupt_handler(struct interrupt_registers* regs) {
 
       // Note: network byte order
 
-      uint16_t* packet_status = network_rx_buffer + network_rx_buffer_index;
+      uint16_t* packet_status = (uint16_t*)(network_rx_buffer + network_rx_buffer_index);
 
       //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
       //	     num_packets++, *packet_status, network_rx_buffer_index);
@@ -1499,16 +1504,16 @@ void interrupt_handler(struct interrupt_registers* regs) {
       }
 
       // TODO: pull length and etheretype from this.
-      ethernet_frame_t* ef = network_rx_buffer + network_rx_buffer_index +
-			     4;  // first two bytes are the rx header followed
+      ethernet_frame_t* ef = (ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index +
+					 4);  // first two bytes are the rx header followed
 				 // by 2 bytes for length
 
-      uint16_t* length = network_rx_buffer + network_rx_buffer_index +
-			 2;  // first two bytes are the rx header
+      uint16_t* length = (uint16_t*)(network_rx_buffer + network_rx_buffer_index +
+				     2);  // first two bytes are the rx header
       //  printf("length: %d\n", *length);
 
-      uint8_t* p = network_rx_buffer + network_rx_buffer_index +
-		   4;  // points at destination MAC
+      uint8_t* p =(uint8_t*)( network_rx_buffer + network_rx_buffer_index +
+			       4);  // points at destination MAC
 
       //  uint8_t destination_mac[6] = {0};
       //   memcpy(p, destination_mac, 6);
@@ -1558,9 +1563,9 @@ void interrupt_handler(struct interrupt_registers* regs) {
       p += 2;  // protocol header
 
       if (ether_type == ETHERTYPE_ARP) {
-	net_handle_arp(p);
+	net_handle_arp((arp_message_t*)p);
       } else if (ether_type == ETHERTYPE_IP4) {
-	net_handle_ipv4(ef, p);
+	net_handle_ipv4(ef, (ipv4_header_t*)p);
       }
 
       // the doc says to subtract 0x10 to avoid overflow. also, given we use
@@ -1572,7 +1577,7 @@ void interrupt_handler(struct interrupt_registers* regs) {
       outw(base + 0x38, network_rx_buffer_index - 0x10);
     }
   eth_return:
-    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
     *local_apic_eoi = 0;
     return;
   }
@@ -1615,7 +1620,7 @@ void interrupt_handler(struct interrupt_registers* regs) {
     xpos = 0;
     printf("data: %x x: %d, y: %d, rel_x: %d, rel_y: %d", data, mouse_x,
 	   mouse_y, rel_x, rel_y);
-    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
     *local_apic_eoi = 0;
     return;
   }
@@ -1624,6 +1629,8 @@ void interrupt_handler(struct interrupt_registers* regs) {
     // read from port 0x60? this is the data port
     // 0x64 is the status register if read and command register if written.
     uint8 scancode = inb(0x60);
+
+    printf("scancode: %x\n", scancode);
     // key released
     // It seems this is numbered from top left to bottom right.
     switch (scancode) {
@@ -1712,7 +1719,7 @@ void interrupt_handler(struct interrupt_registers* regs) {
 	printf("z");
 	break;
     }
-    volatile uint32_t* local_apic_eoi = 0xfee000b0;
+    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
     *local_apic_eoi = 0;
     return;
   }
@@ -1729,7 +1736,7 @@ void interrupt_handler(struct interrupt_registers* regs) {
   printf("ip: %x\n", regs->eip);
 
   if (regs->int_no == EXCEPTION_PAGE_FAULT) {
-    page_fault_error_t* e = &regs->err_code;
+    page_fault_error_t* e = (page_fault_error_t*)&regs->err_code;
     printf(
 	"p: %d, wr: %d, us: %d, rsvd: %d, id: %d, pk: %d, ss: %d, hlat: %d\n",
 	e->flags.p, e->flags.wr, e->flags.us, e->flags.rsvd, e->flags.id,
@@ -1782,18 +1789,18 @@ void idt_setup() {
   idt_set_gate(0, 0, 0x08, 0x0E);
   idt_set_gate(1, 0, 0x08, 0x0E);
   idt_set_gate(2, 0, 0x08, 0x0E);
-  idt_set_gate(3, isr3, 0x08, 0x8E);
-  idt_set_gate(4, isr4, 0x08, 0x8E);
+  idt_set_gate(3, (uint64_t)isr3, 0x08, 0x8E);
+  idt_set_gate(4, (uint64_t)isr4, 0x08, 0x8E);
   idt_set_gate(5, 0, 0x08, 0x0E);
   idt_set_gate(6, 0, 0x08, 0x0E);
   idt_set_gate(7, 0, 0x08, 0x0E);
-  idt_set_gate(8, isr8, 0x08, 0x8E);
+  idt_set_gate(8, (uint64_t)isr8, 0x08, 0x8E);
   idt_set_gate(9, 0, 0x08, 0x0E);
   idt_set_gate(10, 0, 0x08, 0x0E);
   idt_set_gate(11, 0, 0x08, 0x0E);
   idt_set_gate(12, 0, 0x08, 0x0E);
-  idt_set_gate(13, isr13, 0x08, 0x8E);
-  idt_set_gate(14, isr14, 0x08, 0x8E);
+  idt_set_gate(13, (uint64_t)isr13, 0x08, 0x8E);
+  idt_set_gate(14, (uint64_t)isr14, 0x08, 0x8E);
   idt_set_gate(15, 0, 0x08, 0x0E);
   idt_set_gate(16, 0, 0x08, 0x0E);
   idt_set_gate(17, 0, 0x08, 0x0E);
@@ -1811,17 +1818,17 @@ void idt_setup() {
   idt_set_gate(29, 0, 0x08, 0x0E);
   idt_set_gate(30, 0, 0x08, 0x0E);
   idt_set_gate(31, 0, 0x08, 0x0E);
-  idt_set_gate(32, isr32, 0x08, 0x8E);
-  idt_set_gate(0x31, isr0x31, 0x08, 0x8E);  // keyboard
-  idt_set_gate(0x32, isr0x32, 0x08, 0x8E);  // mouse
-  idt_set_gate(0x33, isr0x33, 0x08, 0x8e);  // ethernet
-  idt_set_gate(0x34, isr0x34, 0x08, 0x8e);  // timer
+  idt_set_gate(32, (uint64_t)isr32, 0x08, 0x8E);
+  idt_set_gate(0x31, (uint64_t)isr0x31, 0x08, 0x8E);  // keyboard
+  idt_set_gate(0x32, (uint64_t)isr0x32, 0x08, 0x8E);  // mouse
+  idt_set_gate(0x33, (uint64_t)isr0x33, 0x08, 0x8e);  // ethernet
+  idt_set_gate(0x34, (uint64_t)isr0x34, 0x08, 0x8e);  // timer
 
   idt_update(&idt);
 }
 
 void idt_set_gate(uint32 interrupt,
-		  uint64 offset,
+		  uint64_t offset,
 		  uint16 selector,
 		  uint8 type_attr) {
   // first 16 bits
@@ -2347,15 +2354,15 @@ acpi_rsdp_t* locate_rsdp() {
   // ref: https://wiki.osdev.org/RSDP
   // ref:
   // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#finding-the-rsdp-on-ia-pc-systems
-  uint64_t* start = 0xE0000;
-  uint64_t* end = 0xFFFFF;
+  uint64_t* start = (uint64_t*)0xE0000;
+  uint64_t* end = (uint64_t*)0xFFFFF;
 
   // "RSD PTR "
   for (; start < end; start += 2) {
-    uint8_t* s = start;
+    uint8_t* s = (uint8_t*)start;
     if (s[0] == 'R' && s[1] == 'S' && s[2] == 'D' && s[3] == ' ' &&
 	s[4] == 'P' && s[5] == 'T' && s[6] == 'R' && s[7] == ' ') {
-      return start;
+      return (acpi_rsdp_t*)start;
     }
   }
   return NULL;
@@ -2421,19 +2428,20 @@ void list_tables(acpi_sdt_header_t* rsdt) {
     // &entries to get the first entry.
     // +i uses size of type which is uint32_t.
     // * because it's a pointer to some place.
-    acpi_sdt_header_t* h = *(&rsdt->entries + i);
+    acpi_sdt_header_t* h = (acpi_sdt_header_t*)(*(&rsdt->entries + i));
     printf("table %d: %.*s\n", i, 4, h->signature);
     if (strncmp(h->signature, "APIC", 4)) {
-      acpi_madt_t* madt = h;
+      acpi_madt_t* madt = (acpi_madt_t*)h;
       printf("configuring acpi: %x\n",
 	     madt->local_interrupt_controller_address);
       // how many? madt->length?
       // first
       int j = 0;
-      for (acpi_ics_header_t* h = &(madt->first);; h = (char*)h + h->length) {
+      // TODO: refactor this pointer arithmetic.
+      for (acpi_ics_header_t* h = (acpi_ics_header_t*)(&(madt->first));; h = (acpi_ics_header_t*)((char*)h + h->length)) {
 	printf("type: %d, length: %d\n", h->type, h->length);
 	if (h->type == 1) {
-	  acpi_ics_ioapic_t* ioapic = h;
+	  acpi_ics_ioapic_t* ioapic = (acpi_ics_ioapic_t*)h;
 	  printf("ioapic: id: %d address: %x\n", ioapic->id, ioapic->address);
 	  // 0x000000e3, e3 implies dirty flag is set
 	  // 0x00200083, this is a normal page with dirty flag not set
@@ -2445,7 +2453,7 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	}
 	if (h->type == 2) {
 	  printf("interrupt source overrides\n");
-	  acpi_ics_input_source_override_t* iso = h;
+	  acpi_ics_input_source_override_t* iso = (acpi_ics_input_source_override_t*)h;
 	  printf("source: %x, interrupt: %x\n", iso->source,
 		 iso->global_system_interrupt);
 	}
@@ -2456,7 +2464,7 @@ void list_tables(acpi_sdt_header_t* rsdt) {
       }
     } else if (strncmp(h->signature, "HPET", 4)) {
       // note: without uint8_t case here we go too far.
-      acpi_hpet_header_t* hpet = (uint8_t*)h + sizeof(acpi_sdt_header2_t);
+      acpi_hpet_header_t* hpet = (acpi_hpet_header_t*)((uint8_t*)h + sizeof(acpi_sdt_header2_t));
       printf("HPET: hpet number: %d\n", hpet->hpet_number);
       printf("HPET: address space: %d base: %x\n",
 	     hpet->base_address.address_space_id, hpet->base_address.address);
@@ -2700,7 +2708,7 @@ void pci_enumerate() {
 	  printf("ethernet: reset successful \n");
 
 	  // 0x30 is a 4 byte receive buffer start address register.
-	  outl(base + 0x30, network_rx_buffer);
+	  outl(base + 0x30, (uint32_t)network_rx_buffer);
 
 	  // Interrupt Mask Register
 	  // 0x3c 16 bit
@@ -2799,8 +2807,8 @@ typedef struct pcmp_interrupt_entry pcmp_interrupt_entry_t;
 void locate_pcmp() {
   // ref:
   // https://web.archive.org/web/20121002210153/http://download.intel.com/design/archives/processors/pro/docs/24201606.pdf
-  uint8_t* start = 0xE0000;
-  uint8_t* end = 0xFFFFF;
+  uint8_t* start = (uint8_t*)0xE0000;
+  uint8_t* end = (uint8_t*)0xFFFFF;
 
   // "RSD PTR "
   for (; start < end; start += 1) {
@@ -2816,7 +2824,7 @@ void locate_pcmp() {
 	  //	  printf("cpu header\n");
 	  s += sizeof(pcmp_processor_entry_t);
 	} else if (*s == 1) {
-	  pcmp_bus_entry_t* b = s;
+	  pcmp_bus_entry_t* b = (pcmp_bus_entry_t*)s;
 	  //	  printf("bus header: %d\n", b->bus_id);
 	  s += sizeof(pcmp_bus_entry_t);
 	} else if (*s == 2) {
@@ -2824,7 +2832,7 @@ void locate_pcmp() {
 	  s += sizeof(pcmp_ioapic_entry_t);
 	} else if (*s == 3) {
 	  //	  printf("interrupt header\n");
-	  pcmp_interrupt_entry_t* e = s;
+	  pcmp_interrupt_entry_t* e = (pcmp_interrupt_entry_t*)s;
 	  printf(
 	      "type: %x, flags: %x, bus: %x, "
 	      "irq.t: %x, irq.d: %x, id: %x, "
@@ -2836,7 +2844,7 @@ void locate_pcmp() {
 	  s += sizeof(pcmp_interrupt_entry_t);
 	} else if (*s == 4) {
 	  // printf("interrupt 2 header\n");
-	  pcmp_interrupt_entry_t* e = s;
+	  pcmp_interrupt_entry_t* e = (pcmp_interrupt_entry_t*)s;
 	  /* printf( */
 	  /*     "interrupt_type: %x, interrupt_flags: %x, source_bus_id: %x,
 	   * "
@@ -2858,7 +2866,104 @@ void locate_pcmp() {
   return;
 }
 
-void kmain(void* mbd, unsigned int magic) {
+uint8_t t1_stack[8192] = {};
+uint8_t t2_stack[8192] = {};
+
+struct task {
+  uint8_t id;
+  uint64_t stack_ptr;
+  uint64_t eip;
+  uint64_t rax;
+  uint64_t rcx;
+  uint64_t rdx;
+  uint64_t rsi;
+  uint64_t rdi;
+  uint64_t r8;
+  uint64_t r9;
+  uint64_t r10;
+  uint64_t r11;
+};
+typedef struct task task_t;
+
+void task1(uint8_t id);
+void task2(uint8_t id);
+void trampoline();
+
+extern void switch_task(task_t *current, task_t *next);
+
+void setup_stack(uint8_t *stack) {
+  uint64_t *s = (uint64_t *)stack;
+  s[0] = (uint64_t)&trampoline;
+}
+
+
+task_t kernel = {
+    .id = 123,
+    .stack_ptr = (uint64_t)&t1_stack,
+    .eip = (uint64_t)task1,
+    .rax = 0,
+    .rcx = 0,
+    .rdx = 0,
+    .rsi = 0,
+    .rdi = 0,
+    .r8 = 0,
+    .r9 = 0,
+    .r10 = 0,
+    .r11 = 0,
+};
+
+task_t t1 = {
+    .id = 15,
+    .stack_ptr = (uint64_t)&t1_stack,
+    .eip = (uint64_t)task1,
+    .rax = 0,
+    .rcx = 0,
+    .rdx = 0,
+    .rsi = 0,
+    .rdi = 0,
+    .r8 = 0,
+    .r9 = 0,
+    .r10 = 0,
+    .r11 = 0,
+};
+
+task_t t2 = {
+    .id = 20,
+    .stack_ptr = (uint64_t)&t2_stack,
+    .eip = (uint64_t)task2,
+    .rax = 0,
+    .rcx = 0,
+    .rdx = 0,
+    .rsi = 0,
+    .rdi = 0,
+    .r8 = 0,
+    .r9 = 0,
+    .r10 = 0,
+    .r11 = 0,
+};
+
+void trampoline() {
+  printf("finished a task\n");
+  // TODO
+  // remove task
+  // switch to scheduler
+  switch_task(&t2, &kernel);
+}
+
+
+void task1(uint8_t id) {
+    printf("running task 1 %d\n", id);
+    switch_task(&t1, &t2);
+}
+
+void task2(uint8_t id) {
+    printf("running task 2 %d\n", id);
+    //    switch_task(&t1, &t2);
+}
+
+
+
+int kmain(void* mbd, unsigned int magic) {
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
     asm volatile("hlt");
@@ -2912,7 +3017,7 @@ void kmain(void* mbd, unsigned int magic) {
   //  }
   //  printf("rsdp: revision: %d, rsdt_addr: %x\n", rsdp->revision,
   //  rsdp->rsdt);
-  acpi_sdt_header_t* rsdt = rsdp->rsdt;
+  acpi_sdt_header_t* rsdt = (acpi_sdt_header_t*)rsdp->rsdt;
   //  printf("rsdt: %.*s", 4, rsdt->signature);
   //  list_tables(rsdt);
   pci_enumerate();
@@ -2934,7 +3039,25 @@ void kmain(void* mbd, unsigned int magic) {
   // 3. set comparator match
   // 4. set overall enable bit
 
-  send_dhcp_discover();
+  // timer is already running
+
+  // How to get this running?
+  // We need to pre-fill the stack or register with the argument like id.
+  // We need to save all important registers on the kernel stack(?) and restore
+  // them later.
+  // How do we give it virtual memory? seems with cr3 thing to give page table.
+
+  setup_stack(t1_stack);
+  printf("task 1 stack ptr: %x\n", t1.stack_ptr);
+  printf("task 1 eip: %x\n", t1.eip);
+
+  setup_stack(t2_stack);
+  printf("task 2 stack ptr: %x\n", t2.stack_ptr);
+  printf("task 2 eip: %x\n", t2.eip);
+
+  switch_task(&kernel, &t1);
+
+  // send_dhcp_discover();
   return 0xDEADBABA;
 }
 
@@ -3053,3 +3176,6 @@ void kmain(void* mbd, unsigned int magic) {
 // e1000-82540em,netdev=vmnet
 // sudo qemu-system-x86_64 -netdev vmnet-bridged,id=vmnet,ifname=en0 -device
 // rtl8139,netdev=vmnet
+
+// how to get a hex dump of the binary
+// x86_64-elf-objdump -M intel -d kernel.bin -x | less
