@@ -461,7 +461,7 @@ extern void isr0x34(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
-  uint64 r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax;
+  uint64 r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx, rax;
   uint64 int_no, err_code;
   uint64 eip, cs, eflags, rsp, ss;  // pushed by cpu after interrupt
 } __attribute__((packed));
@@ -1401,14 +1401,20 @@ struct task {
   uint64_t rsp;
   uint64_t eip;
   uint64_t rax;
+  uint64_t rbx;
   uint64_t rcx;
   uint64_t rdx;
   uint64_t rsi;
   uint64_t rdi;
+  uint64_t rbp;
   uint64_t r8;
   uint64_t r9;
   uint64_t r10;
   uint64_t r11;
+  uint64_t r12;
+  uint64_t r13;
+  uint64_t r14;
+  uint64_t r15;
   task_t *next;
 };
 
@@ -1465,37 +1471,67 @@ void task_remove(task_t *task) {
   }
 }
 
+void print_task(task_t *task) {
+  printf("task: rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = %x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n", task->rsp, task->eip, task->rax, task->rcx, task->rdx, task->rsi, task->rdi, task->r8, task->r9, task->r10, task->r11);
+}
+
+void print_regs(interrupt_registers_t *regs) {
+  printf("regs:  rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = %x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n", regs->rsp, regs->eip, regs->rax, regs->rcx, regs->rdx, regs->rsi, regs->rdi, regs->r8, regs->r9, regs->r10, regs->r11);
+}
+
 void task_update_context(task_t *task, interrupt_registers_t *regs) {
+  // printf("task before\n");
+  //print_task(task);
   // TODO: if there's an error there is a high chance regs has the wrong sp/ip
   // If the layout were the same we could memcpy.
   task->rsp = regs->rsp;
   task->eip = regs->eip;
   task->rax = regs->rax;
+  task->rbx = regs->rbx;
   task->rcx = regs->rcx;
   task->rdx = regs->rdx;
   task->rsi = regs->rsi;
   task->rdi = regs->rdi;
+  task->rbp = regs->rbp;
   task->r8 = regs->r8;
   task->r9 = regs->r9;
   task->r10 = regs->r10;
   task->r11 = regs->r11;
+  task->r12 = regs->r12;
+  task->r13 = regs->r13;
+  task->r14 = regs->r14;
+  task->r15 = regs->r15;
+
+  //printf("task after\n");
+  //print_task(task);
 }
 
 // I guess this should be normalized and just one function, from -> to.
 void update_regs_from_task(task_t *task, interrupt_registers_t *regs) {
+  printf("regs before\n");
+  print_regs(regs);
   // TODO: if there's an error there is a high chance regs has the wrong sp/ip
   // If the layout were the same we could memcpy.
   regs->rsp = task->rsp;
   regs->eip = task->eip;
   regs->rax = task->rax;
+  regs->rbx = task->rbx;
   regs->rcx = task->rcx;
   regs->rdx = task->rdx;
   regs->rsi = task->rsi;
   regs->rdi = task->rdi;
+  regs->rbp = task->rbp;
   regs->r8 = task->r8;
   regs->r9 = task->r9;
   regs->r10 = task->r10;
   regs->r11 = task->r11;
+  regs->r12 = task->r12;
+  regs->r13 = task->r13;
+  regs->r14 = task->r14;
+  regs->r15 = task->r15;
+
+  printf("after before\n");
+  print_regs(regs);
 }
 
 
@@ -1517,8 +1553,8 @@ void kernel_task();
 // It won't be needed anymore because we jump out of kmain.
 task_t kernel = {
     .id = 123,
-    .rsp = (uint64_t)&t1_stack,
-    .eip = (uint64_t)kernel_task_stack,
+    .rsp = (uint64_t)&kernel_task_stack,
+    .eip = (uint64_t)kernel_task,
     .rax = 0,
     .rcx = 0,
     .rdx = 0,
@@ -1579,8 +1615,8 @@ void kernel_task() {
 }
 
 void task1(uint8_t id) {
-     while (1) {
-       //  for (uint8_t i = 0; i < 1; i++) {
+ while (1) {
+   //	for (uint32_t i = 0; i < 1000; i++) {
 
 
     // TODO: there seems to be a bug. if we write tons of lines it just turns
@@ -1605,7 +1641,7 @@ void task2(uint8_t id) {
 void interrupt_handler(interrupt_registers_t *regs) {
   // Timer IRQ
   if (regs->int_no == 0x34) {
-    printf("timer\n");
+    // printf("timer\n");
     // This is our schedule timer. We have all registers on the stack inside of
     // `regs`. To switch the task we want to update the current tasks context
     // with `regs`.
@@ -1632,7 +1668,7 @@ void interrupt_handler(interrupt_registers_t *regs) {
     }
     update_regs_from_task(task_current, regs);
 
-    printf("switched task\n");
+    printf("switched task to %d\n", task_current->id);
 
     set_timer0();
 
@@ -1982,11 +2018,8 @@ void interrupt_handler(interrupt_registers_t *regs) {
   } else {
     printf("interrupt: %x\n", regs->int_no);
   }
-  printf("eflags: %d\n", regs->eflags);
-  printf("ss: %d\n", regs->ss);
-  printf("rsp: %x\n", regs->rsp);
-  printf("cs: %d\n", regs->cs);
-  printf("ip: %x\n", regs->eip);
+  printf("eflags: %d, ss: %d, cs: %d\n", regs->eflags,  regs->ss, regs->cs);
+  printf("rsp: %x, ip: %x\n", regs->rsp, regs->eip);
 
   if (regs->int_no == EXCEPTION_PAGE_FAULT) {
     page_fault_error_t* e = (page_fault_error_t*)&regs->err_code;

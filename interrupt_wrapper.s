@@ -77,14 +77,20 @@ isr_wrapper:
 
 	;; Save caller saved scratch registers.
 	push rax
+	push rbx
 	push rcx
 	push rdx
 	push rsi
 	push rdi
+	push rbp
 	push r8
 	push r9
 	push r10
 	push r11
+	push r12
+	push r13
+	push r14
+	push r15
 
 	; We put a datastructure onto the stack and pass it to interrupt_handler.
 	mov rdi, rsp
@@ -93,14 +99,20 @@ isr_wrapper:
 	call interrupt_handler
 
 	; Restore caller saved scratch registers.
+	pop r15
+	pop r14
+	pop r13
+	pop r12
 	pop r11
 	pop r10
 	pop r9
 	pop r8
+	pop rbp
 	pop rdi
 	pop rsi
 	pop rdx
 	pop rcx
+	pop rbx
 	pop rax
 
 	;; Remove error code and interrupt number from the stack.
