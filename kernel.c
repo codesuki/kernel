@@ -79,7 +79,12 @@ int ypos = 0;
 // Have a pointer/"cursor" that says which line is the top/bottom line on the
 // screen. Can control the pointer with arrow keys to scroll up and down.
 
-uint8_t terminal_buffer[80 * 25 * 2 * 100] = {0};  // 100 pages
+// 2 is because every character has the character and a color/format.
+#define num_pages 3
+#define num_rows 25
+#define num_cols 80
+#define terminal_buffer_size (num_cols * num_rows * 2 * num_pages)
+uint8_t terminal_buffer[num_cols * num_rows * 2 * num_pages] = {0};  // 100 pages
 
 // ring buffer start. once we are at the end it needs to wrap. should be aligned
 // to start of line I guess.
@@ -88,31 +93,47 @@ uint16_t terminal_buffer_row_index = 0;
 uint16_t terminal_buffer_column_index = 0;
 uint16_t terminal_cursor_index = 0;
 
-// TODO: once we wrap there will be old data in the buffer. we need to clear it.
-// E.g. at the end of the line there is noise.
+int printf(const char* format, ...);
+
+// We need to wrap around and look at the end of the ring buffer if we are on
+// the first screen. This is the adjusted_cursor_index.
 void display() {
-  for (int y = 0; y < 25; y++) {
-    for (int x = 0; x < 80; x++) {
+  for (int y = 0; y < num_rows; y++) {
+    for (int x = 0; x < num_cols; x++) {
       // contract: at minimum we want to start at terminal_buffer_start default
       // is cursor locked at last line so we want to subtract 25 lines, but only
       // if we are over 25.
       bool is_after_first_page = terminal_cursor_index > 24;
       int adjusted_cursor_index =
-	  (terminal_cursor_index - is_after_first_page * 24);
+	is_after_first_page * (terminal_cursor_index - 24) + (1 - is_after_first_page) * (num_rows*num_pages-num_rows+terminal_cursor_index);
       int terminal_buffer_offset =
-	  terminal_buffer_start + adjusted_cursor_index * 80 * 2;
-      int idx = y * 80 * 2 + x * 2;
-      videoram[idx] = terminal_buffer[terminal_buffer_offset + idx];
-      videoram[idx + 1] = terminal_buffer[terminal_buffer_offset + idx + 1];
+	terminal_buffer_start + adjusted_cursor_index * num_cols * 2;
+      int idx = y * num_cols * 2 + x * 2;
+      videoram[idx] = terminal_buffer[(terminal_buffer_offset + idx) % terminal_buffer_size];
+      videoram[idx + 1] = terminal_buffer[(terminal_buffer_offset + idx + 1) % terminal_buffer_size];
     }
   }
+}
+
+void clear_page() {
+  for (uint32_t i = 0; i < num_rows * num_cols * 2; i++) {
+    uint32_t idx = (terminal_buffer_row_index * num_cols * 2 + i) % terminal_buffer_size;
+    terminal_buffer[idx] = 0;
+  }
+  // printf("cleared from %d to %d\n", terminal_buffer_row_index, terminal_buffer_row_index + num_rows );
 }
 
 void new_line() {
   // reset to first column
   terminal_buffer_column_index = 0;
   // one line down
-  ++terminal_buffer_row_index;
+  // printf("%d/%d L%d:", terminal_buffer_row_index/num_rows, num_pages, terminal_buffer_row_index);
+
+  terminal_buffer_row_index =
+      (terminal_buffer_row_index + 1) % (num_rows * num_pages);
+  if (terminal_buffer_row_index % num_rows == 0) {
+    clear_page();
+  }
   // lock cursor at last line
   terminal_cursor_index = terminal_buffer_row_index;
   /* // super hacky */
@@ -129,10 +150,8 @@ void print_character_color(char c, char color) {
       new_line();
       break;
     default:
-      /* if (xpos > 80 * 2) { */
-      /*	new_line(); */
-      /* } */
-      uint16_t idx = terminal_buffer_row_index * 80 * 2 + terminal_buffer_column_index * 2;
+      // Possible integer overrun
+      uint16_t idx = terminal_buffer_row_index * num_cols * 2 + terminal_buffer_column_index * 2;
       terminal_buffer[idx] = (int)c;
       terminal_buffer[idx + 1] = color;
       terminal_buffer_column_index++;
@@ -1436,7 +1455,7 @@ void task_remove(task_t *task) {
     task_first = task->next;
   }
 
-  // Case 1: It's in the middle or the last task. Behavior is the same.
+  // Case 2: It's in the middle or the last task. Behavior is the same.
   task_t *t = task_first;
   for (; t->next != NULL; t = t->next) {
     if (t->next == task) {
@@ -1542,7 +1561,7 @@ task_t t2 = {
 };
 
 void trampoline() {
-  printf("finished a task\n");
+  printf("finished a task: %d\n", task_current->id);
   // TODO
   // remove task
   // switch to scheduler
@@ -1560,7 +1579,10 @@ void kernel_task() {
 }
 
 void task1(uint8_t id) {
-  while (1) {
+     while (1) {
+       //  for (uint8_t i = 0; i < 1; i++) {
+
+
     // TODO: there seems to be a bug. if we write tons of lines it just turns
     // black.
     printf("running task 1 %d\n", id);
@@ -1605,7 +1627,7 @@ void interrupt_handler(interrupt_registers_t *regs) {
     } else {
       // TODO: I guess this is where either there is an idle task or the
       // scheduler itself is the idle task
-      printf("no task queued. switching to kernel task");
+      printf("no task queued. switching to kernel task\n");
       task_current = &kernel;
     }
     update_regs_from_task(task_current, regs);
