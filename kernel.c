@@ -416,6 +416,7 @@ void idt_set_gate(uint32 interrupt,
 		  uint16 selector,
 		  uint8 type_attr);
 
+/*
 struct interrupt_registers_struct {
   uint32 ds;                                      // Data segment selector
   uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax;  // Pushed by pusha.
@@ -423,7 +424,8 @@ struct interrupt_registers_struct {
   uint32 eip, cs, eflags, useresp,
       ss;  // Pushed by the processor automatically.
 } __attribute__((packed));
-typedef struct registers_struct interrupt_registers_t;
+typedef struct interrupt_registers_struct interrupt_registers_t;
+*/
 
 extern int isr0;             // divide error, no error code, fault
 extern void isr3(void);  // breakpoint, no error code, trap
@@ -440,10 +442,11 @@ extern void isr0x34(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
-  // uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax; // pushed by pushad
+  uint64 r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax;
   uint64 int_no, err_code;
   uint64 eip, cs, eflags, rsp, ss;  // pushed by cpu after interrupt
 } __attribute__((packed));
+typedef struct interrupt_registers interrupt_registers_t;
 
 #define EXCEPTION_PAGE_FAULT 14
 
@@ -456,13 +459,13 @@ char* interrupt_names[22] = {
     "5",
     "6",
     "7",
-    "Double Fault Exception",
+    "Double Fault Exception", // 8
     "9",
     "10",
     "11",
     "12",
     "General Protection Exception",  // 13
-    "Page Fault Exception"           // 14
+    "Page Fault Exception",           // 14
     "15",
     "16",
     "17",
@@ -1373,24 +1376,241 @@ void net_handle_ipv4(ethernet_frame_t* ef, ipv4_header_t* iph) {
   }
 }
 
-// regs is passed via rdi
-void interrupt_handler(struct interrupt_registers* regs) {
-  if (regs->int_no == 0x34) {  // timer IRQ
-    printf("timer\n");
-    // todo:
-    // send packet
-    // set timer
-    //  send_dhcp_discover();
+typedef struct task task_t;
+struct task {
+  uint8_t id;
+  uint64_t rsp;
+  uint64_t eip;
+  uint64_t rax;
+  uint64_t rcx;
+  uint64_t rdx;
+  uint64_t rsi;
+  uint64_t rdi;
+  uint64_t r8;
+  uint64_t r9;
+  uint64_t r10;
+  uint64_t r11;
+  task_t *next;
+};
 
-    // reschedule?
-    // how do we know which interrupt causes reschedule?
-    // every time has its own interrupt?
-    // one timer is specifically for the os to reschedule?
-    // those are my assumptions
+task_t *task_first = 0;
+task_t *task_current = 0;
+
+void trampoline();
+
+extern void switch_task(task_t *current, task_t *next);
+
+// TODO: added task prefix for namespacing. Check C best practices.
+void task_setup_stack(uint8_t *stack) {
+  // TODO: we could null it, but maybe that's too much work, also, how big is it
+  // even?
+  uint64_t *s = (uint64_t *)stack;
+  s[0] = (uint64_t)&trampoline;
+}
+
+// TODO: actually we want to allocate a new one now..
+void task_new(uint64_t entry_point, uint8_t *stack, task_t *task) {
+  printf("New task %x\n", entry_point);
+  // memset to 0
+  task->eip = entry_point;
+  task->rsp = (uint64_t)stack;
+  task_setup_stack(stack);
+
+  if (task_first == NULL) {
+    // First task
+    task_first = task;
+  } else {
+    // Add to end of list
+    task_t *t = task_first;
+    for (; t->next != NULL; t = t->next) {
+    }
+    t->next = task;
+  }
+}
+
+void task_remove(task_t *task) {
+  printf("Removing task %d\n", task->id);
+
+  // Case 1: It's the first task
+  if (task_first == task) {
+    task_first = task->next;
+  }
+
+  // Case 1: It's in the middle or the last task. Behavior is the same.
+  task_t *t = task_first;
+  for (; t->next != NULL; t = t->next) {
+    if (t->next == task) {
+	t->next = task->next;
+	return;
+    }
+  }
+}
+
+void task_update_context(task_t *task, interrupt_registers_t *regs) {
+  // TODO: if there's an error there is a high chance regs has the wrong sp/ip
+  // If the layout were the same we could memcpy.
+  task->rsp = regs->rsp;
+  task->eip = regs->eip;
+  task->rax = regs->rax;
+  task->rcx = regs->rcx;
+  task->rdx = regs->rdx;
+  task->rsi = regs->rsi;
+  task->rdi = regs->rdi;
+  task->r8 = regs->r8;
+  task->r9 = regs->r9;
+  task->r10 = regs->r10;
+  task->r11 = regs->r11;
+}
+
+// I guess this should be normalized and just one function, from -> to.
+void update_regs_from_task(task_t *task, interrupt_registers_t *regs) {
+  // TODO: if there's an error there is a high chance regs has the wrong sp/ip
+  // If the layout were the same we could memcpy.
+  regs->rsp = task->rsp;
+  regs->eip = task->eip;
+  regs->rax = task->rax;
+  regs->rcx = task->rcx;
+  regs->rdx = task->rdx;
+  regs->rsi = task->rsi;
+  regs->rdi = task->rdi;
+  regs->r8 = task->r8;
+  regs->r9 = task->r9;
+  regs->r10 = task->r10;
+  regs->r11 = task->r11;
+}
+
+
+
+uint8_t kernel_task_stack[8192] = {};
+uint8_t t1_stack[8192] = {};
+uint8_t t2_stack[8192] = {};
+
+void task1(uint8_t id);
+void task2(uint8_t id);
+void kernel_task();
+
+//extern const uint8_t STACKSIZE;
+//extern uint8_t *stack;
+
+// My guess is that we probably want to 'lose' the initial kernel loader task.
+// Which means we create a new stack and switch to a new task that we define
+// here. What happens with the initial kernel stack? Can we clean it up somehow?
+// It won't be needed anymore because we jump out of kmain.
+task_t kernel = {
+    .id = 123,
+    .rsp = (uint64_t)&t1_stack,
+    .eip = (uint64_t)kernel_task_stack,
+    .rax = 0,
+    .rcx = 0,
+    .rdx = 0,
+    .rsi = 0,
+    .rdi = 0,
+    .r8 = 0,
+    .r9 = 0,
+    .r10 = 0,
+    .r11 = 0,
+};
+
+task_t t1 = {
+    .id = 15,
+    .rsp = (uint64_t)&t1_stack,
+    .eip = (uint64_t)task1,
+    .rax = 0,
+    .rcx = 0,
+    .rdx = 0,
+    .rsi = 0,
+    .rdi = 0,
+    .r8 = 0,
+    .r9 = 0,
+    .r10 = 0,
+    .r11 = 0,
+};
+
+task_t t2 = {
+    .id = 20,
+    .rsp = (uint64_t)&t2_stack,
+    .eip = (uint64_t)task2,
+    .rax = 0,
+    .rcx = 0,
+    .rdx = 0,
+    .rsi = 0,
+    .rdi = 0,
+    .r8 = 0,
+    .r9 = 0,
+    .r10 = 0,
+    .r11 = 0,
+};
+
+void trampoline() {
+  printf("finished a task\n");
+  // TODO
+  // remove task
+  // switch to scheduler
+  // Do we switch directly or just hlt and wait for timer interrupt?
+  //  task_current =
+  //  switch_task(&t2, &kernel);
+  asm("HLT");
+}
+
+void kernel_task() {
+  printf("kernel task\n");
+  asm("HLT");
+}
+
+void task1(uint8_t id) {
+    printf("running task 1 %d\n", id);
+    // switch_task(&t1, &t2);
+}
+
+void task2(uint8_t id) {
+    printf("running task 2 %d\n", id);
+    //    switch_task(&t1, &t2);
+
+    // TODO: I had a bug where the kernel task still had task 1 as next which
+    // was finished. It tried to change to the finished task which caused a
+    // double fault.
+    kernel.next = &kernel;
+}
+
+// regs is passed via rdi
+void interrupt_handler(interrupt_registers_t *regs) {
+  // Timer IRQ
+  if (regs->int_no == 0x34) {
+    printf("timer\n");
+    // This is our schedule timer. We have all registers on the stack inside of
+    // `regs`. To switch the task we want to update the current tasks context
+    // with `regs`.
+
+    // We need to know the current task, let's assume we have it in a variable.
+    task_update_context(task_current, regs);
+    // Now change to the next task. Assume it's in task.next. The interrupt
+    // handler will pop all these registers and call iret. To actually switch
+    // the tasks we need to change the stack to contain the registers of the
+    // next task.
+    // We can actually change the regs that are on the stack via `regs`. Why
+    // does it take a few minutes that I even see this?
+    if (task_current->next != NULL) {
+      task_current = task_current->next;
+    } else {
+      // TODO: I guess this is where either there is an idle task or the
+      // scheduler itself is the idle task
+      printf("no task queued. switching to kernel task");
+      task_current = &kernel;
+    }
+    update_regs_from_task(task_current, regs);
+
+    printf("switched task\n");
+
     set_timer0();
+
+    // Come to think of it.. we could unconditinally switch to the scheduler
+    // task and the scheduler task could then switch to other tasks. But we
+    // would still need to save the context.
 
     //    __asm__ volatile("hlt" : :);
 
+    // TODO: is there a better way to do this?
+    // The interrupt handler should do this. Maybe we don't always do this?
     volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
     *local_apic_eoi = 0;
     return;
@@ -2866,102 +3086,6 @@ void locate_pcmp() {
   return;
 }
 
-uint8_t t1_stack[8192] = {};
-uint8_t t2_stack[8192] = {};
-
-struct task {
-  uint8_t id;
-  uint64_t stack_ptr;
-  uint64_t eip;
-  uint64_t rax;
-  uint64_t rcx;
-  uint64_t rdx;
-  uint64_t rsi;
-  uint64_t rdi;
-  uint64_t r8;
-  uint64_t r9;
-  uint64_t r10;
-  uint64_t r11;
-};
-typedef struct task task_t;
-
-void task1(uint8_t id);
-void task2(uint8_t id);
-void trampoline();
-
-extern void switch_task(task_t *current, task_t *next);
-
-void setup_stack(uint8_t *stack) {
-  uint64_t *s = (uint64_t *)stack;
-  s[0] = (uint64_t)&trampoline;
-}
-
-
-task_t kernel = {
-    .id = 123,
-    .stack_ptr = (uint64_t)&t1_stack,
-    .eip = (uint64_t)task1,
-    .rax = 0,
-    .rcx = 0,
-    .rdx = 0,
-    .rsi = 0,
-    .rdi = 0,
-    .r8 = 0,
-    .r9 = 0,
-    .r10 = 0,
-    .r11 = 0,
-};
-
-task_t t1 = {
-    .id = 15,
-    .stack_ptr = (uint64_t)&t1_stack,
-    .eip = (uint64_t)task1,
-    .rax = 0,
-    .rcx = 0,
-    .rdx = 0,
-    .rsi = 0,
-    .rdi = 0,
-    .r8 = 0,
-    .r9 = 0,
-    .r10 = 0,
-    .r11 = 0,
-};
-
-task_t t2 = {
-    .id = 20,
-    .stack_ptr = (uint64_t)&t2_stack,
-    .eip = (uint64_t)task2,
-    .rax = 0,
-    .rcx = 0,
-    .rdx = 0,
-    .rsi = 0,
-    .rdi = 0,
-    .r8 = 0,
-    .r9 = 0,
-    .r10 = 0,
-    .r11 = 0,
-};
-
-void trampoline() {
-  printf("finished a task\n");
-  // TODO
-  // remove task
-  // switch to scheduler
-  switch_task(&t2, &kernel);
-}
-
-
-void task1(uint8_t id) {
-    printf("running task 1 %d\n", id);
-    switch_task(&t1, &t2);
-}
-
-void task2(uint8_t id) {
-    printf("running task 2 %d\n", id);
-    //    switch_task(&t1, &t2);
-}
-
-
 
 int kmain(void* mbd, unsigned int magic) {
   if (magic != 0x36d76289) {
@@ -3047,15 +3171,45 @@ int kmain(void* mbd, unsigned int magic) {
   // them later.
   // How do we give it virtual memory? seems with cr3 thing to give page table.
 
-  setup_stack(t1_stack);
-  printf("task 1 stack ptr: %x\n", t1.stack_ptr);
+  // What to do next?
+  // We have basic task switching that works, we don't have anything that starts
+  // new tasks.
+  // What about making the tasks not end using a while loop?
+  // Or one ends to test the trampoline and one loops.
+  // What do we need to make this work?
+  // We still want to round robin, except maybe the idle task.
+  // We make a linked list. We add/remove tasks there.
+  //
+  // Remove is done in the trampoline or the trampoline just sets the task state
+  // and we remove it when we iterate over it.
+  // The timer / scheduler just goes through the linked list. If it's empty it goes to the idle task.
+
+  //task_new((uint64_t)task1, t1_stack, &t1);
+  //task_new((uint64_t)task2, t2_stack, &t2);
+
+
+  task_current = &kernel;
+
+  task_setup_stack(t1_stack);
+  task_setup_stack(t2_stack);
+
+  task_current->next = &t1;
+  t1.next = &t2;
+  t2.next = &kernel;
+
+  printf("task 1 stack ptr: %x\n", t1.rsp);
   printf("task 1 eip: %x\n", t1.eip);
 
-  setup_stack(t2_stack);
-  printf("task 2 stack ptr: %x\n", t2.stack_ptr);
+
+  printf("task 2 stack ptr: %x\n", t2.rsp);
   printf("task 2 eip: %x\n", t2.eip);
 
-  switch_task(&kernel, &t1);
+  while (1) {
+    printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
+    asm("HLT");
+  }
+
+  //  switch_task(&kernel, &t1);
 
   // send_dhcp_discover();
   return 0xDEADBABA;
