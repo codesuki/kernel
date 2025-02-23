@@ -38,7 +38,7 @@ run: $(ISO)
 	#-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
 
 debug: $(ISO)
-	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -S
+	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s # -S
 
 run-bochs: $(ISO)
 	bochs -f bochs.rc

@@ -1549,6 +1549,8 @@ void trampoline() {
   // Do we switch directly or just hlt and wait for timer interrupt?
   //  task_current =
   //  switch_task(&t2, &kernel);
+
+  task_remove(task_current);
   asm("HLT");
 }
 
@@ -1558,8 +1560,13 @@ void kernel_task() {
 }
 
 void task1(uint8_t id) {
+  while (1) {
+    // TODO: there seems to be a bug. if we write tons of lines it just turns
+    // black.
     printf("running task 1 %d\n", id);
-    // switch_task(&t1, &t2);
+    //  asm("HLT");
+  }
+  // switch_task(&t1, &t2);
 }
 
 void task2(uint8_t id) {
@@ -1569,7 +1576,7 @@ void task2(uint8_t id) {
     // TODO: I had a bug where the kernel task still had task 1 as next which
     // was finished. It tried to change to the finished task which caused a
     // double fault.
-    kernel.next = &kernel;
+    //  kernel.next = &kernel;
 }
 
 // regs is passed via rdi
@@ -1580,6 +1587,10 @@ void interrupt_handler(interrupt_registers_t *regs) {
     // This is our schedule timer. We have all registers on the stack inside of
     // `regs`. To switch the task we want to update the current tasks context
     // with `regs`.
+
+    // TODO: when we remove a task it's not in the queue anymore but we still
+    // write here.
+    // Speaks to cleaning it up async once we really changed away from it.
 
     // We need to know the current task, let's assume we have it in a variable.
     task_update_context(task_current, regs);
@@ -3182,13 +3193,21 @@ int kmain(void* mbd, unsigned int magic) {
   //
   // Remove is done in the trampoline or the trampoline just sets the task state
   // and we remove it when we iterate over it.
-  // The timer / scheduler just goes through the linked list. If it's empty it goes to the idle task.
+  // The timer / scheduler just goes through the linked list. If it's empty it
+  // goes to the idle task.
+  //
+  // The next thing to do is add a sleep function and check why printling many
+  // lines results in a black screen.
 
-  //task_new((uint64_t)task1, t1_stack, &t1);
-  //task_new((uint64_t)task2, t2_stack, &t2);
+  task_new((uint64_t)kernel_task, kernel_task_stack, &kernel);
+  task_new((uint64_t)task1, t1_stack, &t1);
+  task_new((uint64_t)task2, t2_stack, &t2);
 
-
+  // I actually don't want the kernel task in there do I?
+  // ah... for now I want because it's the idle task. Nevermind.
   task_current = &kernel;
+  /*
+
 
   task_setup_stack(t1_stack);
   task_setup_stack(t2_stack);
@@ -3203,7 +3222,7 @@ int kmain(void* mbd, unsigned int magic) {
 
   printf("task 2 stack ptr: %x\n", t2.rsp);
   printf("task 2 eip: %x\n", t2.eip);
-
+  */
   while (1) {
     printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
     asm("HLT");
