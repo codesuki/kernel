@@ -84,7 +84,8 @@ int ypos = 0;
 #define num_rows 25
 #define num_cols 80
 #define terminal_buffer_size (num_cols * num_rows * 2 * num_pages)
-uint8_t terminal_buffer[num_cols * num_rows * 2 * num_pages] = {0};  // 100 pages
+uint8_t terminal_buffer[num_cols * num_rows * 2 * num_pages] = {
+    0};  // 100 pages
 
 // ring buffer start. once we are at the end it needs to wrap. should be aligned
 // to start of line I guess.
@@ -105,29 +106,36 @@ void display() {
       // if we are over 25.
       bool is_after_first_page = terminal_cursor_index > 24;
       int adjusted_cursor_index =
-	is_after_first_page * (terminal_cursor_index - 24) + (1 - is_after_first_page) * (num_rows*num_pages-num_rows+terminal_cursor_index);
+	  is_after_first_page * (terminal_cursor_index - 24) +
+	  (1 - is_after_first_page) *
+	      (num_rows * num_pages - num_rows + terminal_cursor_index);
       int terminal_buffer_offset =
-	terminal_buffer_start + adjusted_cursor_index * num_cols * 2;
+	  terminal_buffer_start + adjusted_cursor_index * num_cols * 2;
       int idx = y * num_cols * 2 + x * 2;
-      videoram[idx] = terminal_buffer[(terminal_buffer_offset + idx) % terminal_buffer_size];
-      videoram[idx + 1] = terminal_buffer[(terminal_buffer_offset + idx + 1) % terminal_buffer_size];
+      videoram[idx] = terminal_buffer[(terminal_buffer_offset + idx) %
+				      terminal_buffer_size];
+      videoram[idx + 1] = terminal_buffer[(terminal_buffer_offset + idx + 1) %
+					  terminal_buffer_size];
     }
   }
 }
 
 void clear_page() {
   for (uint32_t i = 0; i < num_rows * num_cols * 2; i++) {
-    uint32_t idx = (terminal_buffer_row_index * num_cols * 2 + i) % terminal_buffer_size;
+    uint32_t idx =
+	(terminal_buffer_row_index * num_cols * 2 + i) % terminal_buffer_size;
     terminal_buffer[idx] = 0;
   }
-  // printf("cleared from %d to %d\n", terminal_buffer_row_index, terminal_buffer_row_index + num_rows );
+  // printf("cleared from %d to %d\n", terminal_buffer_row_index,
+  // terminal_buffer_row_index + num_rows );
 }
 
 void new_line() {
   // reset to first column
   terminal_buffer_column_index = 0;
   // one line down
-  // printf("%d/%d L%d:", terminal_buffer_row_index/num_rows, num_pages, terminal_buffer_row_index);
+  // printf("%d/%d L%d:", terminal_buffer_row_index/num_rows, num_pages,
+  // terminal_buffer_row_index);
 
   terminal_buffer_row_index =
       (terminal_buffer_row_index + 1) % (num_rows * num_pages);
@@ -151,7 +159,8 @@ void print_character_color(char c, char color) {
       break;
     default:
       // Possible integer overrun
-      uint16_t idx = terminal_buffer_row_index * num_cols * 2 + terminal_buffer_column_index * 2;
+      uint16_t idx = terminal_buffer_row_index * num_cols * 2 +
+		     terminal_buffer_column_index * 2;
       terminal_buffer[idx] = (int)c;
       terminal_buffer[idx + 1] = color;
       terminal_buffer_column_index++;
@@ -298,7 +307,7 @@ int printf(const char* format, ...) {
    5:magenta, 6:brown, 7:light grey, 8:dark grey,
    9:light blue, 10:light green, 11:light cyan,
    12:light red, 13:light magneta, 14: light brown, 15: white
-*/
+ */
 
 typedef uint64_t uint64;
 typedef int64_t int64;
@@ -436,21 +445,21 @@ void idt_set_gate(uint32 interrupt,
 		  uint8 type_attr);
 
 /*
-struct interrupt_registers_struct {
+  struct interrupt_registers_struct {
   uint32 ds;                                      // Data segment selector
   uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax;  // Pushed by pusha.
   uint32 int_no, err_code;  // Interrupt number and error code (if applicable)
   uint32 eip, cs, eflags, useresp,
-      ss;  // Pushed by the processor automatically.
-} __attribute__((packed));
-typedef struct interrupt_registers_struct interrupt_registers_t;
-*/
+  ss;  // Pushed by the processor automatically.
+  } __attribute__((packed));
+  typedef struct interrupt_registers_struct interrupt_registers_t;
+ */
 
-extern int isr0;             // divide error, no error code, fault
+extern int isr0;         // divide error, no error code, fault
 extern void isr3(void);  // breakpoint, no error code, trap
 extern void isr4(void);  // overflow, no error code, trap
 extern void isr8(void);
-extern int isr12;             // stack-segment fault, error code, fault
+extern int isr12;         // stack-segment fault, error code, fault
 extern void isr13(void);  // general protection fault, error code, fault
 extern void isr14(void);  // page fault, error code, fault
 extern void isr32(void);
@@ -461,7 +470,8 @@ extern void isr0x34(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
-  uint64 r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx, rax;
+  uint64 r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx,
+      rax;
   uint64 int_no, err_code;
   uint64 eip, cs, eflags, rsp, ss;  // pushed by cpu after interrupt
 } __attribute__((packed));
@@ -478,13 +488,13 @@ char* interrupt_names[22] = {
     "5",
     "6",
     "7",
-    "Double Fault Exception", // 8
+    "Double Fault Exception",  // 8
     "9",
     "10",
     "11",
     "12",
     "General Protection Exception",  // 13
-    "Page Fault Exception",           // 14
+    "Page Fault Exception",          // 14
     "15",
     "16",
     "17",
@@ -661,9 +671,8 @@ struct ipv4_header {
   uint16_t fragment_offset : 13;  // network byte order
   uint16_t flags : 3;             // network byte order
   uint8_t ttl;
-  uint8_t
-      protocol;  // ref:
-		 // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
+  uint8_t protocol;  // ref:
+  // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
   uint16_t checksum;             // network byte order?
   uint32_t source_address;       // network byte order
   uint32_t destination_address;  // network byte order
@@ -865,13 +874,18 @@ uint16_t udp_checksum(ipv4_header_t* ipv4h, uint16_t* addr) {
 
 #define HPET_CONFIG_REG 0x10
 #define HPET_BASE 0xfed00000
+#define HPET_MAIN_COUNTER 0xf0
 
+// TODO: read timer resolution from config.
+// The main timer tick interval is 10000000 (1e+7) femto seconds, read from
+// config. This equals 10 nanoseconds. 1000000 (1e+6) nanoseconds are 1
+// millisecond.
 const uint64_t _1ms = 100000;  // we need this many timer periods to have 1 ms
 const uint64_t _1s = _1ms * 1000;
 
 void set_timer0() {
   // main counter 0xf0
-  uint64_t* counter_value = (uint64_t*)(HPET_BASE + 0xf0);
+  uint64_t* counter_value = (uint64_t*)(HPET_BASE + HPET_MAIN_COUNTER);
   // TODO: crash because of large number
   // printf("hpet: counter: %d", *counter_value);
 
@@ -879,7 +893,7 @@ void set_timer0() {
   // printf("hpet: setting timer to %x %d\n", _1s, _1s);
   uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
   // TODO: how is wrapping handled? By GPE :D
-  *comparator_0 = *counter_value + _1s;
+  *comparator_0 = *counter_value + _1ms;
 
   // TODO: this crashes when wrapping 64bit value. Probably formatting code
   // wrong.
@@ -887,19 +901,16 @@ void set_timer0() {
 }
 
 uint64_t get_global_timer_value() {
-  return *(uint64_t*)(HPET_BASE + 0xf0);
+  return *(uint64_t*)(HPET_BASE + HPET_MAIN_COUNTER);
 }
 
 void setup_hpet() {
-  // bit 0 is enable flag
-  uint32_t* c = (uint32_t*)(HPET_BASE + HPET_CONFIG_REG);
-  printf("hpet: config %x\n", *c);
-
   // Timer 0: 100h – 107h, Timer 1: 120h – 127h, Timer 2: 140h – 147h
   uint32_t* available_interrupts = (uint32_t*)(HPET_BASE + 0x104);
   printf("hpet: interrupts timer 0: %x\n", *available_interrupts);
 
-  uint32_t* timer_0 = (uint32_t*)(HPET_BASE + 0x100);  // set bit 2 and maybe 9-13
+  uint32_t* timer_0 =
+      (uint32_t*)(HPET_BASE + 0x100);  // set bit 2 and maybe 9-13
   printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
   *timer_0 = (*timer_0) | (1 << 2) | (4 << 9);
   printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
@@ -908,7 +919,7 @@ void setup_hpet() {
   printf("hpet: femto: %d\n", *timer_period);
 
   // main counter 0xf0
-  uint64_t* counter_value = (uint64_t*)(HPET_BASE + 0xf0);
+  uint64_t* counter_value = (uint64_t*)(HPET_BASE + HPET_MAIN_COUNTER);
   printf("hpet: counter: %d", *counter_value);
 
   // comparator timer 0 0x108
@@ -917,6 +928,9 @@ void setup_hpet() {
   *comparator_0 = _1s;
   printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
 
+  // bit 0 is enable flag
+  uint32_t* c = (uint32_t*)(HPET_BASE + HPET_CONFIG_REG);
+  printf("hpet: config %x\n", *c);
   *c = (*c) | 0x1;
   printf("hpet: config %x\n", *c);
   printf("hpet: counter: %d\n", *counter_value);
@@ -964,12 +978,14 @@ void send_dhcp_discover() {
   iph->source_address = 0;                // should be network byte order
   iph->destination_address = 0xffffffff;  // should be network byte order
 
-  udp_header_t* udph = (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
+  udp_header_t* udph =
+      (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   udph->source_port = htons(68);
   udph->destination_port = htons(67);
 
-  dhcp_message_t* dhcpm = (dhcp_message_t*)(
-					    packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t));
+  dhcp_message_t* dhcpm =
+      (dhcp_message_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
+			sizeof(udp_header_t));
 
   // DHCPDISCOVER
   dhcpm->op = 0x01;
@@ -1037,12 +1053,14 @@ void send_dhcp_request() {
   iph->source_address = 0;  // 0xfeffffff;       // should be network byte order
   iph->destination_address = 0xffffffff;  // should be network byte order
 
-  udp_header_t* udph = (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
+  udp_header_t* udph =
+      (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   udph->source_port = htons(68);
   udph->destination_port = htons(67);
 
-  dhcp_message_t* dhcpm = (dhcp_message_t*)(
-					    packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t));
+  dhcp_message_t* dhcpm =
+      (dhcp_message_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
+			sizeof(udp_header_t));
 
   // DHCPDISCOVER
   dhcpm->op = 0x03;  // DIFFERENT
@@ -1126,12 +1144,13 @@ void send_dns_request() {
   iph->destination_address = (dhcp_dns[3] << 24) | (dhcp_dns[2] << 16) |
 			     (dhcp_dns[1] << 8) | dhcp_dns[0];
 
-  udp_header_t* udph = (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
+  udp_header_t* udph =
+      (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   udph->source_port = htons(53);
   udph->destination_port = htons(53);
 
-  dns_header_t* dnsh =(dns_header_t*)(
-				       packet + sizeof(ethernet_frame_t) + iph->ihl * 4 + sizeof(udp_header_t));
+  dns_header_t* dnsh = (dns_header_t*)(packet + sizeof(ethernet_frame_t) +
+				       iph->ihl * 4 + sizeof(udp_header_t));
 
   dnsh->id = htons(5);
   dnsh->qdcount = htons(1);
@@ -1224,7 +1243,8 @@ void send_echo() {
   iph->destination_address = (google_ip[3] << 24) | (google_ip[2] << 16) |
 			     (google_ip[1] << 8) | google_ip[0];
 
-  icmp_header_t* h = (icmp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
+  icmp_header_t* h =
+      (icmp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
   h->type = 8;
   h->code = 0;
 
@@ -1232,8 +1252,8 @@ void send_echo() {
   m->identifier = 0x1;
   m->sequence_number = 0;
 
-  h->checksum =
-      ipv4_checksum((uint16_t*)h, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+  h->checksum = ipv4_checksum(
+      (uint16_t*)h, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
 
   iph->length =
       htons(iph->ihl * 4 + sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
@@ -1415,26 +1435,27 @@ struct task {
   uint64_t r13;
   uint64_t r14;
   uint64_t r15;
-  task_t *next;
+  task_t* next;
+  uint64_t sleep_until;
 };
 
-task_t *task_first = 0;
-task_t *task_current = 0;
+task_t* task_first = 0;
+task_t* task_current = 0;
 
 void trampoline();
 
-extern void switch_task(task_t *current, task_t *next);
+extern void switch_task(task_t* current, task_t* next);
 
 // TODO: added task prefix for namespacing. Check C best practices.
-void task_setup_stack(uint8_t *stack) {
+void task_setup_stack(uint8_t* stack) {
   // TODO: we could null it, but maybe that's too much work, also, how big is it
   // even?
-  uint64_t *s = (uint64_t *)stack;
+  uint64_t* s = (uint64_t*)stack;
   s[0] = (uint64_t)&trampoline;
 }
 
 // TODO: actually we want to allocate a new one now..
-void task_new(uint64_t entry_point, uint8_t *stack, task_t *task) {
+void task_new(uint64_t entry_point, uint8_t* stack, task_t* task) {
   printf("New task %x\n", entry_point);
   // memset to 0
   task->eip = entry_point;
@@ -1444,16 +1465,18 @@ void task_new(uint64_t entry_point, uint8_t *stack, task_t *task) {
   if (task_first == NULL) {
     // First task
     task_first = task;
+    task_first->next = task_first;
   } else {
     // Add to end of list
-    task_t *t = task_first;
-    for (; t->next != NULL; t = t->next) {
+    task_t* t = task_first;
+    for (; t->next != task_first; t = t->next) {
     }
     t->next = task;
+    task->next = task_first;
   }
 }
 
-void task_remove(task_t *task) {
+void task_remove(task_t* task) {
   printf("Removing task %d\n", task->id);
 
   // Case 1: It's the first task
@@ -1462,27 +1485,46 @@ void task_remove(task_t *task) {
   }
 
   // Case 2: It's in the middle or the last task. Behavior is the same.
-  task_t *t = task_first;
+  task_t* t = task_first;
   for (; t->next != NULL; t = t->next) {
     if (t->next == task) {
-	t->next = task->next;
-	return;
+      t->next = task->next;
+      return;
     }
   }
 }
 
-void print_task(task_t *task) {
-  printf("task: rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = %x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n", task->rsp, task->eip, task->rax, task->rcx, task->rdx, task->rsi, task->rdi, task->r8, task->r9, task->r10, task->r11);
+void sleep(uint64_t ms) {
+  // how do I find the task that this should apply
+  // let's assume it's current
+  task_current->sleep_until = get_global_timer_value() + ms * _1ms;
+  // We want to reschedule after the sleep because the current task becomes
+  // blocking.
+  // reschedule()
+  // let's call hlt for now
+  asm("HLT");
+  // what if the schedule timer fires while we reschedule?
 }
 
-void print_regs(interrupt_registers_t *regs) {
-  printf("regs:  rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = %x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n", regs->rsp, regs->eip, regs->rax, regs->rcx, regs->rdx, regs->rsi, regs->rdi, regs->r8, regs->r9, regs->r10, regs->r11);
+void print_task(task_t* task) {
+  printf(
+      "task: rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = "
+      "%x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n",
+      task->rsp, task->eip, task->rax, task->rcx, task->rdx, task->rsi,
+      task->rdi, task->r8, task->r9, task->r10, task->r11);
 }
 
-void task_update_context(task_t *task, interrupt_registers_t *regs) {
+void print_regs(interrupt_registers_t* regs) {
+  printf(
+      "regs:  rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi "
+      "= %x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n",
+      regs->rsp, regs->eip, regs->rax, regs->rcx, regs->rdx, regs->rsi,
+      regs->rdi, regs->r8, regs->r9, regs->r10, regs->r11);
+}
+
+void task_update_context(task_t* task, interrupt_registers_t* regs) {
   // printf("task before\n");
-  //print_task(task);
-  // TODO: if there's an error there is a high chance regs has the wrong sp/ip
+  // print_task(task);
   // If the layout were the same we could memcpy.
   task->rsp = regs->rsp;
   task->eip = regs->eip;
@@ -1502,16 +1544,15 @@ void task_update_context(task_t *task, interrupt_registers_t *regs) {
   task->r14 = regs->r14;
   task->r15 = regs->r15;
 
-  //printf("task after\n");
-  //print_task(task);
+  // printf("task after\n");
+  // print_task(task);
 }
 
 // I guess this should be normalized and just one function, from -> to.
-void update_regs_from_task(task_t *task, interrupt_registers_t *regs) {
-  printf("regs before\n");
-  print_regs(regs);
-  // TODO: if there's an error there is a high chance regs has the wrong sp/ip
-  // If the layout were the same we could memcpy.
+void update_regs_from_task(task_t* task, interrupt_registers_t* regs) {
+  // printf("regs before\n");
+  // print_regs(regs);
+  //  If the layout were the same we could memcpy.
   regs->rsp = task->rsp;
   regs->eip = task->eip;
   regs->rax = task->rax;
@@ -1530,11 +1571,9 @@ void update_regs_from_task(task_t *task, interrupt_registers_t *regs) {
   regs->r14 = task->r14;
   regs->r15 = task->r15;
 
-  printf("after before\n");
-  print_regs(regs);
+  // printf("regs after\n");
+  // print_regs(regs);
 }
-
-
 
 uint8_t kernel_task_stack[8192] = {};
 uint8_t t1_stack[8192] = {};
@@ -1543,9 +1582,6 @@ uint8_t t2_stack[8192] = {};
 void task1(uint8_t id);
 void task2(uint8_t id);
 void kernel_task();
-
-//extern const uint8_t STACKSIZE;
-//extern uint8_t *stack;
 
 // My guess is that we probably want to 'lose' the initial kernel loader task.
 // Which means we create a new stack and switch to a new task that we define
@@ -1615,30 +1651,29 @@ void kernel_task() {
 }
 
 void task1(uint8_t id) {
- while (1) {
-   //	for (uint32_t i = 0; i < 1000; i++) {
-
+  while (1) {
+    //	for (uint32_t i = 0; i < 1000; i++) {
 
     // TODO: there seems to be a bug. if we write tons of lines it just turns
     // black.
     printf("running task 1 %d\n", id);
-    //  asm("HLT");
+    sleep(1000);
   }
   // switch_task(&t1, &t2);
 }
 
 void task2(uint8_t id) {
-    printf("running task 2 %d\n", id);
-    //    switch_task(&t1, &t2);
+  printf("running task 2 %d\n", id);
+  //    switch_task(&t1, &t2);
 
-    // TODO: I had a bug where the kernel task still had task 1 as next which
-    // was finished. It tried to change to the finished task which caused a
-    // double fault.
-    //  kernel.next = &kernel;
+  // TODO: I had a bug where the kernel task still had task 1 as next which
+  // was finished. It tried to change to the finished task which caused a
+  // double fault.
+  //  kernel.next = &kernel;
 }
 
 // regs is passed via rdi
-void interrupt_handler(interrupt_registers_t *regs) {
+void interrupt_handler(interrupt_registers_t* regs) {
   // Timer IRQ
   if (regs->int_no == 0x34) {
     // printf("timer\n");
@@ -1658,17 +1693,25 @@ void interrupt_handler(interrupt_registers_t *regs) {
     // next task.
     // We can actually change the regs that are on the stack via `regs`. Why
     // does it take a few minutes that I even see this?
-    if (task_current->next != NULL) {
-      task_current = task_current->next;
-    } else {
-      // TODO: I guess this is where either there is an idle task or the
-      // scheduler itself is the idle task
-      printf("no task queued. switching to kernel task\n");
-      task_current = &kernel;
+
+    // Instead of just picking the next task lets iterate until we find a good
+    // task, because tasks may sleep now.
+    // We should probably now loop around to the beginning.
+    uint64_t now = get_global_timer_value();
+    task_t* task = task_current->next;
+    // I expect that the idle task will always be ready.
+    for (; task != task_current; task = task->next) {
+      // This task is sleeping
+      if (task->sleep_until > now) {
+	continue;
+      }
+      break;
     }
+    task_current = task;
+
     update_regs_from_task(task_current, regs);
 
-    printf("switched task to %d\n", task_current->id);
+    // printf("switched task to %d\n", task_current->id);
 
     set_timer0();
 
@@ -1730,7 +1773,7 @@ void interrupt_handler(interrupt_registers_t *regs) {
       the current address of data moved to buffer. CAPR is the read pointer
       which keeps the address of data that driver had read. The status of
       receiving a packet is stored in front of the packet(packet header).
-      */
+     */
 
     uint16_t isr = inw(base + 0x3e);
     // printf("isr: %x\n", isr);
@@ -1780,7 +1823,8 @@ void interrupt_handler(interrupt_registers_t *regs) {
 
       // Note: network byte order
 
-      uint16_t* packet_status = (uint16_t*)(network_rx_buffer + network_rx_buffer_index);
+      uint16_t* packet_status =
+	  (uint16_t*)(network_rx_buffer + network_rx_buffer_index);
 
       //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
       //	     num_packets++, *packet_status, network_rx_buffer_index);
@@ -1793,16 +1837,18 @@ void interrupt_handler(interrupt_registers_t *regs) {
       }
 
       // TODO: pull length and etheretype from this.
-      ethernet_frame_t* ef = (ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index +
-					 4);  // first two bytes are the rx header followed
-				 // by 2 bytes for length
+      ethernet_frame_t* ef =
+	  (ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index +
+			      4);  // first two bytes are the rx header followed
+      // by 2 bytes for length
 
-      uint16_t* length = (uint16_t*)(network_rx_buffer + network_rx_buffer_index +
-				     2);  // first two bytes are the rx header
+      uint16_t* length =
+	  (uint16_t*)(network_rx_buffer + network_rx_buffer_index +
+		      2);  // first two bytes are the rx header
       //  printf("length: %d\n", *length);
 
-      uint8_t* p =(uint8_t*)( network_rx_buffer + network_rx_buffer_index +
-			       4);  // points at destination MAC
+      uint8_t* p = (uint8_t*)(network_rx_buffer + network_rx_buffer_index +
+			      4);  // points at destination MAC
 
       //  uint8_t destination_mac[6] = {0};
       //   memcpy(p, destination_mac, 6);
@@ -1816,7 +1862,7 @@ void interrupt_handler(interrupt_registers_t *regs) {
 
       network_rx_buffer_index +=
 	  *length + 4;  // length seems to not include the header and size
-			// which are 2 bytes each
+      // which are 2 bytes each
 
       // wrap
       if (network_rx_buffer_index > RX_BUFFER_SIZE) {
@@ -2018,7 +2064,7 @@ void interrupt_handler(interrupt_registers_t *regs) {
   } else {
     printf("interrupt: %x\n", regs->int_no);
   }
-  printf("eflags: %d, ss: %d, cs: %d\n", regs->eflags,  regs->ss, regs->cs);
+  printf("eflags: %d, ss: %d, cs: %d\n", regs->eflags, regs->ss, regs->cs);
   printf("rsp: %x, ip: %x\n", regs->rsp, regs->eip);
 
   if (regs->int_no == EXCEPTION_PAGE_FAULT) {
@@ -2044,33 +2090,33 @@ void idt_setup() {
   idt.limit = sizeof(idt_entry_t) * 256 - 1;
   //  idt.base = (uint32)&idt_entries;
   idt.base = (uint64)&idt_entries;
-// 0x0E = 14 = 64-bit Interrupt Gate
-// but this has p=0 (present bit)
-// 0x8E has p=1 and type=14
-// ref: Table 3-2
+  // 0x0E = 14 = 64-bit Interrupt Gate
+  // but this has p=0 (present bit)
+  // 0x8E has p=1 and type=14
+  // ref: Table 3-2
 
-// 0x08 in binary is 0b1000
-// which sets selector to 1
-// ref: Fig 3-6
-// ref: https://wiki.osdev.org/Segment_Selector
+  // 0x08 in binary is 0b1000
+  // which sets selector to 1
+  // ref: Fig 3-6
+  // ref: https://wiki.osdev.org/Segment_Selector
 
-// ref: 3.4.5.1 Code- and Data-Segment Descriptor Types
+  // ref: 3.4.5.1 Code- and Data-Segment Descriptor Types
 
-// The INT n instruction can be used to emulate exceptions in software; but
-// there is a limitation.1 If INT n provides a vector for one of the
-// architecturally-defined exceptions, the processor generates an interrupt to
-// the correct vector (to access the exception handler) but does not push an
-// error code on the stack. This is true even if the associated
-// hardware-generated exception normally produces an error code. The exception
-// handler will still attempt to pop an error code from the stack while
-// handling the exception. Because no error code was pushed, the handler will
-// pop off and discard the EIP instead (in place of the missing error code).
-// This sends the return to the wrong location.
+  // The INT n instruction can be used to emulate exceptions in software; but
+  // there is a limitation.1 If INT n provides a vector for one of the
+  // architecturally-defined exceptions, the processor generates an interrupt to
+  // the correct vector (to access the exception handler) but does not push an
+  // error code on the stack. This is true even if the associated
+  // hardware-generated exception normally produces an error code. The exception
+  // handler will still attempt to pop an error code from the stack while
+  // handling the exception. Because no error code was pushed, the handler will
+  // pop off and discard the EIP instead (in place of the missing error code).
+  // This sends the return to the wrong location.
 
-// ref: 6.4.2 Software-Generated Exceptions
+  // ref: 6.4.2 Software-Generated Exceptions
 
-// 00077694943d[CPU0  ] LONG MODE IRET
-// 00077694943e[CPU0  ] fetch_raw_descriptor: GDT: index (e67) 1cc > limit (f)
+  // 00077694943d[CPU0  ] LONG MODE IRET
+  // 00077694943e[CPU0  ] fetch_raw_descriptor: GDT: index (e67) 1cc > limit (f)
 #define INTERRUPT_GATE 0x8E
   idt_set_gate(0, 0, 0x08, 0x0E);
   idt_set_gate(1, 0, 0x08, 0x0E);
@@ -2215,7 +2261,7 @@ void gdt_set_gate(uint32 entry,
   offset1 - vector offset for master PIC
   vectors on the master become offset1..offset1+7
   offset2 - same for slave PIC: offset2..offset2+7
-*/
+ */
 void pic_remap(int offset1, int offset2) {
   /* unsigned char a1, a2; */
 
@@ -2394,7 +2440,7 @@ uint32_t ioapic_read_register(uint32_t reg) {
   uint32_t volatile* ioregsel = (uint32_t volatile*)IOAPIC_IOREGSEL;
   ioregsel[0] = reg;
   return ioregsel[4];  // IOAPIC_IOREGSEL+10h (4*4 byte = 16 byte) =
-		       // IOAPIC_IOWIN
+  // IOAPIC_IOWIN
 }
 
 void ioapic_write_register(uint32_t reg, ioapic_redirection_register_t* r) {
@@ -2589,7 +2635,7 @@ void ioapic_setup() {
   outb(0x60, config | 0x3);  // enable interrupts. bits 1,2
   ps2_wait_ready();
   outb(0x64, 0x20);  // 0x20 = read config byte
-		     // ps2_wait_data();   // this hangs with qemu
+  // ps2_wait_data();   // this hangs with qemu
   config = inb(0x60);
   printf("config byte 6: %x", config);
 
@@ -2724,7 +2770,8 @@ void list_tables(acpi_sdt_header_t* rsdt) {
       // first
       int j = 0;
       // TODO: refactor this pointer arithmetic.
-      for (acpi_ics_header_t* h = (acpi_ics_header_t*)(&(madt->first));; h = (acpi_ics_header_t*)((char*)h + h->length)) {
+      for (acpi_ics_header_t* h = (acpi_ics_header_t*)(&(madt->first));;
+	   h = (acpi_ics_header_t*)((char*)h + h->length)) {
 	printf("type: %d, length: %d\n", h->type, h->length);
 	if (h->type == 1) {
 	  acpi_ics_ioapic_t* ioapic = (acpi_ics_ioapic_t*)h;
@@ -2739,7 +2786,8 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	}
 	if (h->type == 2) {
 	  printf("interrupt source overrides\n");
-	  acpi_ics_input_source_override_t* iso = (acpi_ics_input_source_override_t*)h;
+	  acpi_ics_input_source_override_t* iso =
+	      (acpi_ics_input_source_override_t*)h;
 	  printf("source: %x, interrupt: %x\n", iso->source,
 		 iso->global_system_interrupt);
 	}
@@ -2750,7 +2798,8 @@ void list_tables(acpi_sdt_header_t* rsdt) {
       }
     } else if (strncmp(h->signature, "HPET", 4)) {
       // note: without uint8_t case here we go too far.
-      acpi_hpet_header_t* hpet = (acpi_hpet_header_t*)((uint8_t*)h + sizeof(acpi_sdt_header2_t));
+      acpi_hpet_header_t* hpet =
+	  (acpi_hpet_header_t*)((uint8_t*)h + sizeof(acpi_sdt_header2_t));
       printf("HPET: hpet number: %d\n", hpet->hpet_number);
       printf("HPET: address space: %d base: %x\n",
 	     hpet->base_address.address_space_id, hpet->base_address.address);
@@ -3152,7 +3201,6 @@ void locate_pcmp() {
   return;
 }
 
-
 int kmain(void* mbd, unsigned int magic) {
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
@@ -3238,14 +3286,6 @@ int kmain(void* mbd, unsigned int magic) {
   // How do we give it virtual memory? seems with cr3 thing to give page table.
 
   // What to do next?
-  // We have basic task switching that works, we don't have anything that starts
-  // new tasks.
-  // What about making the tasks not end using a while loop?
-  // Or one ends to test the trampoline and one loops.
-  // What do we need to make this work?
-  // We still want to round robin, except maybe the idle task.
-  // We make a linked list. We add/remove tasks there.
-  //
   // Remove is done in the trampoline or the trampoline just sets the task state
   // and we remove it when we iterate over it.
   // The timer / scheduler just goes through the linked list. If it's empty it
@@ -3253,6 +3293,16 @@ int kmain(void* mbd, unsigned int magic) {
   //
   // The next thing to do is add a sleep function and check why printling many
   // lines results in a black screen.
+  //
+  // How would I implement sleep?
+  // Most naive way would be, calling sleep() sets a flag on the task so it's
+  // only woken time X after now.
+  // How do we get now? I don't have a clock.
+  //
+  // 1. get clock
+  // seems hpet will work.
+  // we have get_global_timer_value
+  // 2. implement sleep
 
   task_new((uint64_t)kernel_task, kernel_task_stack, &kernel);
   task_new((uint64_t)task1, t1_stack, &t1);
@@ -3264,22 +3314,22 @@ int kmain(void* mbd, unsigned int magic) {
   /*
 
 
-  task_setup_stack(t1_stack);
-  task_setup_stack(t2_stack);
+    task_setup_stack(t1_stack);
+    task_setup_stack(t2_stack);
 
-  task_current->next = &t1;
-  t1.next = &t2;
-  t2.next = &kernel;
+    task_current->next = &t1;
+    t1.next = &t2;
+    t2.next = &kernel;
 
-  printf("task 1 stack ptr: %x\n", t1.rsp);
-  printf("task 1 eip: %x\n", t1.eip);
+    printf("task 1 stack ptr: %x\n", t1.rsp);
+    printf("task 1 eip: %x\n", t1.eip);
 
 
-  printf("task 2 stack ptr: %x\n", t2.rsp);
-  printf("task 2 eip: %x\n", t2.eip);
-  */
+    printf("task 2 stack ptr: %x\n", t2.rsp);
+    printf("task 2 eip: %x\n", t2.eip);
+   */
   while (1) {
-    printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
+    // printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
     asm("HLT");
   }
 
