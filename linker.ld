@@ -2,23 +2,27 @@ ENTRY(loader)
 SECTIONS {
     . = 1M;
 
+    _kernel_start = .;
+
     .boot : {
-        *(.multiboot)
+	*(.multiboot)
     }
 
     .text : {
-        *(.text)
+	*(.text)
     }
 
     .rodata : {
-        *(.rodata)
+	*(.rodata)
     }
 
     .data : {
-        *(.data)
+	*(.data)
     }
 
     .bss : {
-        *(.bss)
+	*(.bss)
     }
+
+    _kernel_end = .;
 }

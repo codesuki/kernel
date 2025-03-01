@@ -3201,24 +3201,95 @@ void locate_pcmp() {
   return;
 }
 
-int kmain(void* mbd, unsigned int magic) {
+struct multiboot2_information {
+  uint32_t total_size;
+  uint32_t reserved;
+} __attribute__((packed));
+typedef struct multiboot2_information multiboot2_information_t;
+
+struct multiboot2_tag_header {
+  uint32_t type;
+  uint32_t size;
+} __attribute__((packed));
+typedef struct multiboot2_tag_header multiboot2_tag_header_t;
+
+struct multiboot2_tag_memory_map_header {
+  uint32_t type;
+  uint32_t size;
+  uint32_t entry_size;
+  uint32_t entry_version;
+} __attribute__((packed));
+typedef struct multiboot2_tag_memory_map_header
+    multiboot2_tag_memory_map_header_t;
+
+struct multiboot2_tag_memory_map_entry {
+  uint64_t base_addr;
+  uint64_t length;
+  uint32_t type;
+  uint32_t reserved;
+} __attribute__((packed));
+typedef struct multiboot2_tag_memory_map_entry
+    multiboot2_tag_memory_map_entry_t;
+
+#define MULTIBOOT2_TAG_END 0
+#define MULTIBOOT2_TAG_MEMORY_MAP 6
+
+extern uint64_t _kernel_start;
+extern uint64_t _kernel_end;
+
+int kmain(multiboot2_information_t* mbd, uint32_t magic) {
+  printf("kernel start=%x end=%x size=%x\n", &_kernel_start, &_kernel_end,
+	 _kernel_end - _kernel_start);
+
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
     asm volatile("hlt");
   }
-
   // set pit 0 to one shot mode
   // bit 4-5 = access mode
   // bit 2-3 = mode
   // ref: https://www.diamondsystems.com/files/binaries/har82c54.pdf
   outb(0x43, 0b110010);
 
-  /* You could either use multiboot.h */
-  /* (http://www.gnu.org/software/grub/manual/multiboot/multiboot.html#multiboot_002eh)
-   */
-  /* or do your offsets yourself. The following is merely an example. */
-  char* boot_loader_name = (char*)((long*)mbd)[16];
+  // printf("multiboot information size: %x\n", mbd->total_size);
 
+  multiboot2_tag_header_t* h =
+      (multiboot2_tag_header_t*)((uintptr_t)mbd +
+				 sizeof(multiboot2_information_t));
+
+  while (h->type != MULTIBOOT2_TAG_END) {
+    //   printf("header type: %x size: %x\n", h->type, h->size);
+    if (h->type == MULTIBOOT2_TAG_MEMORY_MAP) {
+      multiboot2_tag_memory_map_header_t* mh =
+	  (multiboot2_tag_memory_map_header_t*)h;
+      uint32_t num_entries = mh->size / mh->entry_size;
+      //   printf("memory map: entries = %d\n", num_entries);
+      multiboot2_tag_memory_map_entry_t* e =
+	  (multiboot2_tag_memory_map_entry_t*)((uintptr_t)h +
+					       sizeof(
+						   multiboot2_tag_memory_map_header_t));
+      for (uint8_t i = 0; i < num_entries; i++) {
+	e += i;
+
+	// type
+	// 1: available RAM
+	// 3: usable memory containing ACPI information
+	// 4: reserved memory (needs to be preserved during hibernation)
+	// 5: bad RAM
+	// others: reserved area
+	printf("entry %d: type = %d\n", i, e->type);
+	//	if (e->type == 1) {
+	printf("base = %x length = %x\n", e->base_addr, e->length);
+	//	}
+      }
+    }
+    // Tags are 8-bytes aligned.
+    // ref:
+    // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
+    h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
+  }
+
+  asm("HLT");
   /* Write your kernel here. */
   /* gdt_setup(); */
   pic_remap(0x20, 0x28);
@@ -3281,59 +3352,37 @@ int kmain(void* mbd, unsigned int magic) {
 
   // How to get this running?
   // We need to pre-fill the stack or register with the argument like id.
-  // We need to save all important registers on the kernel stack(?) and restore
-  // them later.
-  // How do we give it virtual memory? seems with cr3 thing to give page table.
+  // We need to save all important registers on the kernel stack(?) and
+  // restore them later. How do we give it virtual memory? seems with cr3
+  // thing to give page table.
 
   // What to do next?
-  // Remove is done in the trampoline or the trampoline just sets the task state
-  // and we remove it when we iterate over it.
-  // The timer / scheduler just goes through the linked list. If it's empty it
-  // goes to the idle task.
+  // Remove is done in the trampoline or the trampoline just sets the task
+  // state and we remove it when we iterate over it. The timer / scheduler
+  // just goes through the linked list. If it's empty it goes to the idle
+  // task.
   //
-  // The next thing to do is add a sleep function and check why printling many
-  // lines results in a black screen.
+  // 1. iterate on the clean up in the trampoline?
+  // 2. reschedule immediately after sleep?
+  // 3. memory allocation?
   //
-  // How would I implement sleep?
-  // Most naive way would be, calling sleep() sets a flag on the task so it's
-  // only woken time X after now.
-  // How do we get now? I don't have a clock.
-  //
-  // 1. get clock
-  // seems hpet will work.
-  // we have get_global_timer_value
-  // 2. implement sleep
+  // What's the bigger goal?
+  // Network stack is extremely brittle and works with 1 packet.
+  // Want to refactor it by passing packets through layers.
+  // Also want to handle it outside of the interrupt handler.
+  // This implies there is a task that waits for data.
 
   task_new((uint64_t)kernel_task, kernel_task_stack, &kernel);
   task_new((uint64_t)task1, t1_stack, &t1);
   task_new((uint64_t)task2, t2_stack, &t2);
 
-  // I actually don't want the kernel task in there do I?
-  // ah... for now I want because it's the idle task. Nevermind.
+  // TODO: somehow replace the current kmain with the idle task.
   task_current = &kernel;
-  /*
 
-
-    task_setup_stack(t1_stack);
-    task_setup_stack(t2_stack);
-
-    task_current->next = &t1;
-    t1.next = &t2;
-    t2.next = &kernel;
-
-    printf("task 1 stack ptr: %x\n", t1.rsp);
-    printf("task 1 eip: %x\n", t1.eip);
-
-
-    printf("task 2 stack ptr: %x\n", t2.rsp);
-    printf("task 2 eip: %x\n", t2.eip);
-   */
   while (1) {
     // printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
     asm("HLT");
   }
-
-  //  switch_task(&kernel, &t1);
 
   // send_dhcp_discover();
   return 0xDEADBABA;
@@ -3457,3 +3506,12 @@ int kmain(void* mbd, unsigned int magic) {
 
 // how to get a hex dump of the binary
 // x86_64-elf-objdump -M intel -d kernel.bin -x | less
+
+/*
+  x86 calling conventions
+  Integer/pointer arguments 1-6: rdi, rsi, rdx, rcx, r8, r9
+  Floating point arguments 1-8: xmm0-xmm7
+  Rest: Stack
+  Static chain pointer: r10 (no idea what this is)
+  Stack cleanup: caller
+*/
