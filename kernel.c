@@ -1454,7 +1454,139 @@ void task_setup_stack(uint8_t* stack) {
   s[0] = (uint64_t)&trampoline;
 }
 
-// TODO: actually we want to allocate a new one now..
+// Defined in linker script.
+// Need to take the address, because the address is the value in this case.
+// ref: https://sourceware.org/binutils/docs/ld/Source-Code-Reference.html
+extern uint64_t _kernel_start;
+extern uint64_t _kernel_end;
+
+const uint32_t page_size = 0x200000;  // 2mb
+
+typedef struct memory memory_t;
+struct memory {
+  uint64_t address;
+  // uint32_t size;  // 4kb, 2mb, etc.
+  memory_t* next;
+  memory_t* prev;
+};
+
+// Current thought, keep two lists. Free and used memory.
+// When we malloc we take from the free list and put it into the used list.
+// When we free we search the address in the used list and move it back.
+// What other way is there to implement free?
+memory_t* memory_free_first = NULL;
+memory_t* memory_used_first = NULL;
+
+// memory_init creates the first memory_ts in physical memory, because we cannot
+// call malloc.
+void memory_init(uint64_t base_address, uint64_t length) {
+  // We don't want to touch the memory block from 0 - 1mb.
+  // All BIOS things live there.
+  if (base_address == 0) {
+    return;
+  }
+  // This will make our math below go awry.
+  if (length == 0) {
+    return;
+  }
+
+  // Kernel size was off because it was doing address arithmetic. Casting to
+  // uint64_t fixed it. This caused the memory_ts to be allocated on kernel
+  // memory which caused memory corruption.
+  uint64_t base_address_after_kernel =
+      base_address + ((uint64_t)&_kernel_end - (uint64_t)&_kernel_start);
+
+  printf("memory_init: available memory with base %x and length %x\n",
+	 base_address, length);
+
+  printf("memory_init: kernel located between %x - %x\n", &_kernel_start,
+	 &_kernel_end);
+
+  // TODO: I think this overcounts. I.e. the last page is too big for the
+  // available physical memory.
+  // Maybe for now we don't track the memory_ts themselves.
+  // How many do we need?
+  uint64_t page_count = length / page_size;
+  uint64_t memory_size = page_count * sizeof(memory_t);
+
+  // After our memory_ts
+  // Aligned on page_size.
+  uint64_t usable_memory =
+      ((base_address_after_kernel + memory_size + (page_size - 1)) &
+       ~(page_size - 1));
+
+  printf("memory_init: %d 2mb pages available\n", page_count);
+  printf("memory_init: usable memory starts from %x\n", usable_memory);
+
+  memory_t* current = (memory_t*)base_address_after_kernel;
+  memory_t* prev = NULL;
+
+  memory_free_first = current;
+
+  for (uint64_t i = 0; i < page_count; i++) {
+    current->address = usable_memory;
+    current->next = NULL;
+    current->prev = prev;
+
+    if (prev != NULL) {
+      prev->next = current;
+    }
+
+    // Nice in Bochs because we only have 30mb there.
+    // printf("memory_init: assigned %x\n", m->address);
+
+    usable_memory += page_size;
+    prev = current;
+    current++;
+  }
+  for (memory_t* m = memory_free_first; m != NULL; m = m->next) {
+    printf("memory_init: %x %x %x\n", m->address, m->next, m->prev);
+  }
+}
+
+void memory_add(uint64_t address) {
+  if (memory_free_first == NULL) {
+    memory_used_first = NULL;
+    // Ouch! We want a new memory_t. Now do we malloc one? Haha.. Maybe the
+    // kernel needs to reserve some memory beforehand for some kind of
+    // bootstrap?
+    // So when we read available memory, we remove the kernel area.
+    // Then we know the real start of the memory.
+    // Then we can just do memory_t * m = start of memory;
+    // And so on.
+  }
+}
+
+memory_t* memory_remove() {
+  if (memory_free_first == NULL) {
+    return NULL;
+  }
+  memory_t* memory = memory_free_first;
+  memory_free_first = memory->next;
+  memory_free_first->prev = memory->prev;
+  return memory;
+}
+
+void* malloc(uint64_t size) {
+  // What does malloc do? It probably does different things depending on whether
+  // it's in the kernel or not.
+  // Currently we only have kernel.
+
+  // Let's assume we know all of physical memory that is available. We need to
+  // pick a slot that is big enough to fit size. Currently our pages are all
+  // 2mb, but it doesn't matter here. Let's start simple and waste memory. When
+  // we request, we just return a 2mb block or multiple if needed.
+  // it's important that the memory is contiguous.
+
+  memory_t* memory = memory_remove();
+  if (memory == NULL) {
+    printf("malloc: OOM\n");
+  }
+  printf("malloc: %x\n", (void*)(memory->address));
+  return (void*)(memory->address);
+}
+
+// TODO: actually we want to allocate a new stack/task now..
 void task_new(uint64_t entry_point, uint8_t* stack, task_t* task) {
   printf("New task %x\n", entry_point);
   // memset to 0
@@ -1474,6 +1606,13 @@ void task_new(uint64_t entry_point, uint8_t* stack, task_t* task) {
     t->next = task;
     task->next = task_first;
   }
+}
+
+task_t* task_new_malloc(uint64_t entry_point) {
+  task_t* task = (task_t*)malloc(sizeof(task_t));
+  uint8_t* stack = (uint8_t*)malloc(8192);
+  task_new(entry_point, stack, task);
+  return task;
 }
 
 void task_remove(task_t* task) {
@@ -1672,10 +1811,114 @@ void task2(uint8_t id) {
   //  kernel.next = &kernel;
 }
 
+void dns_resolve(char* host, uint8_t addr[4]) {}
+
+void task_network() {
+  // what do I want to do here?
+  // I want to improve memory management and task management.
+  // Using the network stack can help.
+
+  uint8_t addr[4];
+  // This will cause a bunch of network requests. We cannot do this before we
+  // got a network address ourselves so I need to run a dhcp task.
+  dns_resolve("google.com", addr);
+  printf("google.com IP=%d.%d.%d.%d\n");
+}
+
+// Is this the network driver? No. The network driver would fetch data from the
+// card and pass it up the network stack.
+// This is huge. Maybe I should start with the mouse driver?
+void handle_network_interrupt() {}
+
+void service_network() {
+  // Why do I call this service? I imagine the OS always keeps the network stack
+  // in shape. Does DHCP stuff, etc. Can the kernel do this directly? Well it
+  // needs to do many network calls so it blocks.. Hence modeling it as a task
+  // or service seems to make sense?
+
+  // Reply to ARP messages?
+
+  // -> dhcp discover
+  // <- dhcp offer
+  // -> dhcp request
+}
+
+// The interrupt handler should either start this task with high priority OR
+// this task already exists and waits for the interrupt blocking. If this is
+// late then we will see new data/lose old data. Hence it's important how often
+// the OS calls this handler. If it's too slow I could imagine the mouse pointer
+// jumping around.
+//
+// Many applications may wait for mouse/keyboard input, how is that handled? The
+// OS/driver could read state from the input device and has a list of whom to
+// notify. Maybe in our case we don't notify, yet, we just update globals and
+// call display?
+void mouse_handle_interrupt() {
+  // data:
+  // bit 0:
+  // bit 1:
+  // bit 2:
+  // bit 3:
+  // bit 4: x sign
+  // bit 5: y sign
+  // bit 6: x overflow
+  // bit 7: y overflow
+  uint8_t data, x, y;
+  ps2_wait_data();
+  data = inb(0x60);
+  ps2_wait_data();
+  x = inb(0x60);
+  ps2_wait_data();
+  y = inb(0x60);
+
+  // Now that we read all data, let's send it up. How? Do we create a struct and
+  // put in this data? It needs to live somewhere until the scheduler runs a
+  // task that consumes it. Do we enqueue the task here? Or maybe it's the mouse
+  // service that blocks on some queue? event queue?
+  // Should probably have a type, like 'mouse_data' and a struct.
+
+  // the 9 bit two's complements relative x,y values come in 2 pieces.
+  // an 8 bit value and a sign bit.
+  // wikipedia says to subtract the sign bit. extract and subtract.
+}
+
+void mouse_service() {
+  // somehow we need to run this or this needs to run in the background waiting
+  // for mouse data.
+
+  // x,y,data is what we need.
+  /*
+    int16_t rel_x = x - ((data << 4) & 0x100);
+
+    int16_t rel_y = -(y - ((data << 3) & 0x100));
+
+    mouse_x = min(max(0, mouse_x + rel_x), 79);
+    mouse_y = min(max(1, mouse_y + rel_y), 24);
+  */
+  /*
+  ypos = mouse_y;
+  xpos = mouse_x;
+  print_character_color('o', 0x04);
+
+  cll(0);
+  ypos = 0;
+  xpos = 0;
+  printf("data: %x x: %d, y: %d, rel_x: %d, rel_y: %d", data, mouse_x, mouse_y,
+  rel_x, rel_y);
+  */
+}
+
+void local_apic_eoi() {
+  volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
+  *local_apic_eoi = 0;
+}
+
 // regs is passed via rdi
 void interrupt_handler(interrupt_registers_t* regs) {
   // Timer IRQ
   if (regs->int_no == 0x34) {
+    // TODO: this crashes if task_current == NULL.
+
     // printf("timer\n");
     // This is our schedule timer. We have all registers on the stack inside of
     // `regs`. To switch the task we want to update the current tasks context
@@ -1907,7 +2150,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
       // network_rx_buffer_index which is now bigger, won't this break us
       // reading packets? for some reason this is added back
       // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L2522 so if
-      // we don't subtract the numbers don't match. who knows why this is
+      // if we don't subtract the numbers don't match. who knows why this is
       // done.
       outw(base + 0x38, network_rx_buffer_index - 0x10);
     }
@@ -1918,43 +2161,28 @@ void interrupt_handler(interrupt_registers_t* regs) {
   }
 
   if (regs->int_no == 0x32) {  // mouse IRQ
-    // data:
-    // bit 0:
-    // bit 1:
-    // bit 2:
-    // bit 3:
-    // bit 4: x sign
-    // bit 5: y sign
-    // bit 6: x overflow
-    // bit 7: y overflow
-    uint8_t data, x, y;
-    ps2_wait_data();
-    data = inb(0x60);
-    ps2_wait_data();
-    x = inb(0x60);
-    ps2_wait_data();
-    y = inb(0x60);
 
-    // the 9 bit two's complements relative x,y values come in 2 pieces.
-    // an 8 bit value and a sign bit.
-    // wikipedia says to subtract the sign bit. extract and subtract.
+    // How do we notify the driver? Think about it. Can a device have multiple
+    // drivers? Maybe, but I cannot see why, they would probably interfere. So
+    // assume 1 driver per device. Every device has an interrupt. The driver can
+    // be connected to this interrupt. 1:1 mapping.
+    // So here we need to do what? Wake the driver that has a specific
+    // interrupt? Where do they run?
 
-    int16_t rel_x = x - ((data << 4) & 0x100);
+    // Good points about why we probably should read data here. The mouse /
+    // keyboard has limited buffer size and if we don't read the data inside
+    // this handler it will be overridden and we lose data. For mouse position
+    // it may not mean much, but for keyboard interrupts we may lose keys. So
+    // given there are many different mice. A driver needs some function that is
+    // called inside this handler. There's no special data we get from this
+    // interrupt. Only that it's 0x32 from the mouse.
 
-    int16_t rel_y = -(y - ((data << 3) & 0x100));
+    // A lambda task would seem nice here. Bind the values to it and run it
+    // deferred. Can I have a task that has parameters?
+    // Doing one parameter which is a pointer to a struct is simple.
+    // Many.. seems annoying.
 
-    mouse_x = min(max(0, mouse_x + rel_x), 79);
-    mouse_y = min(max(1, mouse_y + rel_y), 24);
-
-    ypos = mouse_y;
-    xpos = mouse_x;
-    print_character_color('o', 0x04);
-
-    cll(0);
-    ypos = 0;
-    xpos = 0;
-    printf("data: %x x: %d, y: %d, rel_x: %d, rel_y: %d", data, mouse_x,
-	   mouse_y, rel_x, rel_y);
+    mouse_handle_interrupt();
     volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
     *local_apic_eoi = 0;
     return;
@@ -3234,62 +3462,21 @@ typedef struct multiboot2_tag_memory_map_entry
 #define MULTIBOOT2_TAG_END 0
 #define MULTIBOOT2_TAG_MEMORY_MAP 6
 
-extern uint64_t _kernel_start;
-extern uint64_t _kernel_end;
-
 int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   printf("kernel start=%x end=%x size=%x\n", &_kernel_start, &_kernel_end,
-	 _kernel_end - _kernel_start);
+	 (uint64_t)&_kernel_end - (uint64_t)&_kernel_start);
 
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
     asm volatile("hlt");
   }
+
   // set pit 0 to one shot mode
   // bit 4-5 = access mode
   // bit 2-3 = mode
   // ref: https://www.diamondsystems.com/files/binaries/har82c54.pdf
   outb(0x43, 0b110010);
 
-  // printf("multiboot information size: %x\n", mbd->total_size);
-
-  multiboot2_tag_header_t* h =
-      (multiboot2_tag_header_t*)((uintptr_t)mbd +
-				 sizeof(multiboot2_information_t));
-
-  while (h->type != MULTIBOOT2_TAG_END) {
-    //   printf("header type: %x size: %x\n", h->type, h->size);
-    if (h->type == MULTIBOOT2_TAG_MEMORY_MAP) {
-      multiboot2_tag_memory_map_header_t* mh =
-	  (multiboot2_tag_memory_map_header_t*)h;
-      uint32_t num_entries = mh->size / mh->entry_size;
-      //   printf("memory map: entries = %d\n", num_entries);
-      multiboot2_tag_memory_map_entry_t* e =
-	  (multiboot2_tag_memory_map_entry_t*)((uintptr_t)h +
-					       sizeof(
-						   multiboot2_tag_memory_map_header_t));
-      for (uint8_t i = 0; i < num_entries; i++) {
-	e += i;
-
-	// type
-	// 1: available RAM
-	// 3: usable memory containing ACPI information
-	// 4: reserved memory (needs to be preserved during hibernation)
-	// 5: bad RAM
-	// others: reserved area
-	printf("entry %d: type = %d\n", i, e->type);
-	//	if (e->type == 1) {
-	printf("base = %x length = %x\n", e->base_addr, e->length);
-	//	}
-      }
-    }
-    // Tags are 8-bytes aligned.
-    // ref:
-    // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
-    h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
-  }
-
-  asm("HLT");
   /* Write your kernel here. */
   /* gdt_setup(); */
   pic_remap(0x20, 0x28);
@@ -3372,12 +3559,60 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // Also want to handle it outside of the interrupt handler.
   // This implies there is a task that waits for data.
 
-  task_new((uint64_t)kernel_task, kernel_task_stack, &kernel);
-  task_new((uint64_t)task1, t1_stack, &t1);
-  task_new((uint64_t)task2, t2_stack, &t2);
+  // I found the smallest increment I can make is by allocating the stack and
+  // task in my task_new.
+
+  // we need to store all available memory somewhere. the below gives usable
+  // memory, we have to subtract the kernel size from it.
+  // The kernel currently is identity mappes to 2mb pages.
+
+  multiboot2_tag_header_t* h =
+      (multiboot2_tag_header_t*)((uintptr_t)mbd +
+				 sizeof(multiboot2_information_t));
+
+  while (h->type != MULTIBOOT2_TAG_END) {
+    //   printf("header type: %x size: %x\n", h->type, h->size);
+    if (h->type == MULTIBOOT2_TAG_MEMORY_MAP) {
+      multiboot2_tag_memory_map_header_t* mh =
+	  (multiboot2_tag_memory_map_header_t*)h;
+      uint32_t num_entries = mh->size / mh->entry_size;
+      //   printf("memory map: entries = %d\n", num_entries);
+      multiboot2_tag_memory_map_entry_t* e =
+	  (multiboot2_tag_memory_map_entry_t*)((uintptr_t)h +
+					       sizeof(
+						   multiboot2_tag_memory_map_header_t));
+      for (uint8_t i = 0; i < num_entries; i++) {
+	e += i;
+
+	// type
+	// 1: available RAM
+	// 3: usable memory containing ACPI information
+	// 4: reserved memory (needs to be preserved during hibernation)
+	// 5: bad RAM
+	// others: reserved area
+	printf("entry %d: type = %d\n", i, e->type);
+	if (e->type == 1) {
+	  printf("base = %x length = %x\n", e->base_addr, e->length);
+	  memory_init(e->base_addr, e->length);
+	}
+      }
+    }
+    // Tags are 8-bytes aligned.
+    // ref:
+    // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
+    h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
+  }
+
+  //  task_new((uint64_t)kernel_task, kernel_task_stack, &kernel);
+  //  task_new((uint64_t)task1, t1_stack, &t1);
+  //  task_new((uint64_t)task2, t2_stack, &t2);
+
+  task_current = task_new_malloc((uint64_t)kernel_task);
+  task_new_malloc((uint64_t)task1);
+  task_new_malloc((uint64_t)task2);
 
   // TODO: somehow replace the current kmain with the idle task.
-  task_current = &kernel;
+  // task_current = &kernel;
 
   while (1) {
     // printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
