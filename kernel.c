@@ -473,7 +473,7 @@ struct interrupt_registers {
   uint64 r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx,
       rax;
   uint64 int_no, err_code;
-  uint64 eip, cs, eflags, rsp, ss;  // pushed by cpu after interrupt
+  uint64 eip, cs, rflags, rsp, ss;  // pushed by cpu after interrupt
 } __attribute__((packed));
 typedef struct interrupt_registers interrupt_registers_t;
 
@@ -893,7 +893,7 @@ void set_timer0() {
   // printf("hpet: setting timer to %x %d\n", _1s, _1s);
   uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
   // TODO: how is wrapping handled? By GPE :D
-  *comparator_0 = *counter_value + _1ms;
+  *comparator_0 = *counter_value + _1s;
 
   // TODO: this crashes when wrapping 64bit value. Probably formatting code
   // wrong.
@@ -1415,6 +1415,9 @@ void net_handle_ipv4(ethernet_frame_t* ef, ipv4_header_t* iph) {
   }
 }
 
+enum task_state { running, finished };
+typedef enum task_state task_state_t;
+
 typedef struct task task_t;
 struct task {
   uint8_t id;
@@ -1435,8 +1438,10 @@ struct task {
   uint64_t r13;
   uint64_t r14;
   uint64_t r15;
+  uint64_t rflags;
   task_t* next;
   uint64_t sleep_until;
+  task_state_t state;
 };
 
 task_t* task_first = 0;
@@ -1445,14 +1450,7 @@ task_t* task_current = 0;
 void trampoline();
 
 extern void switch_task(task_t* current, task_t* next);
-
-// TODO: added task prefix for namespacing. Check C best practices.
-void task_setup_stack(uint8_t* stack) {
-  // TODO: we could null it, but maybe that's too much work, also, how big is it
-  // even?
-  uint64_t* s = (uint64_t*)stack;
-  s[0] = (uint64_t)&trampoline;
-}
+extern void task_replace(task_t* task);
 
 // Defined in linker script.
 // Need to take the address, because the address is the value in this case.
@@ -1586,13 +1584,31 @@ void* malloc(uint64_t size) {
   return (void*)(memory->address);
 }
 
+// TODO: added task prefix for namespacing. Check C best practices.
+void task_setup_stack(uint64_t rsp) {
+  // TODO: we could null it, but maybe that's too much work, also, how big is it
+  // even?
+  // Make space for the pointer by subtracting it. The stack grows down.
+  uint64_t* s = (uint64_t*)(rsp - sizeof(uint64_t*));
+  s[0] = (uint64_t)&trampoline;
+}
+
 // TODO: actually we want to allocate a new stack/task now..
-void task_new(uint64_t entry_point, uint8_t* stack, task_t* task) {
+void task_new(uint64_t entry_point,
+	      uint64_t stack_bottom,
+	      uint32_t stack_size,
+	      task_t* task) {
   printf("New task %x\n", entry_point);
   // memset to 0
   task->eip = entry_point;
-  task->rsp = (uint64_t)stack;
-  task_setup_stack(stack);
+
+  // Set rsp to end of stack memory because it grows down.
+  // E.g. Stack is from 0x200000 to 0x400000. We set it to 0x400000.
+  uint64_t rsp = stack_bottom + stack_size;
+  task_setup_stack(rsp);
+  rsp = rsp - sizeof(uint64_t*);
+  // We push the trampoline pointer on the stack so we need to update rsp.
+  task->rsp = rsp;
 
   if (task_first == NULL) {
     // First task
@@ -1608,29 +1624,36 @@ void task_new(uint64_t entry_point, uint8_t* stack, task_t* task) {
   }
 }
 
+#define STACK_SIZE 8192
+
 task_t* task_new_malloc(uint64_t entry_point) {
   task_t* task = (task_t*)malloc(sizeof(task_t));
-  uint8_t* stack = (uint8_t*)malloc(8192);
-  task_new(entry_point, stack, task);
+  uint64_t stack = (uint64_t)malloc(STACK_SIZE);
+  task_new(entry_point, stack, STACK_SIZE, task);
   return task;
 }
 
-void task_remove(task_t* task) {
+task_t* task_remove(task_t* task) {
   printf("Removing task %d\n", task->id);
 
   // Case 1: It's the first task
+  // Assumption: Never happens because it's the scheduler.
   if (task_first == task) {
     task_first = task->next;
   }
 
   // Case 2: It's in the middle or the last task. Behavior is the same.
   task_t* t = task_first;
-  for (; t->next != NULL; t = t->next) {
+  for (; t->next != task_first; t = t->next) {
     if (t->next == task) {
       t->next = task->next;
-      return;
+      return t;
     }
   }
+}
+
+void task_mark_finished(task_t* task) {
+  task->state = finished;
 }
 
 void sleep(uint64_t ms) {
@@ -1641,6 +1664,7 @@ void sleep(uint64_t ms) {
   // blocking.
   // reschedule()
   // let's call hlt for now
+  printf("sleep: sleeping for %dms\n", ms);
   asm("HLT");
   // what if the schedule timer fires while we reschedule?
 }
@@ -1682,6 +1706,7 @@ void task_update_context(task_t* task, interrupt_registers_t* regs) {
   task->r13 = regs->r13;
   task->r14 = regs->r14;
   task->r15 = regs->r15;
+  task->rflags = regs->rflags;
 
   // printf("task after\n");
   // print_task(task);
@@ -1709,106 +1734,39 @@ void update_regs_from_task(task_t* task, interrupt_registers_t* regs) {
   regs->r13 = task->r13;
   regs->r14 = task->r14;
   regs->r15 = task->r15;
+  regs->rflags = task->rflags;
 
   // printf("regs after\n");
   // print_regs(regs);
 }
 
-uint8_t kernel_task_stack[8192] = {};
-uint8_t t1_stack[8192] = {};
-uint8_t t2_stack[8192] = {};
-
 void task1(uint8_t id);
 void task2(uint8_t id);
-void kernel_task();
+void schedule();
 
 // My guess is that we probably want to 'lose' the initial kernel loader task.
 // Which means we create a new stack and switch to a new task that we define
 // here. What happens with the initial kernel stack? Can we clean it up somehow?
 // It won't be needed anymore because we jump out of kmain.
-task_t kernel = {
-    .id = 123,
-    .rsp = (uint64_t)&kernel_task_stack,
-    .eip = (uint64_t)kernel_task,
-    .rax = 0,
-    .rcx = 0,
-    .rdx = 0,
-    .rsi = 0,
-    .rdi = 0,
-    .r8 = 0,
-    .r9 = 0,
-    .r10 = 0,
-    .r11 = 0,
-};
-
-task_t t1 = {
-    .id = 15,
-    .rsp = (uint64_t)&t1_stack,
-    .eip = (uint64_t)task1,
-    .rax = 0,
-    .rcx = 0,
-    .rdx = 0,
-    .rsi = 0,
-    .rdi = 0,
-    .r8 = 0,
-    .r9 = 0,
-    .r10 = 0,
-    .r11 = 0,
-};
-
-task_t t2 = {
-    .id = 20,
-    .rsp = (uint64_t)&t2_stack,
-    .eip = (uint64_t)task2,
-    .rax = 0,
-    .rcx = 0,
-    .rdx = 0,
-    .rsi = 0,
-    .rdi = 0,
-    .r8 = 0,
-    .r9 = 0,
-    .r10 = 0,
-    .r11 = 0,
-};
+task_t* task_scheduler = NULL;
 
 void trampoline() {
   printf("finished a task: %d\n", task_current->id);
   // TODO
-  // remove task
-  // switch to scheduler
   // Do we switch directly or just hlt and wait for timer interrupt?
-  //  task_current =
-  //  switch_task(&t2, &kernel);
-
-  task_remove(task_current);
-  asm("HLT");
-}
-
-void kernel_task() {
-  printf("kernel task\n");
+  task_mark_finished(task_current);
   asm("HLT");
 }
 
 void task1(uint8_t id) {
   while (1) {
-    //	for (uint32_t i = 0; i < 1000; i++) {
-
-    // TODO: there seems to be a bug. if we write tons of lines it just turns
-    // black.
     printf("running task 1 %d\n", id);
-    sleep(1000);
+    sleep(2000);
   }
-  // switch_task(&t1, &t2);
 }
 
 void task2(uint8_t id) {
   printf("running task 2 %d\n", id);
-  //    switch_task(&t1, &t2);
-
-  // TODO: I had a bug where the kernel task still had task 1 as next which
-  // was finished. It tried to change to the finished task which caused a
-  // double fault.
-  //  kernel.next = &kernel;
 }
 
 void dns_resolve(char* host, uint8_t addr[4]) {}
@@ -1908,6 +1866,92 @@ void mouse_service() {
   */
 }
 
+// TODO: how do we call this without regs? like from the trampoline? If we come
+// from the trampoline we don't necessarily need to save the context because we
+// want to delete it (at least in the task_remove case). How we switch tasks in
+// the interrupt handler is that we change the rip of the interrupt handler.. we
+// need a different way when we are not inside the interrupt handler. Having two
+// ways is not impossible, regs could be NULL for example.. but I don't like it.
+// If we switch to the schedule task on every timer interrupt we can use the
+// method described above and then schedule will use another method and so it
+// can be called from different places. That seems like a plan!
+void schedule() {
+  while (1) {
+    // TODO: this crashes if task_current == NULL.
+
+    // Instead of just picking the next task lets iterate until we find a good
+    // task, because tasks may sleep now.
+    // We should probably now loop around to the beginning.
+    uint64_t now = get_global_timer_value();
+
+    // Note:
+    // Why did I take so much time to implement this? (2h) I tried to wing it
+    // just writing some code, there were a bunch of edge cases that did not
+    // work. I did not take the time to document the rules (now written down
+    // below). Should have written some pseudo code too.
+
+    // If there is just one task (scheduler?) this will not run.
+    // Rules
+    // 1. We want to pick the next task.
+    // 2. If no task is ready we want to try and pick the next task again.
+    // 3. If there is just one task it should work the same. This task should
+    // always be selected.
+    // 4. We don't want to pick the scheduler because it's always ready. It's
+    // just the fallback.
+    // 5. Finished tasks are deleted.
+
+    // task_current was marked to be removed.
+    // Assumption: when a task finished it's always task_current when coming
+    // here. Probably this changes with multiple CPUs.
+    // If we would return to this task we would segfault because we jump after
+    // the halt to a RET and the stack is empty.
+    if (task_current->state == finished) {
+      printf("schedule: cleaning up finished task\n");
+      // task_current is the last task that ran.
+      task_current = task_remove(task_current);
+    }
+
+    task_t* next_task = task_scheduler;
+
+    task_t* t = task_current->next;
+    for (; t != task_current; t = t->next) {
+      // Skip the scheduler task itself We probably never want to remove the
+      // scheduler. If we want, we need to move this down.
+      if (t == task_scheduler) {
+	printf("scheduler: this is the scheduler itself\n");
+	continue;
+      }
+
+      // This task is sleeping
+      if (t->sleep_until > now) {
+	printf("scheduler: task is sleeping until: %d now: %d\n",
+	       t->sleep_until, now);
+	continue;
+      }
+
+      // If we get here we found a ready task. Why don't we use t? Because with
+      // this end condition we may always choose T1 even if T1 is sleeping.
+      next_task = t;
+      break;
+    }
+
+    // If there was no ready task we halt. The next tick will restart the loop.
+    // Maybe we should disable interrupts during the loop?
+    if (t == task_scheduler) {
+      printf("schedule: no task ready\n");
+      asm volatile("sti");
+      asm volatile("hlt");
+      asm volatile("cli");
+      continue;
+    }
+
+    printf("schedule: switching to task: %x at %x\n", next_task,
+	   next_task->eip);
+    task_current = next_task;
+    switch_task(task_scheduler, task_current);
+  }
+}
+
 void local_apic_eoi() {
   volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
   *local_apic_eoi = 0;
@@ -1917,57 +1961,21 @@ void local_apic_eoi() {
 void interrupt_handler(interrupt_registers_t* regs) {
   // Timer IRQ
   if (regs->int_no == 0x34) {
-    // TODO: this crashes if task_current == NULL.
+    // This is our schedule timer.
+    // printf("interrupt handler\n");
 
-    // printf("timer\n");
-    // This is our schedule timer. We have all registers on the stack inside of
-    // `regs`. To switch the task we want to update the current tasks context
-    // with `regs`.
-
-    // TODO: when we remove a task it's not in the queue anymore but we still
-    // write here.
-    // Speaks to cleaning it up async once we really changed away from it.
-
-    // We need to know the current task, let's assume we have it in a variable.
+    // Switch to scheduler task.
+    // First we have to save the regs
     task_update_context(task_current, regs);
-    // Now change to the next task. Assume it's in task.next. The interrupt
-    // handler will pop all these registers and call iret. To actually switch
-    // the tasks we need to change the stack to contain the registers of the
-    // next task.
-    // We can actually change the regs that are on the stack via `regs`. Why
-    // does it take a few minutes that I even see this?
+    // Then we load the scheduler task.
+    update_regs_from_task(task_scheduler, regs);
 
-    // Instead of just picking the next task lets iterate until we find a good
-    // task, because tasks may sleep now.
-    // We should probably now loop around to the beginning.
-    uint64_t now = get_global_timer_value();
-    task_t* task = task_current->next;
-    // I expect that the idle task will always be ready.
-    for (; task != task_current; task = task->next) {
-      // This task is sleeping
-      if (task->sleep_until > now) {
-	continue;
-      }
-      break;
-    }
-    task_current = task;
-
-    update_regs_from_task(task_current, regs);
-
-    // printf("switched task to %d\n", task_current->id);
-
+    // TODO: Should this timer be set to periodic or re-armed every time?
     set_timer0();
-
-    // Come to think of it.. we could unconditinally switch to the scheduler
-    // task and the scheduler task could then switch to other tasks. But we
-    // would still need to save the context.
-
-    //    __asm__ volatile("hlt" : :);
 
     // TODO: is there a better way to do this?
     // The interrupt handler should do this. Maybe we don't always do this?
-    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
-    *local_apic_eoi = 0;
+    local_apic_eoi();
     return;
   }
   if (regs->int_no == 0x33) {  // network IRQ
@@ -2082,7 +2090,8 @@ void interrupt_handler(interrupt_registers_t* regs) {
       // TODO: pull length and etheretype from this.
       ethernet_frame_t* ef =
 	  (ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index +
-			      4);  // first two bytes are the rx header followed
+			      4);  // first two bytes are the rx header
+				   // followed
       // by 2 bytes for length
 
       uint16_t* length =
@@ -2155,8 +2164,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
       outw(base + 0x38, network_rx_buffer_index - 0x10);
     }
   eth_return:
-    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
-    *local_apic_eoi = 0;
+    local_apic_eoi();
     return;
   }
 
@@ -2164,17 +2172,16 @@ void interrupt_handler(interrupt_registers_t* regs) {
 
     // How do we notify the driver? Think about it. Can a device have multiple
     // drivers? Maybe, but I cannot see why, they would probably interfere. So
-    // assume 1 driver per device. Every device has an interrupt. The driver can
-    // be connected to this interrupt. 1:1 mapping.
-    // So here we need to do what? Wake the driver that has a specific
-    // interrupt? Where do they run?
+    // assume 1 driver per device. Every device has an interrupt. The driver
+    // can be connected to this interrupt. 1:1 mapping. So here we need to do
+    // what? Wake the driver that has a specific interrupt? Where do they run?
 
     // Good points about why we probably should read data here. The mouse /
     // keyboard has limited buffer size and if we don't read the data inside
     // this handler it will be overridden and we lose data. For mouse position
     // it may not mean much, but for keyboard interrupts we may lose keys. So
-    // given there are many different mice. A driver needs some function that is
-    // called inside this handler. There's no special data we get from this
+    // given there are many different mice. A driver needs some function that
+    // is called inside this handler. There's no special data we get from this
     // interrupt. Only that it's 0x32 from the mouse.
 
     // A lambda task would seem nice here. Bind the values to it and run it
@@ -2183,8 +2190,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
     // Many.. seems annoying.
 
     mouse_handle_interrupt();
-    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
-    *local_apic_eoi = 0;
+    local_apic_eoi();
     return;
   }
   if (regs->int_no == 0x31) {  // keyboard IRQ
@@ -2282,8 +2288,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
 	printf("z");
 	break;
     }
-    volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
-    *local_apic_eoi = 0;
+    local_apic_eoi();
     return;
   }
 
@@ -2292,7 +2297,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
   } else {
     printf("interrupt: %x\n", regs->int_no);
   }
-  printf("eflags: %d, ss: %d, cs: %d\n", regs->eflags, regs->ss, regs->cs);
+  printf("rflags: %d, ss: %d, cs: %d\n", regs->rflags, regs->ss, regs->cs);
   printf("rsp: %x, ip: %x\n", regs->rsp, regs->eip);
 
   if (regs->int_no == EXCEPTION_PAGE_FAULT) {
@@ -2332,14 +2337,14 @@ void idt_setup() {
 
   // The INT n instruction can be used to emulate exceptions in software; but
   // there is a limitation.1 If INT n provides a vector for one of the
-  // architecturally-defined exceptions, the processor generates an interrupt to
-  // the correct vector (to access the exception handler) but does not push an
-  // error code on the stack. This is true even if the associated
-  // hardware-generated exception normally produces an error code. The exception
-  // handler will still attempt to pop an error code from the stack while
-  // handling the exception. Because no error code was pushed, the handler will
-  // pop off and discard the EIP instead (in place of the missing error code).
-  // This sends the return to the wrong location.
+  // architecturally-defined exceptions, the processor generates an interrupt
+  // to the correct vector (to access the exception handler) but does not push
+  // an error code on the stack. This is true even if the associated
+  // hardware-generated exception normally produces an error code. The
+  // exception handler will still attempt to pop an error code from the stack
+  // while handling the exception. Because no error code was pushed, the
+  // handler will pop off and discard the EIP instead (in place of the missing
+  // error code). This sends the return to the wrong location.
 
   // ref: 6.4.2 Software-Generated Exceptions
 
@@ -3603,21 +3608,20 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
     h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
   }
 
-  //  task_new((uint64_t)kernel_task, kernel_task_stack, &kernel);
-  //  task_new((uint64_t)task1, t1_stack, &t1);
-  //  task_new((uint64_t)task2, t2_stack, &t2);
-
-  task_current = task_new_malloc((uint64_t)kernel_task);
+  task_current = task_scheduler = task_new_malloc((uint64_t)schedule);
   task_new_malloc((uint64_t)task1);
   task_new_malloc((uint64_t)task2);
 
   // TODO: somehow replace the current kmain with the idle task.
   // task_current = &kernel;
 
-  while (1) {
-    // printf("kernel HLT: stack: %x eip: %x\n", kernel.rsp, kernel.eip);
-    asm("HLT");
-  }
+  // How do we start the schedule task here? Call 'switch_task'? We will lose
+  // the current stack. Can we reclaim it, or we don't care because it's so
+  // small? I guess I could at least preserve it? Or the schedule task could
+  // actually use it and stay the 'kernel' task, then we would just call
+  // schedule here.
+  printf("switching to scheduler task\n");
+  task_replace(task_scheduler);
 
   // send_dhcp_discover();
   return 0xDEADBABA;
