@@ -559,11 +559,21 @@ static inline uint16_t inw(uint16_t port) {
 }
 
 void ps2_wait_ready() {
+  // Bit 1 is the Input Buffer Full flag.
+  // 0 = input buffer is empty
+  // 1 = input buffer is full
+  // We wait until it's empty.
+  // ref: Input buffer
+  // https://web.archive.org/web/20210417040153/http://www.diakom.ru/el/elfirms/datashts/Smsc/42w11.pdf
   while (inb(0x64) & 0x2) {
   };
 }
 
 void ps2_wait_data() {
+  // Bit 0 is the Ouput Buffer Full flag
+  // 0 = output buffer is empty
+  // 1 = output buffer is full
+  // We wait until it's full.
   while (!(inb(0x64) & 0x1)) {
   };
 }
@@ -1415,12 +1425,19 @@ void net_handle_ipv4(ethernet_frame_t* ef, ipv4_header_t* iph) {
   }
 }
 
+struct mouse_data {
+  uint8_t data;
+  uint8_t x;
+  uint8_t y;
+};
+typedef struct mouse_data mouse_data_t;
+
 enum task_state { running, finished };
 typedef enum task_state task_state_t;
 
 typedef struct task task_t;
 struct task {
-  uint8_t id;
+  uint8_t id;  // TODO: remove
   uint64_t rsp;
   uint64_t eip;
   uint64_t rax;
@@ -1439,13 +1456,16 @@ struct task {
   uint64_t r14;
   uint64_t r15;
   uint64_t rflags;
+  // Don't change the order above. It will impact assembly code in switch_task.s
   task_t* next;
-  uint64_t sleep_until;
   task_state_t state;
+  uint64_t sleep_until;
+  bool waiting_for_mouse_data;
+  mouse_data_t mouse_data;
 };
 
-task_t* task_first = 0;
-task_t* task_current = 0;
+task_t* task_first = NULL;
+task_t* task_current = NULL;
 
 void trampoline();
 
@@ -1801,6 +1821,8 @@ void service_network() {
   // -> dhcp request
 }
 
+task_t* service_mouse = NULL;
+
 // The interrupt handler should either start this task with high priority OR
 // this task already exists and waits for the interrupt blocking. If this is
 // late then we will see new data/lose old data. Hence it's important how often
@@ -1811,38 +1833,115 @@ void service_network() {
 // OS/driver could read state from the input device and has a list of whom to
 // notify. Maybe in our case we don't notify, yet, we just update globals and
 // call display?
+//
+// The ps/2 controller sends one interrupt per data byte. The mouse sends 3
+// bytes so there will be 3 interrupts. Just reading three bytes here does not
+// guarantee they are from the mouse, could be a keyboard byte too. We rely on
+// the IRQ to know which device the data comes from. Therefore we need to track
+// how many bytes we read so far.
+// ref: https://forum.osdev.org/viewtopic.php?t=36691&start=15
+// ref: https://www.reddit.com/r/osdev/comments/ld8ril/comment/gm6rfx5/
+//
+// Actually we can see if a byte came from the keyboard or the mouse by checking
+// the PS/2 controller output port by sending the 0xD0 command.
+//
+// Bit 4 is set if the data came from port 1 (kbd)
+// Bit 5 is set if the data came from port 2 (mouse)
+//
+// The first byte we receive has overflow bits. If they are set we should
+// probably ignore the corresponding packet or check if the mouse is still
+// usable.
+
+int mouse_bytes_received = 0;
+uint8_t mouse_data[3] = {0};
+
 void mouse_handle_interrupt() {
-  // data:
-  // bit 0:
-  // bit 1:
-  // bit 2:
-  // bit 3:
-  // bit 4: x sign
-  // bit 5: y sign
-  // bit 6: x overflow
-  // bit 7: y overflow
-  uint8_t data, x, y;
-  ps2_wait_data();
-  data = inb(0x60);
-  ps2_wait_data();
-  x = inb(0x60);
-  ps2_wait_data();
-  y = inb(0x60);
+  // printf("mouse_handle_interrupt\n");
+  //  data:
+  //  bit 0:
+  //  bit 1:
+  //  bit 2:
+  //  bit 3:
+  //  bit 4: x sign
+  //  bit 5: y sign
+  //  bit 6: x overflow
+  //  bit 7: y overflow
 
-  // Now that we read all data, let's send it up. How? Do we create a struct and
-  // put in this data? It needs to live somewhere until the scheduler runs a
-  // task that consumes it. Do we enqueue the task here? Or maybe it's the mouse
-  // service that blocks on some queue? event queue?
-  // Should probably have a type, like 'mouse_data' and a struct.
+  // 1st byte: data
+  // 2nd byte: x
+  // 3rd byte: y
 
-  // the 9 bit two's complements relative x,y values come in 2 pieces.
-  // an 8 bit value and a sign bit.
-  // wikipedia says to subtract the sign bit. extract and subtract.
+  mouse_data[mouse_bytes_received++] = inb(0x60);
+
+  if (mouse_bytes_received == 3) {
+    // packet is complete
+    mouse_bytes_received = 0;
+
+    service_mouse->waiting_for_mouse_data = false;
+    service_mouse->mouse_data.data = mouse_data[0];
+    service_mouse->mouse_data.x = mouse_data[1];
+    service_mouse->mouse_data.y = mouse_data[2];
+  }
+
+  // Now that we read all data, let's send it up. How? Do we create a struct
+  // and put in this data? It needs to live somewhere until the scheduler runs
+  // a task that consumes it. Do we enqueue the task here? Or maybe it's the
+  // mouse service that blocks on some queue? event queue? Should probably
+  // have a type, like 'mouse_data' and a struct.
+
+  // In Go we could just make the struct and it would choose stack or heap
+  // automatically.
+  // We allocate it here, who frees it?
+  // Maybe we create a buffer up front and reuse because this will happen a
+  // lot and we probably don't want to fragment memory so much.
+
+  /* mouse_data_t* mouse_data = (mouse_data_t*)malloc(sizeof(mouse_data_t));
+   */
+  /* // if (mouse_data == NULL) { panic() } */
+  /* mouse_data->data = data; */
+  /* mouse_data->x = x; */
+  /* mouse_data->y = y; */
+
+  // Instead of setting this to some magic object we probably want to enqueue it
+  // somewhere. Then we can handle many events.
+
+  // TODO: I have the feeling this is the ps2 driver not the mouse driver.f
+}
+
+// We assume mouse_data_t gets allocated in here so we don't pass it in.
+mouse_data_t* wait_for_mouse_data() {
+  // This is similar to sleep. We register some marker somewhere and HLT Like
+  // task->wait_for_mouse_data = true The mouse driver then loops through all
+  // tasks and checks if they have wait_for_mouse_data and unblocks them. Where
+  // does it put the mouse data for them? If it puts a pointer directly in the
+  // task struct then who cleans it up? Several tasks will work on it. Reference
+  // counting? Do we copy it for every mouse consumer? So the mouse consumer
+  // gives us a buffer and we copy it there. Then we can free the original one
+  // after we copied it. Maybe that's not performant but simple. Let's handle
+  // this all inside the task object for now.
+  //
+  // Simplicity that will become
+  // complexity. Now that I wrote the first lines of code... What if the mouse
+  // sends many events.. right now I only have one.
+  printf("mouse_service: waiting for mouse data\n");
+  service_mouse->waiting_for_mouse_data = true;
+  asm volatile("hlt");
+  return &service_mouse->mouse_data;
 }
 
 void mouse_service() {
   // somehow we need to run this or this needs to run in the background waiting
   // for mouse data.
+  while (1) {
+    // wait for mouse data to process with a blocking call? sounds like select..
+    // let's call it 'wait for mouse data' and see what we end up with
+    mouse_data_t* data = wait_for_mouse_data();
+    printf("mouse_service: %x %x %x\n", data->data, data->x, data->y);
+  }
+
+  // the 9 bit two's complements relative x,y values come in 2 pieces.
+  // an 8 bit value and a sign bit.
+  // wikipedia says to subtract the sign bit. extract and subtract.
 
   // x,y,data is what we need.
   /*
@@ -1866,15 +1965,6 @@ void mouse_service() {
   */
 }
 
-// TODO: how do we call this without regs? like from the trampoline? If we come
-// from the trampoline we don't necessarily need to save the context because we
-// want to delete it (at least in the task_remove case). How we switch tasks in
-// the interrupt handler is that we change the rip of the interrupt handler.. we
-// need a different way when we are not inside the interrupt handler. Having two
-// ways is not impossible, regs could be NULL for example.. but I don't like it.
-// If we switch to the schedule task on every timer interrupt we can use the
-// method described above and then schedule will use another method and so it
-// can be called from different places. That seems like a plan!
 void schedule() {
   while (1) {
     // TODO: this crashes if task_current == NULL.
@@ -1913,6 +2003,13 @@ void schedule() {
 
     task_t* next_task = task_scheduler;
 
+    // pre-empt hardware handling
+    // There is some data waiting for the mouse service.
+    if (service_mouse->waiting_for_mouse_data == false) {
+      next_task = service_mouse;
+      goto found_task;
+    }
+
     task_t* t = task_current->next;
     for (; t != task_current; t = t->next) {
       // Skip the scheduler task itself We probably never want to remove the
@@ -1922,10 +2019,15 @@ void schedule() {
 	continue;
       }
 
+      // The mouse service gets handled separately
+      if (t == service_mouse) {
+	continue;
+      }
+
       // This task is sleeping
       if (t->sleep_until > now) {
-	printf("scheduler: task is sleeping until: %d now: %d\n",
-	       t->sleep_until, now);
+	//	printf("scheduler: task is sleeping until: %d now: %d\n",
+	//	       t->sleep_until, now);
 	continue;
       }
 
@@ -1945,6 +2047,7 @@ void schedule() {
       continue;
     }
 
+  found_task:
     printf("schedule: switching to task: %x at %x\n", next_task,
 	   next_task->eip);
     task_current = next_task;
@@ -1957,12 +2060,21 @@ void local_apic_eoi() {
   *local_apic_eoi = 0;
 }
 
+// BUG:
+// The schedule function is called after every interrupt. schedule is most
+// likely on the hlt call when the interrupt comes. Instead of going back to hlt
+// it resumes the loop after every interrupt.
+
+// BUG:
+// If the mouse or keyboard is used a lot before task 2 finishes there is a
+// segfault. I imagine it is connected to the bug above.
+
 // regs is passed via rdi
 void interrupt_handler(interrupt_registers_t* regs) {
   // Timer IRQ
   if (regs->int_no == 0x34) {
     // This is our schedule timer.
-    // printf("interrupt handler\n");
+    printf("interrupt handler\n");
 
     // Switch to scheduler task.
     // First we have to save the regs
@@ -2714,13 +2826,17 @@ void ioapic_setup() {
   /* ioapic_write_register(0x14, &r0); */
   // printf("ioapic irq 0 vector: %d\n", ioapic_read_register(0x10) &
   // 0x000000FF);
+
+  // Keyboard
   //  map irq 1 to user defined interrupt vector
   ioapic_redirection_register_t r = {0};
   r.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
   r.lower_bits.interrupt_vector = 0x31;
-  ioapic_write_register(0x12, &r);
-  printf("ioapic irq 1 vector: %d\n", ioapic_read_register(0x12) & 0x000000FF);
+  ioapic_write_register(IOAPIC_IRQ1, &r);
+  printf("ioapic irq 1 vector: %d\n",
+	 ioapic_read_register(IOAPIC_IRQ1) & 0x000000FF);
 
+  //
   // map irq to user defined interrupt vector
   ioapic_redirection_register_t r2 = {0};
   r2.upper_bits.destination = regs->local_apic_id >> 24;  // apic id
@@ -2743,134 +2859,188 @@ void ioapic_setup() {
   printf("ioapic irq 4: %x\n", ioapic_read_register(IOAPIC_IRQ4));
 
   // Setup ps2 controller, mouse and keyboard.
-  // Sometimes ps2_wait_data can hang until a key is pressed. Not sure why.
-  // do we need to enable ps2 port 2? mouse
   // ps2 controller spec:
   // https://web.archive.org/web/20210417040153/http://www.diakom.ru/el/elfirms/datashts/Smsc/42w11.pdf
+  // https://www-ug.eecg.utoronto.ca/desl/manuals/ps2.pdf
+  // https://www.infineon.com/dgdl/Infineon-PS2D_001-13681-Software+Module+Datasheets-v01_02-EN.pdf?fileId=8ac78c8c7d0d8da4017d0fab8b401c89
+  // http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
+  // https://www.eecg.utoronto.ca/~jayar/ece241_08F/AudioVideoCores/ps2/ps2.html
+  // https://web.archive.org/web/20210417040153/http://www.diakom.ru/el/elfirms/datashts/Smsc/42w11.pdf
+  // https://web.archive.org/web/20041213194610/http://www.computer-engineering.org/ps2keyboard/
+  // https://web.archive.org/web/20041213193626/http://www.computer-engineering.org/ps2mouse/
+
   // write command to
   // command port 0x64
   // and then read from
   // data port 0x60
-  uint8_t status = inb(0x64);
+
+  // how to check if ps2 controller exists
+  // check bit1 = 2 in 8042 flag IA PC BOOT ARCHITECTURE FLAGS FADT
+
+#define PS2_STATUS_REGISTER 0x64
+#define PS2_COMMAND_REGISTER 0x64
+#define PS2_DATA_REGISTER 0x60
+#define PS2_COMMAND_READ_CONFIG_BYTE 0x20
+#define PS2_COMMAND_WRITE_CONFIG_BYTE 0x60
+#define PS2_COMMAND_TEST_CONTROLLER 0xAA
+#define PS2_COMMAND_TEST_PORT_1 0xAB
+#define PS2_COMMAND_TEST_PORT_2 0xA9
+#define PS2_COMMAND_ENABLE_PORT_1 0xAE
+#define PS2_COMMAND_DISABLE_PORT_1 0xAD
+#define PS2_COMMAND_ENABLE_PORT_2 0xA8
+#define PS2_COMMAND_DISABLE_PORT_2 0xA7
+#define PS2_COMMAND_NEXT_BYTE_TO_PORT_2 0xD4
+#define PS2_DEVICE_COMMAND_RESET 0xFF
+#define PS2_DEVICE_COMMAND_ENABLE_DATA_REPORTING 0xF4
+#define PS2_DEVICE_COMMAND_DISABLE_DATA_REPORTING 0xF5
+#define PS2_DEVICE_COMMAND_IDENTIFY 0xF2
+#define PS2_DEVICE_RESPONSE_ACK 0xFA
+
+  uint8_t status = inb(PS2_STATUS_REGISTER);
   printf("configuring ps2: %x\n", status);
 
-  /* ps2_wait_ready(); */
-  /* outb(0x64, 0x20);  // 0x20 = read config byte */
-  /* status = inb(0x64); */
-  /* ps2_wait_data(); */
-  uint8 config;  // = inb(0x60); */
-  /* printf("config byte 0: %x\n", config); */
-  /* ps2_wait_ready(); */
+  uint8 config;
+  ps2_wait_ready();
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_DISABLE_PORT_1);
+  ps2_wait_ready();
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_DISABLE_PORT_2);
 
   ps2_wait_ready();
-  outb(0x64, 0xAD);  // disable first port
-  ps2_wait_ready();
-  outb(0x64, 0xA7);  // disable second port
-
-  ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_READ_CONFIG_BYTE);
   ps2_wait_data();
-  config = inb(0x60);
+  config = inb(PS2_DATA_REGISTER);
   printf("config byte 1: %x\n", config);
   ps2_wait_ready();
-  outb(0x64, 0x60);  // set
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_WRITE_CONFIG_BYTE);
   ps2_wait_ready();
-  //  outb(0x60, (config | 0x2) & ~0x20);
-  outb(0x60,
-       config & ~0x43);  // disable translation and interrupts, bit 1,2 and 6
+  outb(PS2_DATA_REGISTER, config & ~0x43);
+  // disable translation and interrupts, bit 1,2 and 6
   // returns 0x61 = 0b1100001
   // bit 0: first ps2 port interrupt enabled
   // bit 1: second ps2 port interrupt enabled
   ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_READ_CONFIG_BYTE);
   ps2_wait_data();
-  config = inb(0x60);
+  config = inb(PS2_DATA_REGISTER);
   printf("config byte 2: %x\n", config);
 
   ps2_wait_ready();
-  outb(0x64, 0xAA);  // self test
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_TEST_CONTROLLER);
   ps2_wait_data();
-  uint8 resp = inb(0x60);
+  uint8 resp = inb(PS2_DATA_REGISTER);
   printf("self test response: %x\n", resp);
+  // Must be 0x55
 
+  // Validated. At least qemu does not reset the controller during self-test.
+  // The config byte is the same before and after.
   ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_READ_CONFIG_BYTE);
   ps2_wait_data();
-  config = inb(0x60);
+  config = inb(PS2_DATA_REGISTER);
   printf("config byte 3: %x\n", config);
 
   ps2_wait_ready();
-  outb(0x64, 0xAB);  // test first */
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_TEST_PORT_1);
   ps2_wait_data();
-  uint8 response = inb(0x60);
-  // printf("response 1: %x\n", response);
+  uint8 response = inb(PS2_DATA_REGISTER);
+  printf("test port 1: %x\n", response);
+  // Must be 0 otherwise error
 
   ps2_wait_ready();
-  outb(0x64, 0xA9);  // test second
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_TEST_PORT_2);
   ps2_wait_data();
-  response = inb(0x60);
-  // printf("response 2: %x\n", response);
+  response = inb(PS2_DATA_REGISTER);
+  printf("test port 2: %x\n", response);
+  // Must be 0 otherwise error
 
   ps2_wait_ready();
-  outb(0x64, 0xAE);  // enable first port
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_ENABLE_PORT_1);
 
   ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_READ_CONFIG_BYTE);
   ps2_wait_data();
-  config = inb(0x60);
-  //  printf("config byte 4: %x\n", config);
+  config = inb(PS2_DATA_REGISTER);
+  printf("config byte 4: %x\n", config);
 
   ps2_wait_ready();
-  outb(0x64, 0xA8);  // enable second port
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_ENABLE_PORT_2);
 
   ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_READ_CONFIG_BYTE);
   ps2_wait_data();
-  config = inb(0x60);
-  //  printf("config byte 5: %x\n", config);
+  config = inb(PS2_DATA_REGISTER);
+  printf("config byte 5: %x\n", config);
+
+  // After reset devices are supposed to send 0xFA 0xAA and the device ID In the
+  // case of a ps/2 mouse the device ID is 0x00, but an ancient AT keyboard
+  // sends nothing. That's why we read 2 times for the keyboard and 3 times for
+  // the mouse.
+  ps2_wait_ready();
+  outb(PS2_DATA_REGISTER, PS2_DEVICE_COMMAND_RESET);
+  ps2_wait_data();
+  response = inb(PS2_DATA_REGISTER);
+  printf("reset response 1: %x\n", response);
+  ps2_wait_data();
+  response = inb(PS2_DATA_REGISTER);
+  printf("reset response 2: %x\n", response);
 
   ps2_wait_ready();
-  outb(0x60, 0xFF);  // reset device 1
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_NEXT_BYTE_TO_PORT_2);
+  ps2_wait_ready();
+  outb(PS2_DATA_REGISTER, PS2_DEVICE_COMMAND_RESET);
   ps2_wait_data();
-  response = inb(0x60);
-  // printf("reset response 1: %x\n", response);
+  response = inb(PS2_DATA_REGISTER);
+  printf("reset response 1: %x\n", response);
   ps2_wait_data();
-  response = inb(0x60);
-  // printf("reset response 1: %x\n", response);
+  response = inb(PS2_DATA_REGISTER);
+  printf("reset response 2: %x\n", response);
+  ps2_wait_data();
+  response = inb(PS2_DATA_REGISTER);
+  printf("reset response 3: %x\n", response);
 
   ps2_wait_ready();
-  outb(0x64, 0xD4);
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_NEXT_BYTE_TO_PORT_2);
   ps2_wait_ready();
-  outb(0x60, 0xFF);  // reset device 2
+  outb(PS2_DATA_REGISTER, PS2_DEVICE_COMMAND_ENABLE_DATA_REPORTING);
   ps2_wait_data();
-  response = inb(0x60);
-  //  printf("reset response 1: %x\n", response);
-  ps2_wait_data();
-  response = inb(0x60);
-  // printf("reset response 1: %x\n", response);
-  ps2_wait_data();
-  response = inb(0x60);
-  // printf("reset response 1: %x\n", response);
-
-  ps2_wait_ready();
-  outb(0x64, 0xD4);
-  ps2_wait_ready();
-  outb(0x60, 0xF4);  // enable mouse data reporting
-  ps2_wait_data();
-  response = inb(0x60);
-  // printf("enable response: %x\n", response);
+  response = inb(PS2_DATA_REGISTER);
+  printf("enable response: %x\n", response);
+  // should be 0xFA
 
   // enable IRQs
   printf("setting config to: %x\n", config | 0x3);
   ps2_wait_ready();
-  outb(0x64, 0x60);  // set
+  outb(PS2_COMMAND_REGISTER, PS2_COMMAND_WRITE_CONFIG_BYTE);
   ps2_wait_ready();
-  outb(0x60, config | 0x3);  // enable interrupts. bits 1,2
-  ps2_wait_ready();
-  outb(0x64, 0x20);  // 0x20 = read config byte
-  // ps2_wait_data();   // this hangs with qemu
-  config = inb(0x60);
-  printf("config byte 6: %x", config);
+  outb(PS2_DATA_REGISTER, config | 0x3);  // enable interrupts. bits 1,2
+
+  // Bug: here the problems start. After enabling interrupts we somehow receive
+  // the response to PS2_COMMAND_READ_CONFIG_BYTE via keyboard interrupt.
+  // Output:
+  // scancode: 0x3
+  // config byte 6: 0x3
+  // This also means reading from the buffer does not clear it.
+  //
+  // The answer is on the wiki already...
+  // Quote
+  //
+  // Unfortunately, there is one problem to worry about. If you send a command
+  // to the PS/2 controller that involves a response, the PS/2 controller may
+  // generate IRQ1, IRQ12, or no IRQ (depending on the firmware) when it puts
+  // the "response byte" into the buffer. In all three cases, you can't tell if
+  // the byte came from a PS/2 device or the PS/2 controller. In the no IRQ
+  // case, you additionally will need to poll for the byte. Fortunately, you
+  // should never need to send a command to the PS/2 controller itself after
+  // initialisation (and you can disable IRQs and both PS/2 devices where
+  // necessary during initialisation).
+  /* ps2_wait_ready(); */
+  /* outb(0x64, PS2_COMMAND_READ_CONFIG_BYTE);  // 0x20 = read config byte */
+  /* // ps2_wait_data();                           // this hangs with qemu */
+  /* config = inb(0x60); */
+  /* printf("config byte 6: %x", config); */
+
+  // Note: consider that there is a bad parity bit. In this case resending is
+  // necessary.
 
   // returns: 0x41 = 0b1000001
   // we can find irq that are remapped in the ioapic from the default.
@@ -3482,7 +3652,6 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // ref: https://www.diamondsystems.com/files/binaries/har82c54.pdf
   outb(0x43, 0b110010);
 
-  /* Write your kernel here. */
   /* gdt_setup(); */
   pic_remap(0x20, 0x28);
   idt_setup();
@@ -3540,23 +3709,16 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // 3. set comparator match
   // 4. set overall enable bit
 
-  // timer is already running
-
-  // How to get this running?
-  // We need to pre-fill the stack or register with the argument like id.
-  // We need to save all important registers on the kernel stack(?) and
-  // restore them later. How do we give it virtual memory? seems with cr3
-  // thing to give page table.
-
   // What to do next?
-  // Remove is done in the trampoline or the trampoline just sets the task
-  // state and we remove it when we iterate over it. The timer / scheduler
-  // just goes through the linked list. If it's empty it goes to the idle
-  // task.
   //
-  // 1. iterate on the clean up in the trampoline?
-  // 2. reschedule immediately after sleep?
-  // 3. memory allocation?
+  // 1. reschedule immediately after sleep/clean up?
+  // 2. extract ps2/keyboard driver
+  // 2.1. we will need some way to communicate new data to the driver task
+  // 3. tasks/processes that have their own address space
+  // 4. enable more cpus
+  // 5. keyboard commands?
+  // 6. two displays? kernel log and keyboard command console?
+  // 7. window system?
   //
   // What's the bigger goal?
   // Network stack is extremely brittle and works with 1 packet.
@@ -3564,13 +3726,21 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // Also want to handle it outside of the interrupt handler.
   // This implies there is a task that waits for data.
 
-  // I found the smallest increment I can make is by allocating the stack and
-  // task in my task_new.
+  // What kind of drivers are there?
+  // Timer driver?
+  // ioapic driver?
+  // PCI bus driver to scan for devices?
+  // Are the above drivers?
+  // PS2 driver
+  // Mouse driver
+  // Keyboard driver
+  // Network driver
+  // Sound driver
+  // Disk
 
-  // we need to store all available memory somewhere. the below gives usable
-  // memory, we have to subtract the kernel size from it.
-  // The kernel currently is identity mappes to 2mb pages.
-
+  // We need to store all available memory somewhere. the below gives usable
+  // memory, we have to subtract the kernel size from it. The kernel currently
+  // is identity mapped with 2mb pages.
   multiboot2_tag_header_t* h =
       (multiboot2_tag_header_t*)((uintptr_t)mbd +
 				 sizeof(multiboot2_information_t));
@@ -3608,12 +3778,14 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
     h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
   }
 
+  // task_scheduler = 0x2
+  // service_mouse = 0x6
+  // t1 = 0xA
+  // t2 = 0xE
   task_current = task_scheduler = task_new_malloc((uint64_t)schedule);
+  service_mouse = task_new_malloc((uint64_t)mouse_service);
   task_new_malloc((uint64_t)task1);
   task_new_malloc((uint64_t)task2);
-
-  // TODO: somehow replace the current kmain with the idle task.
-  // task_current = &kernel;
 
   // How do we start the schedule task here? Call 'switch_task'? We will lose
   // the current stack. Can we reclaim it, or we don't care because it's so
@@ -3754,3 +3926,13 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   Static chain pointer: r10 (no idea what this is)
   Stack cleanup: caller
 */
+
+// qemu monitor
+// https://en.wikibooks.org/wiki/QEMU/Monitor
+// https://qemu-project.gitlab.io/qemu/system/monitor.html
+// useful to see lapic status etc
+// commands
+// info lapic
+
+// gdb to lldb
+// https://lldb.llvm.org/use/map.html
