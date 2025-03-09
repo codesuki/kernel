@@ -1772,10 +1772,10 @@ task_t* task_scheduler = NULL;
 
 void trampoline() {
   printf("finished a task: %d\n", task_current->id);
-  // TODO
-  // Do we switch directly or just hlt and wait for timer interrupt?
   task_mark_finished(task_current);
-  asm("HLT");
+  // Before we called hlt here which wastes time, but it also resulted in a
+  // crash because after a hardware interrupt we would jump behind the hlt.
+  switch_task(task_current, task_scheduler);
 }
 
 void task1(uint8_t id) {
@@ -2063,11 +2063,12 @@ void local_apic_eoi() {
 // BUG:
 // The schedule function is called after every interrupt. schedule is most
 // likely on the hlt call when the interrupt comes. Instead of going back to hlt
-// it resumes the loop after every interrupt.
-
-// BUG:
-// If the mouse or keyboard is used a lot before task 2 finishes there is a
-// segfault. I imagine it is connected to the bug above.
+// it resumes the loop after every interrupt. I first thought this is not so bad
+// because then we can handle hardware related work immediately, but on the
+// other hand I think we might starve normal threads if someone uses the mouse
+// and we immediately switch to the mouse service. Probably better to schedule
+// the mouse service next and it can work off several interrupts, i.e. the data
+// of several interrupts, so we need a queue.
 
 // regs is passed via rdi
 void interrupt_handler(interrupt_registers_t* regs) {
