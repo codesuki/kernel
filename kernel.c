@@ -1604,6 +1604,13 @@ void* malloc(uint64_t size) {
   return (void*)(memory->address);
 }
 
+// My guess is that we probably want to 'lose' the initial kernel loader task.
+// Which means we create a new stack and switch to a new task that we define
+// here. What happens with the initial kernel stack? Can we clean it up somehow?
+// It won't be needed anymore because we jump out of kmain.
+task_t* task_scheduler = NULL;
+task_t* task_idle = NULL;
+
 // TODO: added task prefix for namespacing. Check C best practices.
 void task_setup_stack(uint64_t rsp) {
   // TODO: we could null it, but maybe that's too much work, also, how big is it
@@ -1685,8 +1692,7 @@ void sleep(uint64_t ms) {
   // reschedule()
   // let's call hlt for now
   printf("sleep: sleeping for %dms\n", ms);
-  asm("HLT");
-  // what if the schedule timer fires while we reschedule?
+  switch_task(task_current, task_scheduler);
 }
 
 void print_task(task_t* task) {
@@ -1760,22 +1766,18 @@ void update_regs_from_task(task_t* task, interrupt_registers_t* regs) {
   // print_regs(regs);
 }
 
-void task1(uint8_t id);
-void task2(uint8_t id);
-void schedule();
-
-// My guess is that we probably want to 'lose' the initial kernel loader task.
-// Which means we create a new stack and switch to a new task that we define
-// here. What happens with the initial kernel stack? Can we clean it up somehow?
-// It won't be needed anymore because we jump out of kmain.
-task_t* task_scheduler = NULL;
-
 void trampoline() {
   printf("finished a task: %d\n", task_current->id);
   task_mark_finished(task_current);
   // Before we called hlt here which wastes time, but it also resulted in a
   // crash because after a hardware interrupt we would jump behind the hlt.
   switch_task(task_current, task_scheduler);
+}
+
+void idle_task() {
+  while (1) {
+    asm volatile("hlt");
+  }
 }
 
 void task1(uint8_t id) {
@@ -1967,6 +1969,7 @@ void mouse_service() {
 
 void schedule() {
   while (1) {
+    asm volatile("cli");
     // TODO: this crashes if task_current == NULL.
 
     // Instead of just picking the next task lets iterate until we find a good
@@ -2001,7 +2004,7 @@ void schedule() {
       task_current = task_remove(task_current);
     }
 
-    task_t* next_task = task_scheduler;
+    task_t* next_task = task_idle;
 
     // pre-empt hardware handling
     // There is some data waiting for the mouse service.
@@ -2016,6 +2019,11 @@ void schedule() {
       // scheduler. If we want, we need to move this down.
       if (t == task_scheduler) {
 	printf("scheduler: this is the scheduler itself\n");
+	continue;
+      }
+
+      if (t == task_idle) {
+	printf("scheduler: this is the idle task\n");
 	continue;
       }
 
@@ -2037,20 +2045,12 @@ void schedule() {
       break;
     }
 
-    // If there was no ready task we halt. The next tick will restart the loop.
-    // Maybe we should disable interrupts during the loop?
-    if (t == task_scheduler) {
-      printf("schedule: no task ready\n");
-      asm volatile("sti");
-      asm volatile("hlt");
-      asm volatile("cli");
-      continue;
-    }
-
   found_task:
     printf("schedule: switching to task: %x at %x\n", next_task,
 	   next_task->eip);
     task_current = next_task;
+    // We call sti inside switch_task
+    // asm volatile("sti");
     switch_task(task_scheduler, task_current);
   }
 }
@@ -2059,16 +2059,6 @@ void local_apic_eoi() {
   volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
   *local_apic_eoi = 0;
 }
-
-// BUG:
-// The schedule function is called after every interrupt. schedule is most
-// likely on the hlt call when the interrupt comes. Instead of going back to hlt
-// it resumes the loop after every interrupt. I first thought this is not so bad
-// because then we can handle hardware related work immediately, but on the
-// other hand I think we might starve normal threads if someone uses the mouse
-// and we immediately switch to the mouse service. Probably better to schedule
-// the mouse service next and it can work off several interrupts, i.e. the data
-// of several interrupts, so we need a queue.
 
 // regs is passed via rdi
 void interrupt_handler(interrupt_registers_t* regs) {
@@ -3780,10 +3770,12 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   }
 
   // task_scheduler = 0x2
-  // service_mouse = 0x6
-  // t1 = 0xA
-  // t2 = 0xE
+  // task_idle = 0x6
+  // service_mouse = 0xA
+  // t1 = 0xE
+  // t2 = 0x12
   task_current = task_scheduler = task_new_malloc((uint64_t)schedule);
+  task_idle = task_new_malloc((uint64_t)idle_task);
   service_mouse = task_new_malloc((uint64_t)mouse_service);
   task_new_malloc((uint64_t)task1);
   task_new_malloc((uint64_t)task2);
