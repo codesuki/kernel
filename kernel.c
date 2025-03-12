@@ -1652,10 +1652,10 @@ struct memory_header {
   memory_header_t* next;
 };
 
-memory_header_t* malloc_free_list = NULL;
+memory_header_t* malloc_free_list = nullptr;
 
 void* malloc(uint64_t size) {
-  if (malloc_free_list == NULL) {
+  if (malloc_free_list == nullptr) {
     // Reserve a 2mb page.
     memory_t* m = memory_remove();
     // TODO: all these printfs should be converted to a debug logger.
@@ -1675,8 +1675,8 @@ void* malloc(uint64_t size) {
 
   // First fit
   memory_header_t* m = malloc_free_list;
-  memory_header_t* prev = NULL;
-  while (m != NULL) {
+  memory_header_t* prev = nullptr;
+  while (m != nullptr) {
     // Not big enough
     if (m->size < actual_size) {
       prev = m;
@@ -1707,7 +1707,7 @@ void* malloc(uint64_t size) {
       }
 
       printf("malloc: current free list\n");
-      for (memory_header_t* m = malloc_free_list; m != NULL; m = m->next) {
+      for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
 	printf("malloc: %x %d\n", m, m->size);
       }
 
@@ -1757,7 +1757,7 @@ void* malloc(uint64_t size) {
       h->size = actual_size;
 
       printf("malloc: current free list\n");
-      for (memory_header_t* m = malloc_free_list; m != NULL; m = m->next) {
+      for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
 	printf("malloc: %x %d\n", m, m->size);
       }
 
@@ -1767,7 +1767,7 @@ void* malloc(uint64_t size) {
 
   // If we came this far we didn't find free memory.
   printf("malloc2: OOM\n");
-  return NULL;
+  return nullptr;
 }
 
 void free(void* memory) {
@@ -1783,8 +1783,8 @@ void free(void* memory) {
   uint64_t address = (uint64)h;
 
   memory_header_t* current = malloc_free_list;
-  memory_header_t* prev = NULL;
-  while (current != NULL) {
+  memory_header_t* prev = nullptr;
+  while (current != nullptr) {
     // TODO: having the address in here is waste because we already know it.
     if ((uint64_t)current < (uint64_t)address) {
       prev = current;
@@ -1795,7 +1795,7 @@ void free(void* memory) {
   }
 
   // What is this state?
-  if (current == NULL) {
+  if (current == nullptr) {
   } else {
     // Where do I get that object from? The memory_t. Do I create this again
     // inside the free memory? I could call malloc now, but then I would have
@@ -1829,7 +1829,7 @@ void free(void* memory) {
   }
 
   printf("free: current free list\n");
-  for (memory_header_t* m = malloc_free_list; m != NULL; m = m->next) {
+  for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
     printf("free: %x %d\n", m, m->size);
   }
 }
@@ -1838,8 +1838,8 @@ void free(void* memory) {
 // Which means we create a new stack and switch to a new task that we define
 // here. What happens with the initial kernel stack? Can we clean it up somehow?
 // It won't be needed anymore because we jump out of kmain.
-task_t* task_scheduler = NULL;
-task_t* task_idle = NULL;
+task_t* task_scheduler = nullptr;
+task_t* task_idle = nullptr;
 
 // TODO: added task prefix for namespacing. Check C best practices.
 void task_setup_stack(uint64_t rsp) {
@@ -1867,7 +1867,7 @@ void task_new(uint64_t entry_point,
   // We push the trampoline pointer on the stack so we need to update rsp.
   task->rsp = rsp;
 
-  if (task_first == NULL) {
+  if (task_first == nullptr) {
     // First task
     task_first = task;
     task_first->next = task_first;
@@ -2007,7 +2007,7 @@ void trampoline() {
 void idle_task() {
   while (1) {
     // printf("idle_task: going to idle\n");
-    asm volatile("hlt");
+    __asm__ volatile("hlt");
     // printf("idle_task: woke up\n");
   }
 }
@@ -2055,7 +2055,7 @@ void service_network() {
   // -> dhcp request
 }
 
-task_t* service_mouse = NULL;
+task_t* service_mouse = nullptr;
 
 // The interrupt handler should either start this task with high priority OR
 // this task already exists and waits for the interrupt blocking. If this is
@@ -2113,7 +2113,7 @@ struct message {
   message_t* next;
 };
 
-message_t* message_first = NULL;
+message_t* message_first = nullptr;
 
 // TODO: maybe it's time to abstract a queue..
 
@@ -2123,25 +2123,25 @@ void message_send(message_type_t type, void* data) {
   // alloc message or get from pool.
   // add to queue
   message_t* message = malloc(sizeof(message_t));
-  message->next = NULL;
+  message->next = nullptr;
   message->type = type;
   message->data = data;
 
-  if (message_first == NULL) {
+  if (message_first == nullptr) {
     message_first = message;
     return;
   }
 
   message_t* m = message_first;
-  for (; m->next != NULL; m = m->next) {
+  for (; m->next != nullptr; m = m->next) {
   }
   m->next = message;
 }
 
 message_t* message_receive() {
   printf("message_receive\n");
-  if (message_first == NULL) {
-    return NULL;
+  if (message_first == nullptr) {
+    return nullptr;
   }
   message_t* m = message_first;
   message_first = m->next;
@@ -2151,7 +2151,7 @@ message_t* message_receive() {
 // message_peek returns true if there are messages waiting.
 bool message_peek() {
   // if length of queue > 0 return true
-  if (message_first != NULL) {
+  if (message_first != nullptr) {
     return true;
   } else {
     return false;
@@ -2217,7 +2217,7 @@ void mouse_handle_interrupt() {
 
   /* mouse_data_t* mouse_data = (mouse_data_t*)malloc(sizeof(mouse_data_t));
    */
-  /* // if (mouse_data == NULL) { panic() } */
+  /* // if (mouse_data == nullptr) { panic() } */
   /* mouse_data->data = data; */
   /* mouse_data->x = x; */
   /* mouse_data->y = y; */
@@ -2297,7 +2297,7 @@ void mouse_service() {
 
     // This should cause the block. Currently I am all backwards.
     message_t* m = message_receive();
-    if (m == NULL) {
+    if (m == nullptr) {
       goto wait;
     }
     uint8_t* byte = m->data;
@@ -2334,9 +2334,9 @@ void mouse_service() {
 
 void schedule() {
   while (1) {
-    asm volatile("cli");
+    __asm__ volatile("cli");
     // printf("schedule: start loop\n");
-    // TODO: this crashes if task_current == NULL.
+    // TODO: this crashes if task_current == nullptr.
 
     // Instead of just picking the next task lets iterate until we find a good
     // task, because tasks may sleep now.
@@ -3093,7 +3093,7 @@ uint64_t rdmsr(uint32_t reg) {
   // c = ecx (the c register)
   // ref:
   // https://gcc.gnu.org/onlinedocs/gcc/extensions-to-the-c-language-family/how-to-use-inline-assembly-language-in-c-code.html#x86-family-config-i386-constraints-md
-  asm volatile("rdmsr" : "=A"(value) : "c"(reg));
+  __asm__ volatile("rdmsr" : "=A"(value) : "c"(reg));
   return value;
 }
 
@@ -3476,7 +3476,7 @@ acpi_rsdp_t* locate_rsdp() {
       return (acpi_rsdp_t*)start;
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 struct acpi_madt {
@@ -4019,7 +4019,7 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
 
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
-    asm volatile("hlt");
+    __asm__ volatile("hlt");
   }
 
   // set pit 0 to one shot mode
@@ -4058,7 +4058,7 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // apic_setup();
   ioapic_setup();
   acpi_rsdp_t* rsdp = locate_rsdp();
-  //  if (rsdp == NULL) {
+  //  if (rsdp == nullptr) {
   //    // panic
   //  }
   //  printf("rsdp: revision: %d, rsdt_addr: %x\n", rsdp->revision,
