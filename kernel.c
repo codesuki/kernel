@@ -71,6 +71,9 @@ uint8_t* videoram = (uint8_t*)0xb8000;
 int xpos = 0;
 int ypos = 0;
 
+int mouse_x = 0;
+int mouse_y = 0;
+
 // How can we improve this?
 // Have a ring buffer that holds N pages 25*80
 // How do we write to it? Printf should do what?
@@ -101,6 +104,12 @@ int printf(const char* format, ...);
 void display() {
   for (int y = 0; y < num_rows; y++) {
     for (int x = 0; x < num_cols; x++) {
+      if (x == mouse_x && y == mouse_y) {
+	int idx = y * num_cols * 2 + x * 2;
+	videoram[idx] = 'o';
+	videoram[idx + 1] = 0x4;
+	continue;
+      }
       // contract: at minimum we want to start at terminal_buffer_start default
       // is cursor locked at last line so we want to subtract 25 lines, but only
       // if we are over 25.
@@ -577,9 +586,6 @@ void ps2_wait_data() {
   while (!(inb(0x64) & 0x1)) {
   };
 }
-
-int mouse_x = 0;
-int mouse_y = 0;
 
 int max(int x, int y) {
   if (x > y) {
@@ -1483,7 +1489,7 @@ const uint32_t page_size = 0x200000;  // 2mb
 typedef struct memory memory_t;
 struct memory {
   uint64_t address;
-  // uint32_t size;  // 4kb, 2mb, etc.
+  uint64_t size;  // 4kb, 2mb, etc.
   memory_t* next;
   memory_t* prev;
 };
@@ -1545,6 +1551,7 @@ void memory_init(uint64_t base_address, uint64_t length) {
     current->address = usable_memory;
     current->next = NULL;
     current->prev = prev;
+    current->size = page_size;
 
     if (prev != NULL) {
       prev->next = current;
@@ -1585,23 +1592,246 @@ memory_t* memory_remove() {
   return memory;
 }
 
+// Note about memory management.
+// There is physical memory in the system. We get its address ranges from Grub.
+// Then there is virtual memory (enforced in 64bit mode).
+// Page tables describe a mapping from physical to virtual memory.
+// A page can be 1Gb, 2mb, 4kb, ...
+// A task has it's own virtual memory. There doesn't exist enough physical
+// memory to fill this. Just some parts are mapped in via the page table.
+// If a task needs memory it needs to request pages to be mapped to its virtual
+// address space. Afterwards it can use this memory for all the objects it
+// creates. We see that task memory can only grow by page size increments
+// although they may be bigger or smaller than what the task needs. So there
+// needs to be some kind of memory management to efficiently utilize the memory
+// the task received. This is what malloc does.
+//
+// What will we do here? Currently we just allocate complete pages which is why
+// we immediately run out of memory. Now we want malloc to request and manage
+// only as much memory as necessary.
+//
+// Currently we only have the kernel page table.
+//
+// If there is no memory allocated to the task, ask the kernel for some memory
+// however much is necessary to fullfill the request, in page size increments.
+// Malloc then will only utilize the part that the task really needs. I.e. the
+// task requests 1 byte but the page size is 2mb. So malloc will reserve 1 byte
+// of memory. Malloc could keep a list of memory it gave out with the address as
+// key. When we want to free memory we look into this list. This list also needs
+// to live somewhere so we need to account for the size of this list when we
+// request memory.
+//
+// Where should this structure live? It can be a list of free / used memory.
+// Searching the list seems slow. O(n). Could be a hash map for O(1) lookup.
+// Could be a tree for binary search. (What's the O? something log).
+//
+// When the task requests memory that memory needs to be contiguous.
+//
+// Interesting thought: Do pages need to be contiguous? I don't think so as long
+// as they are mapped contiguously into the virtual address space. This is why
+// alignment is so important. TODO: flesh this out.
+//
+// All too complicated. I will go with a free list again. On free we add blocks
+// back and try to merge if possible. Fixed size 2mb heap.
+//
+// In the beginning we don't have memory again, so similarly to the free pages
+// list we create a free list for malloc. The free pages I pre-allocated but
+// with malloc that won't be possible.
+//
+// We can't know how big the list would be up front. We can do a worst case
+// analysis. If the task requests 1 byte increments we create the biggest
+// overhead because there is one structure allocated for 1 byte. Of course we
+// could use as much as we have physical memory.
+//
+// I'll reuse the headers of the allocated memory that are used for freeing as
+// free list structures.
+
+typedef struct memory_header memory_header_t;
+struct memory_header {
+  uint64_t size;
+  memory_header_t* next;
+};
+
+memory_header_t* malloc_free_list = NULL;
+
 void* malloc(uint64_t size) {
-  // What does malloc do? It probably does different things depending on whether
-  // it's in the kernel or not.
-  // Currently we only have kernel.
-
-  // Let's assume we know all of physical memory that is available. We need to
-  // pick a slot that is big enough to fit size. Currently our pages are all
-  // 2mb, but it doesn't matter here. Let's start simple and waste memory. When
-  // we request, we just return a 2mb block or multiple if needed.
-  // it's important that the memory is contiguous.
-
-  memory_t* memory = memory_remove();
-  if (memory == NULL) {
-    printf("malloc: OOM\n");
+  if (malloc_free_list == NULL) {
+    // Reserve a 2mb page.
+    memory_t* m = memory_remove();
+    // TODO: all these printfs should be converted to a debug logger.
+    // printf("malloc: received %d bytes from kernel\n", m->size);
+    memory_header_t* h = (memory_header_t*)(m->address);
+    h->size = m->size;
+    h->next = NULL;
+    malloc_free_list = h;
   }
-  printf("malloc: %x\n", (void*)(memory->address));
-  return (void*)(memory->address);
+
+  uint64_t actual_size =
+      size + sizeof(memory_header_t) + sizeof(memory_header_t);
+  // memory_header_t is 16 bytes. Times 2 is 32 bytes. If we allocate 1 byte we
+  // have 32 bytes overhead.
+  // printf("malloc: allocating %d bytes for the requested %d bytes\n",
+  //	 actual_size, size);
+
+  // First fit
+  memory_header_t* m = malloc_free_list;
+  memory_header_t* prev = NULL;
+  while (m != NULL) {
+    // Not big enough
+    if (m->size < actual_size) {
+      prev = m;
+      m = m->next;
+      continue;
+    }
+
+    // Positive cases. Perfect match or too big. In case it's too big we need to
+    // chop it up. Maybe we can merge the cases by passing the perfect size to
+    // the chop function which results in a no-op.
+    if (m->size == actual_size) {
+      uint64_t address = (uint64_t)m;
+      printf("malloc2 perfect: %x\n", (void*)(address));
+
+      // TODO: we don't need to do this anymore. It's the same type.
+      memory_header_t* h = (memory_header_t*)address;
+      h->size = actual_size;
+
+      // TODO: I am not removing this from the free list so I expect it to be
+      // used twice. I.e. log will show perfect twice.
+      // Yes this happened.
+      // Remove it from the free list.
+      if (m == malloc_free_list) {
+	malloc_free_list = m->next;
+      } else {
+	// We should have prev
+	prev->next = m->next;
+      }
+
+      printf("malloc: current free list\n");
+      for (memory_header_t* m = malloc_free_list; m != NULL; m = m->next) {
+	printf("malloc: %x %d\n", m, m->size);
+      }
+
+      return (void*)(address + sizeof(memory_header_t));
+    } else {
+      // We need to chop it up. Because the address is the address of the
+      // struct, it needs to move.
+
+      // Naively we would:
+      // Move the current header after the memory we allocate.
+      // Reduce the size in the header by the size of the allocation
+      // (actual_size).
+      // Update the free list's previous items next pointer to
+      // the new header. Allocate the space with header.
+
+      // IMPORTANT: It was bigger than actual_size, but we don't know if it was
+      // big enough to fit another memory_header_t into it. We can check, if
+      // it's not big enough we could merge with the next slot if it's free, but
+      // there is no guarantee for that. If it's not free we are out of luck.
+      // Maybe best is to check if it's big enough. Worst case we write a header
+      // for a 0 byte block. At least we can use it when merging. Alternatively
+      // we overallocate and set the size of the actual allocation to the max
+      // possible. This way we save one hop when iterating over the free list.
+
+      // For now I went with the 0 size element by changing the continue
+      // condition above.
+
+      uint64_t address = (uint64_t)m;
+
+      printf("malloc: found %d bytes slot to chop at %x\n", m->size, address);
+
+      memory_header_t* moved_m = (memory_header_t*)(address + actual_size);
+      moved_m->size = m->size - actual_size;
+      moved_m->next = m->next;
+
+      // If we are moving the actual first element, update it.
+      if (m == malloc_free_list) {
+	malloc_free_list = moved_m;
+      } else {
+	// We should have prev
+	prev->next = moved_m;
+      }
+
+      // Allocate the space with a header and return the address after the
+      // header.
+      memory_header_t* h = (memory_header_t*)address;
+      h->size = actual_size;
+
+      printf("malloc: current free list\n");
+      for (memory_header_t* m = malloc_free_list; m != NULL; m = m->next) {
+	printf("malloc: %x %d\n", m, m->size);
+      }
+
+      return (void*)(address + sizeof(memory_header_t));
+    }
+  }
+
+  // If we came this far we didn't find free memory.
+  printf("malloc2: OOM\n");
+  return NULL;
+}
+
+void free(void* memory) {
+  // All we know currently is the address. We stored a struct that contains the
+  // size before the address.
+  memory_header_t* h = (memory_header_t*)memory - 1;
+  printf("free: %d\n", h->size);
+
+  // Put it back into the free list.
+  // Sort it by address so that merging is easier.
+  // Hunch: I only have to check prev and next to see if they are mergable.
+
+  uint64_t address = (uint64)h;
+
+  memory_header_t* current = malloc_free_list;
+  memory_header_t* prev = NULL;
+  while (current != NULL) {
+    // TODO: having the address in here is waste because we already know it.
+    if ((uint64_t)current < (uint64_t)address) {
+      prev = current;
+      current = current->next;
+      continue;
+    }
+    break;
+  }
+
+  // What is this state?
+  if (current == NULL) {
+  } else {
+    // Where do I get that object from? The memory_t. Do I create this again
+    // inside the free memory? I could call malloc now, but then I would have
+    // some overhead from the header. Can I reuse the header somehow?
+    // First thought: but then I can't free the header.
+    // Second thought: doesn't matter because it will just become a header again
+    // anyway.
+    // It will be cheaper if I re-use the headers because otherwise I write down
+    // the size of the thing again.
+
+    // I don't even need a pointer in them because I can calculate it. I how how
+    // far the next item is away. But I cannot decide between free and used
+    // memory this way. I could certainly find the next header but wouldn't know
+    // what to do with it.
+
+    // I am unhappy that I skimmed the book because it robbed me of the
+    // opportunity to think.
+
+    // Let's do without merging for now.
+
+    // Now current is larger than address.
+    // Convert the header to a free list element.
+    prev->next = h;
+    h->next = current;
+
+    // Set head of list to smallest address. I assume the big free block is
+    // always at the end because we cut it from the front.
+    if (h < malloc_free_list) {
+      malloc_free_list = h;
+    }
+  }
+
+  printf("free: current free list\n");
+  for (memory_header_t* m = malloc_free_list; m != NULL; m = m->next) {
+    printf("free: %x %d\n", m, m->size);
+  }
 }
 
 // My guess is that we probably want to 'lose' the initial kernel loader task.
@@ -1776,7 +2006,9 @@ void trampoline() {
 
 void idle_task() {
   while (1) {
+    // printf("idle_task: going to idle\n");
     asm volatile("hlt");
+    // printf("idle_task: woke up\n");
   }
 }
 
@@ -1854,9 +2086,84 @@ task_t* service_mouse = NULL;
 // probably ignore the corresponding packet or check if the mouse is still
 // usable.
 
+// Message passing
+//
+// Message
+// Receiver (?) I don't think I need this. All receivers are registered.
+// Type
+// Data
+//
+// handle = Register(type) ?
+// message = Wait(handle) ?
+// Why did I randomly add handle here? Because there needs to be some connection
+// between registering and waiting
+//
+// Send(type, data)
+//
+
+// This probably cannot be an enum for long. Message types are probably pretty
+// dynamic.
+enum message_type { message_type_ps2_byte };
+typedef enum message_type message_type_t;
+
+typedef struct message message_t;
+struct message {
+  message_type_t type;
+  void* data;
+  message_t* next;
+};
+
+message_t* message_first = NULL;
+
+// TODO: maybe it's time to abstract a queue..
+
+// Let's do point to point first.
+// Let's replace 'wait_for_mouse_data'.
+void message_send(message_type_t type, void* data) {
+  // alloc message or get from pool.
+  // add to queue
+  message_t* message = malloc(sizeof(message_t));
+  message->next = NULL;
+  message->type = type;
+  message->data = data;
+
+  if (message_first == NULL) {
+    message_first = message;
+    return;
+  }
+
+  message_t* m = message_first;
+  for (; m->next != NULL; m = m->next) {
+  }
+  m->next = message;
+}
+
+message_t* message_receive() {
+  printf("message_receive\n");
+  if (message_first == NULL) {
+    return NULL;
+  }
+  message_t* m = message_first;
+  message_first = m->next;
+  return m;
+}
+
+// message_peek returns true if there are messages waiting.
+bool message_peek() {
+  // if length of queue > 0 return true
+  if (message_first != NULL) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 int mouse_bytes_received = 0;
 uint8_t mouse_data[3] = {0};
 
+// This function will look the same for the keyboard, because it's the ps/2
+// driver. It just differs where it sends the byte. One time it's to the mouse
+// driver and one time it's to the keyboard driver.
 void mouse_handle_interrupt() {
   // printf("mouse_handle_interrupt\n");
   //  data:
@@ -1873,7 +2180,10 @@ void mouse_handle_interrupt() {
   // 2nd byte: x
   // 3rd byte: y
 
-  mouse_data[mouse_bytes_received++] = inb(0x60);
+  uint8_t byte = inb(0x60);
+  mouse_data[mouse_bytes_received++] = byte;
+
+  printf("mouse_handle_interrupt: %x\n", byte);
 
   if (mouse_bytes_received == 3) {
     // packet is complete
@@ -1884,6 +2194,14 @@ void mouse_handle_interrupt() {
     service_mouse->mouse_data.x = mouse_data[1];
     service_mouse->mouse_data.y = mouse_data[2];
   }
+
+  // When we allocate a new byte here to send it over we will run out of memory
+  // soon, because currently I only make 2mb objects. Maybe make a ring buffer?
+
+  uint8_t* ps2_byte = (uint8_t*)malloc(sizeof(uint8_t));
+  *ps2_byte = byte;
+  printf("mouse_handle_interrupt2: %x\n", *ps2_byte);
+  message_send(message_type_ps2_byte, ps2_byte);
 
   // Now that we read all data, let's send it up. How? Do we create a struct
   // and put in this data? It needs to live somewhere until the scheduler runs
@@ -1907,7 +2225,7 @@ void mouse_handle_interrupt() {
   // Instead of setting this to some magic object we probably want to enqueue it
   // somewhere. Then we can handle many events.
 
-  // TODO: I have the feeling this is the ps2 driver not the mouse driver.f
+  // TODO: I have the feeling this is the ps2 driver not the mouse driver.
 }
 
 // We assume mouse_data_t gets allocated in here so we don't pass it in.
@@ -1925,51 +2243,99 @@ mouse_data_t* wait_for_mouse_data() {
   // Simplicity that will become
   // complexity. Now that I wrote the first lines of code... What if the mouse
   // sends many events.. right now I only have one.
-  printf("mouse_service: waiting for mouse data\n");
+  // printf("mouse_service: waiting for mouse data\n");
   service_mouse->waiting_for_mouse_data = true;
-  asm volatile("hlt");
+  // What do we want to do here?
+  // Calling hlt is not nice because we waste time.
+  // Let's assume we switch to the scheduler, what will happen when mouse data
+  // arrives?
+  // switch_task saves the rip which will be on the return. So it works out.
+  switch_task(task_current, task_scheduler);
   return &service_mouse->mouse_data;
 }
 
+// I imagine there are two parts to a driver. One part reads the data quickly
+// from the device to unblock it in case it has limited buffer size like a
+// network card or even keyboard.
+// The other part waits for this data to process it, so it could be a task that
+// waits on device/driver specific data. It then pieces together the data like
+// in the mouse driver case, 3 bytes make 1 packet, and publishes it to
+// consumers. Consumers can be applications. The terminal waiting for keyboard
+// input, an application waiting for a network packet, etc.
+//
+// We need some kind of data transport mechanism.
+// Should be usable in several places.
+// Is it a queue? Would make sense.
+// Add a new thing: put() / enqueue()
+// Is there something waiting?: peek()
+// Take a thing: get() / dequeue()
+//
+// What if there are multiple subscribers?
+// If one dequeues a thing it's lost.
+// Do we have one queue per subscriber?
+// We maybe have a type, i.e. 'mouse event', 'keyboard event'.
+// We have a registry where consumers register for the type of event they are
+// interested in.
+//
+// How do we handle copying of the data?
+// 1. The consumer could provide a buffer where we copy the data and the
+// consumer needs to clean it up. We re-use the buffer or clean it up once every
+// consumer got the data.
+// 2. We hand the consumer a copy and the consumer cleans it up.
+// 3. We hand the consumer the original which is reference counted and the
+// consumer needs to tell us they are done with it. Benefit over 2 is we can use
+// a pool.
+//
+// Let's go with 1 for simplicity.
 void mouse_service() {
   // somehow we need to run this or this needs to run in the background waiting
   // for mouse data.
   while (1) {
     // wait for mouse data to process with a blocking call? sounds like select..
     // let's call it 'wait for mouse data' and see what we end up with
-    mouse_data_t* data = wait_for_mouse_data();
-    printf("mouse_service: %x %x %x\n", data->data, data->x, data->y);
+    //    mouse_data_t* data = message_receive();
+
+    // This should cause the block. Currently I am all backwards.
+    message_t* m = message_receive();
+    if (m == NULL) {
+      goto wait;
+    }
+    uint8_t* byte = m->data;
+    // TODO: communication up to this point works, but I immediately go OOM. I
+    // need finer memory allocation and probably a pool for driver data.
+    printf("mouse_service: type: %d, data: %d\n", m->type, *byte);
+    /* // the 9 bit two's complements relative x,y values come in 2 pieces. */
+    /* // an 8 bit value and a sign bit. */
+    /* // wikipedia says to subtract the sign bit. extract and subtract. */
+
+    /* // x,y,data is what we need. */
+
+    /* int16_t rel_x = data->x - ((data->data << 4) & 0x100); */
+    /* int16_t rel_y = -(data->y - ((data->data << 3) & 0x100)); */
+
+    /* // Restrict to terminal width and height. */
+    /* mouse_x = min(max(0, mouse_x + rel_x), 79); */
+    /* mouse_y = min(max(0, mouse_y + rel_y), 24); */
+
+    /* // If there is no print we don't render the mouse pointer. Therefore
+     * mouse */
+    /* // events should trigger a render. */
+    /* printf("mouse_service: %d %d\n", mouse_x, mouse_y); */
+    /* display(); */
+  wait:
+
+    switch_task(task_current, task_scheduler);
   }
-
-  // the 9 bit two's complements relative x,y values come in 2 pieces.
-  // an 8 bit value and a sign bit.
-  // wikipedia says to subtract the sign bit. extract and subtract.
-
-  // x,y,data is what we need.
-  /*
-    int16_t rel_x = x - ((data << 4) & 0x100);
-
-    int16_t rel_y = -(y - ((data << 3) & 0x100));
-
-    mouse_x = min(max(0, mouse_x + rel_x), 79);
-    mouse_y = min(max(1, mouse_y + rel_y), 24);
-  */
-  /*
-  ypos = mouse_y;
-  xpos = mouse_x;
-  print_character_color('o', 0x04);
-
-  cll(0);
-  ypos = 0;
-  xpos = 0;
-  printf("data: %x x: %d, y: %d, rel_x: %d, rel_y: %d", data, mouse_x, mouse_y,
-  rel_x, rel_y);
-  */
 }
+
+// Bug:
+// At some point the mouse freezes and the scheduling stops, but keyboard
+// interrupts are printed.
 
 void schedule() {
   while (1) {
     asm volatile("cli");
+    // printf("schedule: start loop\n");
     // TODO: this crashes if task_current == NULL.
 
     // Instead of just picking the next task lets iterate until we find a good
@@ -1983,7 +2349,6 @@ void schedule() {
     // work. I did not take the time to document the rules (now written down
     // below). Should have written some pseudo code too.
 
-    // If there is just one task (scheduler?) this will not run.
     // Rules
     // 1. We want to pick the next task.
     // 2. If no task is ready we want to try and pick the next task again.
@@ -2006,24 +2371,44 @@ void schedule() {
 
     task_t* next_task = task_idle;
 
+    // For now, let's change this to check whether the queue has data.
     // pre-empt hardware handling
     // There is some data waiting for the mouse service.
-    if (service_mouse->waiting_for_mouse_data == false) {
+    /* if (service_mouse->waiting_for_mouse_data == false) { */
+    /*   next_task = service_mouse; */
+    /*   goto found_task; */
+    /* } */
+
+    // Here I would loop through all processes and see if they should be
+    // unblocked. Then maybe run with higher priority because they were
+    // sleeping. Is this efficient to loop through all processes? How many
+    // processes are there normally?
+    // 5000 threads on the macbook. How slow is looping 5000 times?
+    // Could the function that fills each tasks queue change the tasks state?
+    //
+    // What did I notice here?
+    // queue is not an object. I couldn't call queue->peek().
+    // message_ functions work on a global object.
+    // I would need many. One for each task.
+    // Also, the drive would send one message, but there could be many receiver
+    // queues.
+    if (message_peek() == true) {
       next_task = service_mouse;
       goto found_task;
     }
 
     task_t* t = task_current->next;
+    // If there is just one task (scheduler?) this will not run.
     for (; t != task_current; t = t->next) {
       // Skip the scheduler task itself We probably never want to remove the
       // scheduler. If we want, we need to move this down.
       if (t == task_scheduler) {
-	printf("scheduler: this is the scheduler itself\n");
+	// printf("scheduler: this is the scheduler itself\n");
 	continue;
       }
 
       if (t == task_idle) {
-	printf("scheduler: this is the idle task\n");
+	// printf("scheduler: this is the idle task\n");
 	continue;
       }
 
@@ -2046,8 +2431,8 @@ void schedule() {
     }
 
   found_task:
-    printf("schedule: switching to task: %x at %x\n", next_task,
-	   next_task->eip);
+    // printf("schedule: switching to task: %x at %x\n", next_task,
+    //	   next_task->eip);
     task_current = next_task;
     // We call sti inside switch_task
     // asm volatile("sti");
@@ -2065,7 +2450,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
   // Timer IRQ
   if (regs->int_no == 0x34) {
     // This is our schedule timer.
-    printf("interrupt handler\n");
+    // printf("interrupt handler\n");
 
     // Switch to scheduler task.
     // First we have to save the regs
@@ -3702,7 +4087,7 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
 
   // What to do next?
   //
-  // 1. reschedule immediately after sleep/clean up?
+  // 1. DONE reschedule immediately after sleep/clean up?
   // 2. extract ps2/keyboard driver
   // 2.1. we will need some way to communicate new data to the driver task
   // 3. tasks/processes that have their own address space
@@ -3768,6 +4153,20 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
     // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
     h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
   }
+
+  // Should give chopped log
+  uint8* c = malloc(1);
+  uint8* c2 = malloc(1);
+  uint8* c3 = malloc(1);
+  free(c);
+  // Should give perfect size log
+  uint8* c4 = malloc(1);
+  uint8* c5 = malloc(1);
+  free(c2);
+
+  free(c3);
+  free(c4);
+  free(c5);
 
   // task_scheduler = 0x2
   // task_idle = 0x6
