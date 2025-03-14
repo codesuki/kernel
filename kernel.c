@@ -260,7 +260,6 @@ void print_error(char* s) {
 int printf(const char* format, ...) {
   va_list args;
   int d;
-  char c;
   char* s;
   va_start(args, format);
   while (*format != 0) {
@@ -909,7 +908,7 @@ void set_timer0() {
   // printf("hpet: setting timer to %x %d\n", _1s, _1s);
   uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
   // TODO: how is wrapping handled? By GPE :D
-  *comparator_0 = *counter_value + _1s;
+  *comparator_0 = *counter_value + _1ms * 10;
 
   // TODO: this crashes when wrapping 64bit value. Probably formatting code
   // wrong.
@@ -1438,7 +1437,19 @@ struct mouse_data {
 };
 typedef struct mouse_data mouse_data_t;
 
-enum task_state { running, finished };
+// This probably cannot be an enum for long. Message types are probably pretty
+// dynamic.
+enum message_type { message_type_ps2_byte };
+typedef enum message_type message_type_t;
+
+typedef struct message message_t;
+struct message {
+  message_type_t type;
+  void* data;
+  message_t* next;
+};
+
+enum task_state { running, blocked, finished };
 typedef enum task_state task_state_t;
 
 typedef struct task task_t;
@@ -1466,8 +1477,7 @@ struct task {
   task_t* next;
   task_state_t state;
   uint64_t sleep_until;
-  bool waiting_for_mouse_data;
-  mouse_data_t mouse_data;
+  message_t* queue;
 };
 
 task_t* task_first = NULL;
@@ -1689,7 +1699,7 @@ void* malloc(uint64_t size) {
     // the chop function which results in a no-op.
     if (m->size == actual_size) {
       uint64_t address = (uint64_t)m;
-      printf("malloc2 perfect: %x\n", (void*)(address));
+      // printf("malloc2 perfect: %x\n", (void*)(address));
 
       // TODO: we don't need to do this anymore. It's the same type.
       memory_header_t* h = (memory_header_t*)address;
@@ -1706,10 +1716,10 @@ void* malloc(uint64_t size) {
 	prev->next = m->next;
       }
 
-      printf("malloc: current free list\n");
-      for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
-	printf("malloc: %x %d\n", m, m->size);
-      }
+      // printf("malloc: current free list\n");
+      // for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next)
+      // {	printf("malloc: %x %d\n", m, m->size);
+      // }
 
       return (void*)(address + sizeof(memory_header_t));
     } else {
@@ -1737,7 +1747,8 @@ void* malloc(uint64_t size) {
 
       uint64_t address = (uint64_t)m;
 
-      printf("malloc: found %d bytes slot to chop at %x\n", m->size, address);
+      // printf("malloc: found %d bytes slot to chop at %x\n", m->size,
+      // address);
 
       memory_header_t* moved_m = (memory_header_t*)(address + actual_size);
       moved_m->size = m->size - actual_size;
@@ -1756,17 +1767,17 @@ void* malloc(uint64_t size) {
       memory_header_t* h = (memory_header_t*)address;
       h->size = actual_size;
 
-      printf("malloc: current free list\n");
-      for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
-	printf("malloc: %x %d\n", m, m->size);
-      }
+      // printf("malloc: current free list\n");
+      // for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next)
+      // {	printf("malloc: %x %d\n", m, m->size);
+      // }
 
       return (void*)(address + sizeof(memory_header_t));
     }
   }
 
   // If we came this far we didn't find free memory.
-  printf("malloc2: OOM\n");
+  // printf("malloc2: OOM\n");
   return nullptr;
 }
 
@@ -1774,7 +1785,7 @@ void free(void* memory) {
   // All we know currently is the address. We stored a struct that contains the
   // size before the address.
   memory_header_t* h = (memory_header_t*)memory - 1;
-  printf("free: %d\n", h->size);
+  // printf("free: %d\n", h->size);
 
   // Put it back into the free list.
   // Sort it by address so that merging is easier.
@@ -1828,10 +1839,10 @@ void free(void* memory) {
     }
   }
 
-  printf("free: current free list\n");
-  for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
-    printf("free: %x %d\n", m, m->size);
-  }
+  // printf("free: current free list\n");
+  // for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
+  //   printf("free: %x %d\n", m, m->size);
+  // }
 }
 
 // My guess is that we probably want to 'lose' the initial kernel loader task.
@@ -1857,6 +1868,9 @@ void task_new(uint64_t entry_point,
 	      task_t* task) {
   printf("New task %x\n", entry_point);
   // memset to 0
+  task->state = running;
+  task->queue = nullptr;
+
   task->eip = entry_point;
 
   // Set rsp to end of stack memory because it grows down.
@@ -1921,7 +1935,7 @@ void sleep(uint64_t ms) {
   // blocking.
   // reschedule()
   // let's call hlt for now
-  printf("sleep: sleeping for %dms\n", ms);
+  // printf("sleep: sleeping for %dms\n", ms);
   switch_task(task_current, task_scheduler);
 }
 
@@ -2056,6 +2070,7 @@ void service_network() {
 }
 
 task_t* service_mouse = nullptr;
+task_t* service_keyboard = nullptr;
 
 // The interrupt handler should either start this task with high priority OR
 // this task already exists and waits for the interrupt blocking. If this is
@@ -2101,60 +2116,56 @@ task_t* service_mouse = nullptr;
 // Send(type, data)
 //
 
-// This probably cannot be an enum for long. Message types are probably pretty
-// dynamic.
-enum message_type { message_type_ps2_byte };
-typedef enum message_type message_type_t;
-
-typedef struct message message_t;
-struct message {
-  message_type_t type;
-  void* data;
-  message_t* next;
-};
-
-message_t* message_first = nullptr;
+// message_t* message_first = nullptr;
 
 // TODO: maybe it's time to abstract a queue..
 
+// message_peek returns true if there are messages waiting.
+// TODO: what's the naming here? queue, head, first?
+bool message_peek(message_t* head) {
+  // if length of queue > 0 return true
+  if (head != nullptr) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 // Let's do point to point first.
 // Let's replace 'wait_for_mouse_data'.
-void message_send(message_type_t type, void* data) {
-  // alloc message or get from pool.
-  // add to queue
+void message_send(message_t** head, message_type_t type, void* data) {
+  // printf("message_send\n");
+  // printf("message_send %d\n", message_peek(*head));
+  //  alloc message or get from pool.
+  //  add to queue
   message_t* message = malloc(sizeof(message_t));
   message->next = nullptr;
   message->type = type;
   message->data = data;
 
-  if (message_first == nullptr) {
-    message_first = message;
+  if (*head == nullptr) {
+    // TODO: here we probably need pointer to pointer.
+    *head = message;
     return;
   }
 
-  message_t* m = message_first;
+  // TODO: keep a pointer to tail for faster append.
+  message_t* m = *head;
   for (; m->next != nullptr; m = m->next) {
   }
   m->next = message;
 }
 
-message_t* message_receive() {
-  printf("message_receive\n");
-  if (message_first == nullptr) {
-    return nullptr;
-  }
-  message_t* m = message_first;
-  message_first = m->next;
-  return m;
-}
-
-// message_peek returns true if there are messages waiting.
-bool message_peek() {
-  // if length of queue > 0 return true
-  if (message_first != nullptr) {
-    return true;
-  } else {
-    return false;
+message_t* message_receive(message_t** head) {
+  while (true) {
+    // TODO: there is a risk to dereference a null pointer here.
+    if (*head != nullptr) {
+      message_t* m = *head;
+      *head = m->next;
+      return m;
+    }
+    task_current->state = blocked;
+    switch_task(task_current, task_scheduler);
   }
 }
 
@@ -2181,27 +2192,19 @@ void mouse_handle_interrupt() {
   // 3rd byte: y
 
   uint8_t byte = inb(0x60);
-  mouse_data[mouse_bytes_received++] = byte;
 
-  printf("mouse_handle_interrupt: %x\n", byte);
-
-  if (mouse_bytes_received == 3) {
-    // packet is complete
-    mouse_bytes_received = 0;
-
-    service_mouse->waiting_for_mouse_data = false;
-    service_mouse->mouse_data.data = mouse_data[0];
-    service_mouse->mouse_data.x = mouse_data[1];
-    service_mouse->mouse_data.y = mouse_data[2];
-  }
+  // printf("mouse_handle_interrupt: %x\n", byte);
 
   // When we allocate a new byte here to send it over we will run out of memory
   // soon, because currently I only make 2mb objects. Maybe make a ring buffer?
 
-  uint8_t* ps2_byte = (uint8_t*)malloc(sizeof(uint8_t));
+  uint8_t* ps2_byte = malloc(sizeof(uint8_t));
   *ps2_byte = byte;
-  printf("mouse_handle_interrupt2: %x\n", *ps2_byte);
-  message_send(message_type_ps2_byte, ps2_byte);
+  // printf("mouse_handle_interrupt2: %x\n", *ps2_byte);
+
+  // TODO: find this service differnetly
+  //  printf("mouse_handle_interrupt: sending\n");
+  message_send(&service_mouse->queue, message_type_ps2_byte, ps2_byte);
 
   // Now that we read all data, let's send it up. How? Do we create a struct
   // and put in this data? It needs to live somewhere until the scheduler runs
@@ -2228,6 +2231,115 @@ void mouse_handle_interrupt() {
   // TODO: I have the feeling this is the ps2 driver not the mouse driver.
 }
 
+void keyboard_handle_interrupt() {
+  uint8_t byte = inb(0x60);
+
+  uint8_t* ps2_byte = malloc(sizeof(uint8_t));
+  *ps2_byte = byte;
+
+  // If I were to merge the things into a ps/2 handler we would need to know the
+  // IRQ, so we can map it to devices.
+  message_send(&service_keyboard->queue, message_type_ps2_byte, ps2_byte);
+}
+
+void keyboard_service() {
+  while (true) {
+    // Now we will get the mouse message too.
+    message_t* m = message_receive(&task_current->queue);
+
+    uint8 scancode = *(uint8_t*)(m->data);
+    printf("scancode: %x\n", scancode);
+    // key released
+    // It seems this is numbered from top left to bottom right.
+    switch (scancode) {
+      case 0x1c:  // enter
+	printf("\n");
+	break;
+      case 0xb9:  // space
+	printf(" ");
+	break;
+      case 0x9e:
+	printf("a");
+	break;
+      case 0xb0:
+	printf("b");
+	break;
+      case 0xae:
+	printf("c");
+	break;
+      case 0xa0:
+	printf("d");
+	break;
+      case 0x92:
+	printf("e");
+	break;
+      case 0xa1:
+	printf("f");
+	break;
+      case 0xa2:
+	printf("g");
+	break;
+      case 0xa3:
+	printf("h");
+	break;
+      case 0x97:
+	printf("i");
+	break;
+      case 0xa4:
+	printf("j");
+	break;
+      case 0xa5:
+	printf("k");
+	break;
+      case 0xa6:
+	printf("l");
+	break;
+      case 0xb2:
+	printf("m");
+	break;
+      case 0xb1:
+	printf("n");
+	break;
+      case 0x98:
+	printf("o");
+	break;
+      case 0x99:
+	printf("p");
+	break;
+      case 0x90:
+	printf("q");
+	break;
+      case 0x93:
+	printf("r");
+	break;
+      case 0x9f:
+	printf("s");
+	break;
+      case 0x94:
+	printf("t");
+	break;
+      case 0x96:
+	printf("u");
+	break;
+      case 0xaf:
+	printf("v");
+	break;
+      case 0x91:
+	printf("w");
+	break;
+      case 0xad:
+	printf("x");
+	break;
+      case 0x95:
+	printf("y");
+	break;
+      case 0xac:
+	printf("z");
+	break;
+    }
+  }
+}
+
 // We assume mouse_data_t gets allocated in here so we don't pass it in.
 mouse_data_t* wait_for_mouse_data() {
   // This is similar to sleep. We register some marker somewhere and HLT Like
@@ -2244,14 +2356,15 @@ mouse_data_t* wait_for_mouse_data() {
   // complexity. Now that I wrote the first lines of code... What if the mouse
   // sends many events.. right now I only have one.
   // printf("mouse_service: waiting for mouse data\n");
-  service_mouse->waiting_for_mouse_data = true;
+  //  service_mouse->waiting_for_mouse_data = true;
   // What do we want to do here?
   // Calling hlt is not nice because we waste time.
   // Let's assume we switch to the scheduler, what will happen when mouse data
   // arrives?
   // switch_task saves the rip which will be on the return. So it works out.
-  switch_task(task_current, task_scheduler);
-  return &service_mouse->mouse_data;
+  // switch_task(task_current, task_scheduler);
+  // return &service_mouse->mouse_data;
+  return nullptr;
 }
 
 // I imagine there are two parts to a driver. One part reads the data quickly
@@ -2290,41 +2403,47 @@ mouse_data_t* wait_for_mouse_data() {
 void mouse_service() {
   // somehow we need to run this or this needs to run in the background waiting
   // for mouse data.
+  printf("mouse_service: start\n");
   while (1) {
+    //  printf("mouse_service: loop\n");
     // wait for mouse data to process with a blocking call? sounds like select..
     // let's call it 'wait for mouse data' and see what we end up with
     //    mouse_data_t* data = message_receive();
 
     // This should cause the block. Currently I am all backwards.
-    message_t* m = message_receive();
-    if (m == nullptr) {
-      goto wait;
-    }
+    // So what should this do exactly?
+    // Check if there is a message and if not loop, set the task to a waiting
+    // state and call the scheduler.
+    //  printf("mouse_service: before receive\n");
+    message_t* m = message_receive(&task_current->queue);
+    // printf("mouse_service: after receive\n");
     uint8_t* byte = m->data;
-    // TODO: communication up to this point works, but I immediately go OOM. I
-    // need finer memory allocation and probably a pool for driver data.
-    printf("mouse_service: type: %d, data: %d\n", m->type, *byte);
-    /* // the 9 bit two's complements relative x,y values come in 2 pieces. */
-    /* // an 8 bit value and a sign bit. */
-    /* // wikipedia says to subtract the sign bit. extract and subtract. */
+    mouse_data[mouse_bytes_received++] = *byte;
+    // This was allocated by the sender.
+    // How can we be sure the sender does not access it afterwards?
+    free(byte);
+    if (mouse_bytes_received == 3) {
+      // packet is complete
+      mouse_bytes_received = 0;
+      // the 9 bit two's complements relative x,y values come in 2 pieces.
+      // an 8 bit value and a sign bit.
+      // wikipedia says to subtract the sign bit. extract and subtract.
 
-    /* // x,y,data is what we need. */
+      // x,y,data is what we need.
+      mouse_data_t data = {
+	  .data = mouse_data[0], .x = mouse_data[1], .y = mouse_data[2]};
+      int16_t rel_x = data.x - ((data.data << 4) & 0x100);
+      int16_t rel_y = -(data.y - ((data.data << 3) & 0x100));
 
-    /* int16_t rel_x = data->x - ((data->data << 4) & 0x100); */
-    /* int16_t rel_y = -(data->y - ((data->data << 3) & 0x100)); */
+      // Restrict to terminal width and height.
+      mouse_x = min(max(0, mouse_x + rel_x), 79);
+      mouse_y = min(max(0, mouse_y + rel_y), 24);
 
-    /* // Restrict to terminal width and height. */
-    /* mouse_x = min(max(0, mouse_x + rel_x), 79); */
-    /* mouse_y = min(max(0, mouse_y + rel_y), 24); */
-
-    /* // If there is no print we don't render the mouse pointer. Therefore
-     * mouse */
-    /* // events should trigger a render. */
-    /* printf("mouse_service: %d %d\n", mouse_x, mouse_y); */
-    /* display(); */
-  wait:
-
-    switch_task(task_current, task_scheduler);
+      // If there is no print we don't render the mouse pointer. Therefore mouse
+      // events should trigger a render.
+      // printf("mouse_service: %d %d\n", mouse_x, mouse_y);
+      display();
+    }
   }
 }
 
@@ -2392,14 +2511,45 @@ void schedule() {
     // I would need many. One for each task.
     // Also, the drive would send one message, but there could be many receiver
     // queues.
-    if (message_peek() == true) {
-      next_task = service_mouse;
-      goto found_task;
-    }
+    //
+    // Now we get both keyboard and mouse messages here.
+    // What should we do?
+    // Assumptions:
+    // 1. The mouse is not interested in keyboard events and vice versa.
+    // Hence we don't want to wake them up for it.
+    // What does this imply?
+    // The services need to register for whichever event they are interested in.
+
+    // loop over all tasks, check if they can be unblocked.
+
+    // Could we do this in one loop? Imagine they are sorted by priority and
+    // time left. Device driver tasks would be high priority so they are checked
+    // before anything else, then they are run by how much time they have left,
+    // i.e. they don't starve each other. So while we loop over all tasks that
+    // are sorted well we check if they can be unblocked.
+
+    // TODO:
+    // - remove all _t typedefs
+    // - don't cast void pointers
+    // - integer return for verb function errors
+    // - boolean return if function name is conditional has, is etc.
+    // - use variable name in sizeof
+
+    // OK, now round robin doesn't cut it anymore.
 
     task_t* t = task_current->next;
     // If there is just one task (scheduler?) this will not run.
     for (; t != task_current; t = t->next) {
+      // TODO: how to get rid of all these exceptions?
+      // scheduler and idle task are just always there and they are invoked by
+      // us. The scheduler will not schedule itself. The idle task could
+      // probably be handled in the list as the lowest priority task that is
+      // always ready.
+      // The input services... when they are unblocked they could be added to
+      // the prioritized task queue.
+      // It seems having some kind of ordering vs. round robin may simplify the
+      // code, but it's still not essential for progress.
+
       // Skip the scheduler task itself We probably never want to remove the
       // scheduler. If we want, we need to move this down.
       if (t == task_scheduler) {
@@ -2412,25 +2562,44 @@ void schedule() {
 	continue;
       }
 
-      // The mouse service gets handled separately
-      if (t == service_mouse) {
+      if (t->state == blocked) {
+	// Check if it can be unblocked
+	if (message_peek(t->queue) == true) {
+	  // BUG: having any of those print statements results in the mouse not
+	  // moving.
+	  // Found it. Random guess. The schedule timer was 1ms and printing
+	  // took too much time so tasks had no time and we were constantly
+	  // scheduling. When I used the debugger I somehow ended up inside the
+	  // scheduler when I expected to end up in a task. I didn't make the
+	  // connection. I thought my pointers were messed up. I need to know
+	  // somehow when an interrupt hits.
+
+	  // printf("service_mouse %x service_keyboard %x\n", service_mouse,
+	  //	 service_keyboard);
+	  // printf("schedule: found blocked task %x that can be unblocked\n",
+	  // t);
+	  t->state = running;
+	  next_task = t;
+	  break;
+	}
 	continue;
       }
 
       // This task is sleeping
+      // TODO: integrate this somehow with state blocked.
       if (t->sleep_until > now) {
 	//	printf("scheduler: task is sleeping until: %d now: %d\n",
 	//	       t->sleep_until, now);
 	continue;
       }
 
-      // If we get here we found a ready task. Why don't we use t? Because with
-      // this end condition we may always choose T1 even if T1 is sleeping.
+      // If we get here we found a ready task. Why don't we use t? Because
+      // with this end condition we may always choose T1 even if T1 is
+      // sleeping.
       next_task = t;
       break;
     }
 
-  found_task:
     // printf("schedule: switching to task: %x at %x\n", next_task,
     //	   next_task->eip);
     task_current = next_task;
@@ -2682,100 +2851,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
     return;
   }
   if (regs->int_no == 0x31) {  // keyboard IRQ
-    // ref: https://wiki.osdev.org/%228042%22_PS/2_Controller
-    // read from port 0x60? this is the data port
-    // 0x64 is the status register if read and command register if written.
-    uint8 scancode = inb(0x60);
-
-    printf("scancode: %x\n", scancode);
-    // key released
-    // It seems this is numbered from top left to bottom right.
-    switch (scancode) {
-      case 0x1c:  // enter
-	printf("\n");
-	break;
-      case 0xb9:  // space
-	printf(" ");
-	break;
-      case 0x9e:
-	printf("a");
-	break;
-      case 0xb0:
-	printf("b");
-	break;
-      case 0xae:
-	printf("c");
-	break;
-      case 0xa0:
-	printf("d");
-	break;
-      case 0x92:
-	printf("e");
-	break;
-      case 0xa1:
-	printf("f");
-	break;
-      case 0xa2:
-	printf("g");
-	break;
-      case 0xa3:
-	printf("h");
-	break;
-      case 0x97:
-	printf("i");
-	break;
-      case 0xa4:
-	printf("j");
-	break;
-      case 0xa5:
-	printf("k");
-	break;
-      case 0xa6:
-	printf("l");
-	break;
-      case 0xb2:
-	printf("m");
-	break;
-      case 0xb1:
-	printf("n");
-	break;
-      case 0x98:
-	printf("o");
-	break;
-      case 0x99:
-	printf("p");
-	break;
-      case 0x90:
-	printf("q");
-	break;
-      case 0x93:
-	printf("r");
-	break;
-      case 0x9f:
-	printf("s");
-	break;
-      case 0x94:
-	printf("t");
-	break;
-      case 0x96:
-	printf("u");
-	break;
-      case 0xaf:
-	printf("v");
-	break;
-      case 0x91:
-	printf("w");
-	break;
-      case 0xad:
-	printf("x");
-	break;
-      case 0x95:
-	printf("y");
-	break;
-      case 0xac:
-	printf("z");
-	break;
-    }
+    keyboard_handle_interrupt();
     local_apic_eoi();
     return;
   }
@@ -3347,10 +3423,10 @@ void ioapic_setup() {
   config = inb(PS2_DATA_REGISTER);
   printf("config byte 5: %x\n", config);
 
-  // After reset devices are supposed to send 0xFA 0xAA and the device ID In the
-  // case of a ps/2 mouse the device ID is 0x00, but an ancient AT keyboard
-  // sends nothing. That's why we read 2 times for the keyboard and 3 times for
-  // the mouse.
+  // After reset devices are supposed to send 0xFA 0xAA and the device ID In
+  // the case of a ps/2 mouse the device ID is 0x00, but an ancient AT
+  // keyboard sends nothing. That's why we read 2 times for the keyboard and 3
+  // times for the mouse.
   ps2_wait_ready();
   outb(PS2_DATA_REGISTER, PS2_DEVICE_COMMAND_RESET);
   ps2_wait_data();
@@ -3403,8 +3479,8 @@ void ioapic_setup() {
   // Unfortunately, there is one problem to worry about. If you send a command
   // to the PS/2 controller that involves a response, the PS/2 controller may
   // generate IRQ1, IRQ12, or no IRQ (depending on the firmware) when it puts
-  // the "response byte" into the buffer. In all three cases, you can't tell if
-  // the byte came from a PS/2 device or the PS/2 controller. In the no IRQ
+  // the "response byte" into the buffer. In all three cases, you can't tell
+  // if the byte came from a PS/2 device or the PS/2 controller. In the no IRQ
   // case, you additionally will need to poll for the byte. Fortunately, you
   // should never need to send a command to the PS/2 controller itself after
   // initialisation (and you can disable IRQs and both PS/2 devices where
@@ -4090,6 +4166,16 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // 1. DONE reschedule immediately after sleep/clean up?
   // 2. extract ps2/keyboard driver
   // 2.1. we will need some way to communicate new data to the driver task
+  //
+  // Extracted the mouse driver somehow.
+  // Issues:
+  // - there is just one message queue.
+  // - mouse input may starve other tasks because it's always prioritized.
+  //
+  // Next:
+  // - extract keyboard driver
+  // - extract similarities to ps/2 driver
+  //
   // 3. tasks/processes that have their own address space
   // 4. enable more cpus
   // 5. keyboard commands?
@@ -4168,6 +4254,31 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   free(c4);
   free(c5);
 
+  // TODO: could add some inline tests here if I know available memory or
+  // something.
+
+  // Testing the message_ functions
+  message_t* test_head = nullptr;
+  uint8_t* c6 = malloc(1);
+  *c6 = 234;
+  message_send(&test_head, message_type_ps2_byte, c6);
+  if (test_head == nullptr) {
+    return -1;
+  }
+  if (message_peek(test_head) == false) {
+    return -1;
+  }
+  message_t* test_message = message_receive(&test_head);
+  uint8_t* c7 = test_message->data;
+  if (*c7 != 234) {
+    return -1;
+  }
+
+  if (test_head != nullptr) {
+    return -1;
+  }
+  free(c6);
+
   // task_scheduler = 0x2
   // task_idle = 0x6
   // service_mouse = 0xA
@@ -4176,6 +4287,7 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   task_current = task_scheduler = task_new_malloc((uint64_t)schedule);
   task_idle = task_new_malloc((uint64_t)idle_task);
   service_mouse = task_new_malloc((uint64_t)mouse_service);
+  service_keyboard = task_new_malloc((uint64_t)keyboard_service);
   task_new_malloc((uint64_t)task1);
   task_new_malloc((uint64_t)task2);
 
