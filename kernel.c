@@ -2242,99 +2242,224 @@ void keyboard_handle_interrupt() {
   message_send(&service_keyboard->queue, message_type_ps2_byte, ps2_byte);
 }
 
+// keyboard_service should convert scancodes which can be several bytes to
+// something more useful for the system. Scancodes are divided into make, i.e.
+// key pressed, and break, i.e. key released. Currently this only handles make
+// scancodes.
 void keyboard_service() {
   while (true) {
-    // Now we will get the mouse message too.
     message_t* m = message_receive(&task_current->queue);
 
     uint8 scancode = *(uint8_t*)(m->data);
     printf("scancode: %x\n", scancode);
+
+    // Scancode set 1
     // key released
     // It seems this is numbered from top left to bottom right.
+    // switch (scancode) {
+    //   case 0x1c:  // enter
+    //	printf("\n");
+    //	break;
+    //   case 0xb9:  // space
+    //	printf(" ");
+    //	break;
+    //   case 0x9e:
+    //	printf("a");
+    //	break;
+    //   case 0xb0:
+    //	printf("b");
+    //	break;
+    //   case 0xae:
+    //	printf("c");
+    //	break;
+    //   case 0xa0:
+    //	printf("d");
+    //	break;
+    //   case 0x92:
+    //	printf("e");
+    //	break;
+    //   case 0xa1:
+    //	printf("f");
+    //	break;
+    //   case 0xa2:
+    //	printf("g");
+    //	break;
+    //   case 0xa3:
+    //	printf("h");
+    //	break;
+    //   case 0x97:
+    //	printf("i");
+    //	break;
+    //   case 0xa4:
+    //	printf("j");
+    //	break;
+    //   case 0xa5:
+    //	printf("k");
+    //	break;
+    //   case 0xa6:
+    //	printf("l");
+    //	break;
+    //   case 0xb2:
+    //	printf("m");
+    //	break;
+    //   case 0xb1:
+    //	printf("n");
+    //	break;
+    //   case 0x98:
+    //	printf("o");
+    //	break;
+    //   case 0x99:
+    //	printf("p");
+    //	break;
+    //   case 0x90:
+    //	printf("q");
+    //	break;
+    //   case 0x93:
+    //	printf("r");
+    //	break;
+    //   case 0x9f:
+    //	printf("s");
+    //	break;
+    //   case 0x94:
+    //	printf("t");
+    //	break;
+    //   case 0x96:
+    //	printf("u");
+    //	break;
+    //   case 0xaf:
+    //	printf("v");
+    //	break;
+    //   case 0x91:
+    //	printf("w");
+    //	break;
+    //   case 0xad:
+    //	printf("x");
+    //	break;
+    //   case 0x95:
+    //	printf("y");
+    //	break;
+    //   case 0xac:
+    //	printf("z");
+    //	break;
+    // }
+
+    // Scancode set 2
+    // ref:
+    // https://webdocs.cs.ualberta.ca/~amaral/courses/329/labs/scancodes.html
     switch (scancode) {
-      case 0x1c:  // enter
+      case 0x5a:  // enter
 	printf("\n");
 	break;
-      case 0xb9:  // space
+      case 0x29:  // space
 	printf(" ");
 	break;
-      case 0x9e:
+      case 0x1c:
 	printf("a");
 	break;
-      case 0xb0:
+      case 0x32:
 	printf("b");
 	break;
-      case 0xae:
+      case 0x21:
 	printf("c");
 	break;
-      case 0xa0:
+      case 0x23:
 	printf("d");
 	break;
-      case 0x92:
+      case 0x24:
 	printf("e");
 	break;
-      case 0xa1:
+      case 0x2b:
 	printf("f");
 	break;
-      case 0xa2:
+      case 0x34:
 	printf("g");
 	break;
-      case 0xa3:
+      case 0x33:
 	printf("h");
 	break;
-      case 0x97:
+      case 0x43:
 	printf("i");
 	break;
-      case 0xa4:
+      case 0x3b:
 	printf("j");
 	break;
-      case 0xa5:
+      case 0x42:
 	printf("k");
 	break;
-      case 0xa6:
+      case 0x4b:
 	printf("l");
 	break;
-      case 0xb2:
+      case 0x3a:
 	printf("m");
 	break;
-      case 0xb1:
+      case 0x31:
 	printf("n");
 	break;
-      case 0x98:
+      case 0x44:
 	printf("o");
 	break;
-      case 0x99:
+      case 0x4d:
 	printf("p");
 	break;
-      case 0x90:
+      case 0x15:
 	printf("q");
 	break;
-      case 0x93:
+      case 0x2d:
 	printf("r");
 	break;
-      case 0x9f:
+      case 0x1b:
 	printf("s");
 	break;
-      case 0x94:
+      case 0x2c:
 	printf("t");
 	break;
-      case 0x96:
+      case 0x3c:
 	printf("u");
 	break;
-      case 0xaf:
+      case 0x2a:
 	printf("v");
 	break;
-      case 0x91:
+      case 0x1d:
 	printf("w");
 	break;
-      case 0xad:
+      case 0x22:
 	printf("x");
 	break;
-      case 0x95:
+      case 0x35:
 	printf("y");
 	break;
-      case 0xac:
+      case 0x1a:
 	printf("z");
+	break;
+      case 0x45:
+	printf("0");
+	break;
+      case 0x16:
+	printf("1");
+	break;
+      case 0x1e:
+	printf("2");
+	break;
+      case 0x26:
+	printf("3");
+	break;
+      case 0x25:
+	printf("4");
+	break;
+      case 0x2e:
+	printf("5");
+	break;
+      case 0x36:
+	printf("6");
+	break;
+      case 0x3d:
+	printf("7");
+	break;
+      case 0x3e:
+	printf("8");
+	break;
+      case 0x46:
+	printf("9");
 	break;
     }
   }
@@ -2614,10 +2739,15 @@ void local_apic_eoi() {
   *local_apic_eoi = 0;
 }
 
+#define IRQ_TIMER 0x34
+#define IRQ_NETWORK 0x33
+#define IRQ_MOUSE 0x32
+#define IRQ_KEYBOARD 0x31
+
 // regs is passed via rdi
 void interrupt_handler(interrupt_registers_t* regs) {
   // Timer IRQ
-  if (regs->int_no == 0x34) {
+  if (regs->int_no == IRQ_TIMER) {
     // This is our schedule timer.
     // printf("interrupt handler\n");
 
@@ -2635,7 +2765,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
     local_apic_eoi();
     return;
   }
-  if (regs->int_no == 0x33) {  // network IRQ
+  if (regs->int_no == IRQ_NETWORK) {  // network IRQ
     /*
       packet header from network card
       ref:
@@ -2825,7 +2955,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
     return;
   }
 
-  if (regs->int_no == 0x32) {  // mouse IRQ
+  if (regs->int_no == IRQ_MOUSE) {  // mouse IRQ
 
     // How do we notify the driver? Think about it. Can a device have multiple
     // drivers? Maybe, but I cannot see why, they would probably interfere. So
@@ -2850,7 +2980,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
     local_apic_eoi();
     return;
   }
-  if (regs->int_no == 0x31) {  // keyboard IRQ
+  if (regs->int_no == IRQ_KEYBOARD) {  // keyboard IRQ
     keyboard_handle_interrupt();
     local_apic_eoi();
     return;
