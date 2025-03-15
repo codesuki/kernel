@@ -2156,13 +2156,19 @@ void message_send(message_t** head, message_type_t type, void* data) {
   m->next = message;
 }
 
-message_t* message_receive(message_t** head) {
+// mssage_receive checks if there is a message and if not sets the task to a
+// waiting state and calls the scheduler. The scheduler wakes it up in case
+// there is data waiting, which will restart the loop.
+void message_receive(message_t** head, message_t* dst) {
   while (true) {
     // TODO: there is a risk to dereference a null pointer here.
     if (*head != nullptr) {
       message_t* m = *head;
       *head = m->next;
-      return m;
+      dst->type = m->type;
+      dst->data = m->data;
+      free(m);
+      return;
     }
     task_current->state = blocked;
     switch_task(task_current, task_scheduler);
@@ -2248,9 +2254,10 @@ void keyboard_handle_interrupt() {
 // scancodes.
 void keyboard_service() {
   while (true) {
-    message_t* m = message_receive(&task_current->queue);
+    message_t m;
+    message_receive(&task_current->queue, &m);
 
-    uint8 scancode = *(uint8_t*)(m->data);
+    uint8 scancode = *(uint8_t*)(m.data);
     printf("scancode: %x\n", scancode);
 
     // Scancode set 1
@@ -2517,32 +2524,20 @@ mouse_data_t* wait_for_mouse_data() {
 //
 // How do we handle copying of the data?
 // 1. The consumer could provide a buffer where we copy the data and the
-// consumer needs to clean it up. We re-use the buffer or clean it up once every
-// consumer got the data.
+// consumer needs to clean it up. We re-use the buffer or clean it up once
+// every consumer got the data.
 // 2. We hand the consumer a copy and the consumer cleans it up.
 // 3. We hand the consumer the original which is reference counted and the
-// consumer needs to tell us they are done with it. Benefit over 2 is we can use
-// a pool.
+// consumer needs to tell us they are done with it. Benefit over 2 is we can
+// use a pool.
 //
 // Let's go with 1 for simplicity.
 void mouse_service() {
-  // somehow we need to run this or this needs to run in the background waiting
-  // for mouse data.
-  printf("mouse_service: start\n");
   while (1) {
-    //  printf("mouse_service: loop\n");
-    // wait for mouse data to process with a blocking call? sounds like select..
-    // let's call it 'wait for mouse data' and see what we end up with
-    //    mouse_data_t* data = message_receive();
+    message_t m;
+    message_receive(&task_current->queue, &m);
 
-    // This should cause the block. Currently I am all backwards.
-    // So what should this do exactly?
-    // Check if there is a message and if not loop, set the task to a waiting
-    // state and call the scheduler.
-    //  printf("mouse_service: before receive\n");
-    message_t* m = message_receive(&task_current->queue);
-    // printf("mouse_service: after receive\n");
-    uint8_t* byte = m->data;
+    uint8_t* byte = m.data;
     mouse_data[mouse_bytes_received++] = *byte;
     // This was allocated by the sender.
     // How can we be sure the sender does not access it afterwards?
@@ -4398,8 +4393,9 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   if (message_peek(test_head) == false) {
     return -1;
   }
-  message_t* test_message = message_receive(&test_head);
-  uint8_t* c7 = test_message->data;
+  message_t test_message;
+  message_receive(&test_head, &test_message);
+  uint8_t* c7 = test_message.data;
   if (*c7 != 234) {
     return -1;
   }
