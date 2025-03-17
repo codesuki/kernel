@@ -600,9 +600,16 @@ int min(int x, int y) {
   return y;
 }
 
+// TODO: optimize by copying bigger blocks at once.
 void memcpy(void* src, void* dst, size_t len) {
   for (int i = 0; i < len; i++) {
     ((uint8_t*)dst)[i] = ((uint8_t*)src)[i];
+  }
+}
+
+void memset(void* dst, uint8_t byte, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    ((uint8_t*)dst)[i] = byte;
   }
 }
 
@@ -810,9 +817,23 @@ uint32_t htonl(uint32_t hostlong) {
 	 ((hostlong & 0x00ff0000) >> 8) | ((hostlong & 0xff000000) >> 24);
 }
 
+uint32_t htonl_bytes(uint8_t bytes[4]) {
+  return (bytes[3] << 24) | (bytes[2] << 16) | (bytes[1] << 8) | bytes[0];
+}
+
+// To be the same as strncmp it should stop after finding a 0 character.
 bool strncmp(char* s1, char* s2, int n) {
   for (int i = 0; i < n; i++) {
     if (s1[i] != s2[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool memcmp(void* s1, void* s2, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (((uint8_t*)s1)[i] != ((uint8_t*)s2)[i]) {
       return false;
     }
   }
@@ -883,7 +904,6 @@ uint16_t udp_checksum(ipv4_header_t* ipv4h, uint16_t* addr) {
   while (sum >> 16) {
     sum = (sum & 0xffff) + (sum >> 16);
   }
-
   return ~sum;
 }
 
@@ -951,6 +971,8 @@ void setup_hpet() {
   printf("hpet: counter: %d\n", *counter_value);
 }
 
+// TODO: can this be async?
+// We probably get an interrupt that tells us TX was done.
 void net_transmit(void* data, uint32_t length) {
   // set address to descriptor
   // set size
@@ -970,184 +992,333 @@ void net_transmit(void* data, uint32_t length) {
   network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
 }
 
-uint8_t packet[1024] = {0};
+// Merge
+#define NET_ETHERTYPE_IPV4 0x0800
+#define NET_ETHERTYPE_ARP 0x0806
 
-void send_dhcp_discover() {
-  // build a DHCP packet and send it.
-  for (int i = 0; i < 1024; i++) {
-    packet[i] = 0;
-  }
+#define NET_ARP_OP_REQUEST 1
+#define NET_ARP_OP_REPLY 2
 
-  // need memcpy
-  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
-  memcpy(mac, ef->source_mac, 6);
-  memcpy(broadcast_mac, ef->destination_mac, 6);
+#define NET_PORT_DNS 53
+#define NET_PORT_DHCP_SERVER 67
+#define NET_PORT_DHCP_CLIENT 68
 
-  ef->ethertype = htons(0x0800);
+// From ipv4 header
+#define NET_PROTOCOL_ICMP 0x1
+#define NET_PROTOCOL_UDP 0x11
 
-  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
-  iph->version = 4;
-  iph->ihl = 5;  // no options
-  iph->ttl = 100;
-  iph->protocol = 0x11;                   // UDP
-  iph->source_address = 0;                // should be network byte order
-  iph->destination_address = 0xffffffff;  // should be network byte order
+#define DHCP_OP_DISCOVER 1
+#define DHCP_OP_OFFER 2
+#define DHCP_OP_REQUEST 3
+#define DHCP_OP_DECLINE 4
+#define DHCP_OP_ACK 5
+#define DHCP_OP_NACK 6
 
-  udp_header_t* udph =
-      (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
-  udph->source_port = htons(68);
-  udph->destination_port = htons(67);
+#define DHCP_HARDWARE_TYPE_ETHERNET 1
+#define DHCP_HARDWARE_LENGTH_ETHERNET 6
 
-  dhcp_message_t* dhcpm =
-      (dhcp_message_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
-			sizeof(udp_header_t));
+#define DHCP_OPTION_PAD 0
+#define DHCP_OPTION_END 255
+#define DHCP_OPTION_MESSAGE_TYPE 53
+#define DHCP_OPTION_MESSAGE_TYPE_LENGTH 1
+#define DHCP_OPTION_IP_REQUEST 50
+#define DHCP_OPTION_IP_REQUEST_LENGTH 4
+#define DHCP_OPTION_SERVER 54
+#define DHCP_OPTION_SERVER_LENGTH 4
 
-  // DHCPDISCOVER
-  dhcpm->op = 0x01;
-  dhcpm->htype = 0x01;
-  dhcpm->hlen = 0x06;
-  dhcpm->hops = 0x00;
-  dhcpm->xid = (uint32_t)get_global_timer_value();
-  dhcpm->secs = 0;
-  dhcpm->flags = 0;
-  // MAC
-  dhcpm->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  dhcpm->chaddr[1] = (mac[5] << 8) | mac[4];
-  dhcpm->magic[0] = 0x63;
-  dhcpm->magic[1] = 0x82;
-  dhcpm->magic[2] = 0x53;
-  dhcpm->magic[3] = 0x63;
+struct net_device {
+  uint8_t mac[6];
+  uint8_t ip[4];
+};
 
-  uint8_t* options = packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
-		     sizeof(udp_header_t) + sizeof(dhcp_message_t);
+// needs source and dest port
+// needs src dest address and protocol ipv4
+// all of this is probably on the connection? is there a connection in udp?
+// is it on the 'socket'? Is it a request? Request is from to and what kind of
+// protocol to use? from / to also decided if it's ipv4 or ipv6?
+// I like connection better but udp has no connections.
+struct net_request {
+  // ipv6 would be longer.
+  uint8_t source_address[4];
+  uint8_t source_port;
+  uint8_t destination_address[4];
+  uint8_t destination_port;
+};
+typedef struct net_request net_request;
 
-  options[0] = 53;
-  options[1] = 1;
-  options[2] = 1;
-  options[3] = 0xff;
+// TODO: all these functions are pointless. they need to add length afterwards.
 
-  udph->length = htons(sizeof(udp_header_t) + sizeof(dhcp_message_t) +
-		       4 /* options */);  // minimum, only header.
+// needs mac and broadcast mac
+void net_write_ethernet_frame(void* buffer) {}
 
-  // TODO: this is not correct
-  // Checksum is the 16-bit one's complement of the one's complement sum of a
-  // pseudo header of information from the IP header, the UDP header, and the
-  // data, padded with zero octets at the end (if necessary) to make a multiple
-  // of two octets.
-  // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = udp_checksum(iph, (uint16_t*)udph);
-
-  iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
-
-  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
-
-  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
+void net_write_broadcast_ethernet_frame(/*sender address _t*/ void* buffer) {
+  ethernet_frame_t* frame = (ethernet_frame_t*)buffer;
+  memcpy(mac, frame->source_mac, 6);
+  memcpy(broadcast_mac, frame->destination_mac, 6);
+  frame->ethertype = htons(NET_ETHERTYPE_IPV4);
 }
 
-void send_dhcp_request() {
-  // we have the DHCPOFFER reply parameters in the global variables
+// How do we know the protocol? Request?
+void net_write_ipv4_header(net_request* req, size_t length, void* buffer) {
+  ipv4_header_t* header = (ipv4_header_t*)buffer;
+  header->version = 4;
+  header->ihl = 5;  // no options
+  header->ttl = 100;
+  header->protocol = NET_PROTOCOL_UDP;
+  header->source_address = 0;
+  htonl_bytes(req->source_address);  // 0;
+  // BUG: interestingly, although this should be the same backwards and forwards
+  // it didn't work as expected.
+  header->destination_address = 0xffffffff;
+  htonl_bytes(req->destination_address);  // 0xffffffff;
+  // For one moment I thought we could just access the udp header here and get
+  // the length, but it's not feasible for this code to know about other
+  // headers.
+  header->length = htons(header->ihl * 4 + length);
+  header->checksum = ipv4_checksum((uint16_t*)header, header->ihl * 4);
+}
 
-  // TODO: now lots of duplication starts. refactor.
-  // build a DHCP packet and send it.
-  for (int i = 0; i < 1024; i++) {
-    packet[i] = 0;
+// Checksum is the 16-bit one's complement of the one's complement sum of a
+// pseudo header of information from the IP header, the UDP header, and the
+// data, padded with zero octets at the end (if necessary) to make a multiple of
+// two octets.
+// ref: https://datatracker.ietf.org/doc/html/rfc768
+// ref: http://www.faqs.org/rfcs/rfc768.html
+uint16_t udp_checksum2(net_request* req, uint16_t* addr, size_t length) {
+  udp_pseudo_ip_header_t ps = {0};
+  ps.source_address = htonl_bytes(req->source_address);
+  ps.destination_address = htonl_bytes(req->destination_address);
+  ps.protocol = NET_PROTOCOL_UDP;
+  ps.udp_length = length;
+
+  /* Compute Internet Checksum for "count" bytes
+   *         beginning at location "addr".
+   */
+  uint32_t sum = 0;
+
+  uint16_t* first = (uint16_t*)(&ps);
+  for (uint32 i = 0; i < sizeof(ps) / 2; i++) {
+    sum += *first++;
   }
 
-  // TODO: duplicated
-  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
-  memcpy(mac, ef->source_mac, 6);
-  memcpy(broadcast_mac, ef->destination_mac, 6);
+  uint16_t count = ntohs(length);
 
-  ef->ethertype = htons(0x0800);
+  while (count > 1) {
+    /*  This is the inner loop */
+    sum += *addr++;
+    count -= 2;
+  }
 
-  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
-  iph->version = 4;
-  iph->ihl = 5;  // no options
-  iph->ttl = 100;
-  iph->protocol = 0x11;     // UDP
-  iph->source_address = 0;  // 0xfeffffff;       // should be network byte order
-  iph->destination_address = 0xffffffff;  // should be network byte order
+  /*  Add left-over byte, if any */
+  if (count > 0) {
+    sum += *(uint8_t*)addr;
+  }
 
-  udp_header_t* udph =
-      (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
-  udph->source_port = htons(68);
-  udph->destination_port = htons(67);
+  /*  Fold 32-bit sum to 16 bits */
+  while (sum >> 16) {
+    sum = (sum & 0xffff) + (sum >> 16);
+  }
 
-  dhcp_message_t* dhcpm =
-      (dhcp_message_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
-			sizeof(udp_header_t));
+  return ~sum;
+}
 
-  // DHCPDISCOVER
-  dhcpm->op = 0x03;  // DIFFERENT
-  dhcpm->htype = 0x01;
-  dhcpm->hlen = 0x06;
-  dhcpm->hops = 0x00;
-  dhcpm->xid = dhcp_offer_xid;
-  dhcpm->secs = 0;
-  dhcpm->flags = 0;
-  dhcpm->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  dhcpm->chaddr[1] = (mac[5] << 8) | mac[4];
-  dhcpm->siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
-		  (dhcp_router[1] << 8) | dhcp_router[0];
-  //(dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
-  // (dhcp_router[1] << 8) | dhcp_router[0];
-  dhcpm->magic[0] = 0x63;
-  dhcpm->magic[1] = 0x82;
-  dhcpm->magic[2] = 0x53;
-  dhcpm->magic[3] = 0x63;
+void net_write_udp_header(struct net_request* req,
+			  void* content,
+			  size_t length,
+			  void* buffer) {
+  udp_header_t* header = (udp_header_t*)buffer;
+  header->source_port = htons(req->source_port);            // htons(68);
+  header->destination_port = htons(req->destination_port);  // htons(67);
+  header->length = htons(sizeof(*header) + length);
 
-  uint8_t* options = packet + sizeof(ethernet_frame_t) + iph->ihl * 4 +
-		     sizeof(udp_header_t) + sizeof(dhcp_message_t);
+  // content is actually behind this header size so do we need it?
+  header->checksum = udp_checksum2(req, buffer, header->length);
+}
 
-  options[0] = 53;  // DHCPREQUEST
-  options[1] = 1;
-  options[2] = 3;
-  options[3] = 50;  // ip request
-  options[4] = 4;
+// TODO: take a net_device as first parameter for access to mac and ip
+// Should this move the FP or return how many bytes written?
+uint32 net_write_dhcp_discover_message(uint32_t xid, void* buffer) {
+  dhcp_message_t* msg = (dhcp_message_t*)(buffer);
+
+  msg->op = DHCP_OP_DISCOVER;
+  msg->htype = DHCP_HARDWARE_TYPE_ETHERNET;
+  msg->hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
+  msg->hops = 0x00;
+  // Used to match return messages
+  msg->xid = xid;
+  msg->secs = 0;
+  msg->flags = 0;  // Set broadcast bit?
+  // MAC
+  msg->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  msg->chaddr[1] = (mac[5] << 8) | mac[4];
+  // TODO: make this a constant? It's the options header.
+  // ref: https://datatracker.ietf.org/doc/html/rfc2131#section-3
+  msg->magic[0] = 0x63;
+  msg->magic[1] = 0x82;
+  msg->magic[2] = 0x53;
+  msg->magic[3] = 0x63;
+
+  // net_write_dhcp_option(option, buffer)
+  uint8_t* options = (uint8_t*)(msg + 1);
+  options[0] = DHCP_OPTION_MESSAGE_TYPE;
+  options[1] = DHCP_OPTION_MESSAGE_TYPE_LENGTH;
+  options[2] = DHCP_OP_DISCOVER;
+  options[3] = DHCP_OPTION_END;
+
+  // 4 bytes for the options.
+  return sizeof(*msg) + 4;
+}
+
+void send_dhcp_discover() {
+  // start by building the dhcp message
+  // alloc enough space for it and headers
+  // add headers backwards, udp, ip, eth
+  uint32_t xid = (uint32_t)get_global_timer_value();
+
+  net_request req = {
+      //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
+      .source_address = {0},
+      .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
+			      broadcast_ip[3]},
+      .destination_port = NET_PORT_DHCP_SERVER,
+  };
+
+  // Ethernet header 18 bytes + 1500 bytes content.
+  // ref: https://en.wikipedia.org/wiki/Ethernet_frame
+  uint8_t packet[1518] = {};
+
+  // Ethernet header 18 bytes.
+  // IP header is min 20 bytes and max 60 bytes.
+  // UDP header is 8 bytes.
+  // TCP header is min 20 bytes and max 60 bytes.
+  // We can reserve 138 bytes.
+  // Maybe more would be good for buffer.
+  void* content_start = packet + 138;
+  // Make space for the UDP header.
+  uint32 length = net_write_dhcp_discover_message(xid, content_start);
+  // can the ptr be a writer that keeps track of bytes written?
+
+  void* header_start = content_start - sizeof(udp_header_t);
+  // TODO: what about encapsulating this in a net_packet_t that has pointer.
+  // needs pointer and size for data for checksum.
+  net_write_udp_header(&req, content_start, length, header_start);
+  length += sizeof(udp_header_t);
+  ipv4_header_t* iph = header_start = header_start - sizeof(ipv4_header_t);
+  // needs pointer and size for data for checksum. I guess udp header becomes
+  // part of it.
+  net_write_ipv4_header(content_start, length, header_start);
+  header_start = header_start - sizeof(ethernet_frame_t);
+  net_write_broadcast_ethernet_frame(header_start);
+
+  // if (memcmp(dhcpm, content_start, 50) == false) {
+  //   printf("did not match\n");
+  //   __asm__("cli");
+  //   __asm__("hlt");
+  // }
+
+  net_transmit(header_start, sizeof(ethernet_frame_t) + ntohs(iph->length));
+}
+
+size_t net_write_dhcp_request_message(uint32_t xid, void* buffer) {
+  dhcp_message_t* msg = (dhcp_message_t*)buffer;
+
+  msg->op = DHCP_OP_REQUEST;
+  msg->htype = DHCP_HARDWARE_TYPE_ETHERNET;
+  msg->hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
+  msg->hops = 0x00;
+  // TODO: there is some state per request.
+  msg->xid = dhcp_offer_xid;
+  msg->secs = 0;
+  msg->flags = 0;
+  msg->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  msg->chaddr[1] = (mac[5] << 8) | mac[4];
+  msg->siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
+		(dhcp_router[1] << 8) |
+		dhcp_router[0];  // htonl_bytes(dhcp_router);
+  msg->magic[0] = 0x63;
+  msg->magic[1] = 0x82;
+  msg->magic[2] = 0x53;
+  msg->magic[3] = 0x63;
+
+  uint8_t* options = (uint8_t*)(msg + 1);
+
+  options[0] = DHCP_OPTION_MESSAGE_TYPE;
+  options[1] = DHCP_OPTION_MESSAGE_TYPE_LENGTH;
+  options[2] = DHCP_OP_REQUEST;
+  options[3] = DHCP_OPTION_IP_REQUEST;
+  options[4] = DHCP_OPTION_IP_REQUEST_LENGTH;
   options[5] = ip[0];
   options[6] = ip[1];
   options[7] = ip[2];
   options[8] = ip[3];
-  options[9] = 54;  // dhcp server
-  options[10] = 4;
+  options[9] = DHCP_OPTION_SERVER;
+  options[10] = DHCP_OPTION_SERVER_LENGTH;
   options[11] = dhcp_router[0];
   options[12] = dhcp_router[1];
   options[13] = dhcp_router[2];
   options[14] = dhcp_router[3];
   options[15] = 0xff;
 
-  udph->length = htons(sizeof(udp_header_t) + sizeof(dhcp_message_t) +
-		       16 /* options */);  // minimum, only header.
-
-  // TODO: this is not correct
-  // Checksum is the 16-bit one's complement of the one's complement sum of a
-  // pseudo header of information from the IP header, the UDP header, and the
-  // data, padded with zero octets at the end (if necessary) to make a multiple
-  // of two octets.
-  // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = udp_checksum(iph, (uint16_t*)udph);
-
-  iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
-
-  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
-
-  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
+  // 16 bytes for options
+  return sizeof(*msg) + 16;
 }
 
-#define ETHERTYPE_IP4 0x0800
-#define ETHERTYPE_ARP 0x0806
+void send_dhcp_request() {
+  // we have the DHCPOFFER reply parameters in the global variables
+  uint32_t xid = dhcp_offer_xid;
+  net_request req = {
+      //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
+      .source_address = {0},
+      .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
+			      broadcast_ip[3]},
+      .destination_port = NET_PORT_DHCP_SERVER,
+  };
+
+  // Ethernet header 18 bytes + 1500 bytes content.
+  // ref: https://en.wikipedia.org/wiki/Ethernet_frame
+  uint8_t packet[1518] = {};
+
+  // Ethernet header 18 bytes.
+  // IP header is min 20 bytes and max 60 bytes.
+  // UDP header is 8 bytes.
+  // TCP header is min 20 bytes and max 60 bytes.
+  // We can reserve 138 bytes.
+  // Maybe more would be good for buffer.
+  void* content_start = packet + 138;
+  // Make space for the UDP header.
+  uint32 length = net_write_dhcp_request_message(xid, content_start);
+  // can the ptr be a writer that keeps track of bytes written?
+
+  void* header_start = content_start - sizeof(udp_header_t);
+  // TODO: what about encapsulating this in a net_packet_t that has pointer.
+  // needs pointer and size for data for checksum.
+  net_write_udp_header(&req, content_start, length, header_start);
+  length += sizeof(udp_header_t);
+  ipv4_header_t* iph = header_start = header_start - sizeof(ipv4_header_t);
+  // needs pointer and size for data for checksum. I guess udp header becomes
+  // part of it.
+
+  // configure ttl
+  net_write_ipv4_header(content_start, length, header_start);
+  header_start = header_start - sizeof(ethernet_frame_t);
+  net_write_broadcast_ethernet_frame(header_start);
+
+  net_transmit(header_start, sizeof(ethernet_frame_t) + ntohs(iph->length));
+}
+
 void send_dns_request() {
   // TODO: more duplication!
-  for (int i = 0; i < 1024; i++) {
-    packet[i] = 0;
-  }
+  uint8_t packet[1024];
+  memset(packet, 0, 1024);
 
   // TODO: duplicated
   ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(dhcp_router_mac, ef->destination_mac, 6);
 
-  ef->ethertype = htons(ETHERTYPE_IP4);
+  ef->ethertype = htons(NET_ETHERTYPE_IPV4);
 
   // TODO: factory function
   ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
@@ -1205,24 +1376,22 @@ void send_dns_request() {
   net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
 
-void send_arp_response(uint8_t sender_mac[6], uint8_t sender_ip[4]) {
-  // TODO: more duplication!
-  for (int i = 0; i < 1024; i++) {
-    packet[i] = 0;
-  }
+void send_arp_response(uint8_t* sender_mac, uint8_t* sender_ip) {
+  uint8_t packet[1024];
+  memset(packet, 0, 1024);
 
-  // TODO: duplicated
+  // build ethernet frame
   ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(sender_mac, ef->destination_mac, 6);
 
-  ef->ethertype = htons(ETHERTYPE_ARP);
+  ef->ethertype = htons(NET_ETHERTYPE_ARP);
 
   // TODO: factory function
   arp_message_t* a = (arp_message_t*)(packet + sizeof(ethernet_frame_t));
   a->htype = htons(1);  // ethernet
   a->hlen = 6;
-  a->ptype = htons(ETHERTYPE_IP4);
+  a->ptype = htons(NET_ETHERTYPE_IPV4);
   a->plen = 4;
   a->oper = htons(2);  // reply
   memcpy(mac, &a->sender_mac_1, 6);
@@ -1231,20 +1400,20 @@ void send_arp_response(uint8_t sender_mac[6], uint8_t sender_ip[4]) {
   memcpy(sender_ip, &a->target_protocol_address_1, 4);
 
   net_transmit(packet, sizeof(ethernet_frame_t) + sizeof(arp_message_t));
+  // TODO: free packet because it's on the network card buffer now.
+  // Can this be async?
 }
 
 void send_echo() {
-  // TODO: more duplication!
-  for (int i = 0; i < 1024; i++) {
-    packet[i] = 0;
-  }
+  uint8_t packet[1024];
+  memset(packet, 0, 1024);
 
   // TODO: duplicated
   ethernet_frame_t* ef = (ethernet_frame_t*)packet;
   memcpy(mac, ef->source_mac, 6);
   memcpy(dhcp_router_mac, ef->destination_mac, 6);
 
-  ef->ethertype = htons(ETHERTYPE_IP4);
+  ef->ethertype = htons(NET_ETHERTYPE_IPV4);
 
   uint8_t google_ip[4] = {142, 250, 207, 46};
   // TODO: factory function
@@ -1278,23 +1447,27 @@ void send_echo() {
   net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
 }
 
-void net_handle_arp(arp_message_t* a) {
+// net_handle_arp handles the address resolution protocol.
+// ARP is used to find a MAC address that corresponds to an IP address.
+// ARP can be used to test if an IP address is free to use by sending a probing
+// packet.
+// ref: https://datatracker.ietf.org/doc/html/rfc826
+void net_handle_arp(arp_message_t* msg) {
   printf("arp: htype: %x, ptype: %x, hlen: %x, plen: %x, oper: %x\n",
-	 ntohs(a->htype), ntohs(a->ptype), a->hlen, a->plen, ntohs(a->oper));
+	 ntohs(msg->htype), ntohs(msg->ptype), msg->hlen, msg->plen,
+	 ntohs(msg->oper));
 
-  if (ntohs(a->oper) == 1) {  // request
+  // TODO: memcmp so I don't have to copy?
+  if (ntohs(msg->oper) == NET_ARP_OP_REQUEST) {
     // check if our IP matches
-    uint8_t target_ip[4] = {0};
-    memcpy(&a->target_protocol_address_1, target_ip, 4);
+    uint8_t* target_ip = (uint8_t*)&msg->target_protocol_address_1;
     printf("arp: target IP: %d.%d.%d.%d\n", target_ip[0], target_ip[1],
 	   target_ip[2], target_ip[3]);
 
-    // because my strncmp works different than stdlib this works
-    uint8_t sender_mac[6] = {0};
-    memcpy(&a->sender_mac_1, sender_mac, 6);
-    uint8_t sender_ip[4] = {0};
-    memcpy(&a->sender_protocol_address_1, sender_ip, 4);
-    if (strncmp(target_ip, ip, 4)) {
+    if (memcmp(target_ip, ip, 4)) {
+      // Can this be typed somehow?
+      uint8_t* sender_mac = (uint8_t*)&msg->sender_mac_1;
+      uint8_t* sender_ip = (uint8_t*)&msg->sender_protocol_address_1;
       send_arp_response(sender_mac, sender_ip);
     }
   }
@@ -1317,7 +1490,7 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
   printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op, m->htype,
 	 m->hlen, m->hops, m->xid);
 
-  if (m->op != 2) {  // reply
+  if (m->op != DHCP_OP_OFFER) {
     return;
   }
 
@@ -1372,9 +1545,7 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
     }
   }
 
-#define DHCP_OFFER 2
-#define DHCP_ACK 5
-  if (dhcp_type == DHCP_OFFER) {
+  if (dhcp_type == DHCP_OP_OFFER) {
     memcpy(m->yiaddr, ip, 4);
     /* for (int i = 0; i < 4; i++) { */
     /*   ip[i] = m->yiaddr[i]; */
@@ -1390,7 +1561,7 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
     printf("dhcp: sending DHCPREQUEST\n");
     dhcp_offer_xid = m->xid;
     send_dhcp_request();
-  } else if (dhcp_type == DHCP_ACK) {
+  } else if (dhcp_type == DHCP_OP_ACK) {
     printf("dhcp: received DHCPACK\n");
     printf("dhcp: target_mac: %x:%x:%x:%x:%x:%x\n", ef->destination_mac[0],
 	   ef->destination_mac[1], ef->destination_mac[2],
@@ -1404,29 +1575,26 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
   }
 }
 
-void net_handle_udp(ethernet_frame_t* ef, udp_header_t* udph) {
-  printf("udp: src port: %d dst port: %d\n", ntohs(udph->source_port),
-	 ntohs(udph->destination_port));
+void net_handle_udp(ethernet_frame_t* frame, udp_header_t* header) {
+  printf("udp: src port: %d dst port: %d\n", ntohs(header->source_port),
+	 ntohs(header->destination_port));
 
-  if (ntohs(udph->destination_port) == 53) {  // DNS
-    net_handle_dns((dns_header_t*)(udph + 1));
-  } else if (ntohs(udph->source_port) == 67 &&
-	     ntohs(udph->destination_port) == 68) {  // DHCP
-    net_handle_dhcp(ef, (dhcp_message_t*)(udph + 1));
+  if (ntohs(header->destination_port) == NET_PORT_DNS) {  // DNS
+    net_handle_dns((dns_header_t*)(header + 1));
+  } else if (ntohs(header->source_port) == 67 &&
+	     ntohs(header->destination_port) == 68) {  // DHCP
+    net_handle_dhcp(frame, (dhcp_message_t*)(header + 1));
   }
 }
 
-#define NET_PROTOCOL_ICMP 0x1
-#define NET_PROTOCOL_UDP 0x11
-
-void net_handle_ipv4(ethernet_frame_t* ef, ipv4_header_t* iph) {
-  printf("ipv4: version: %x ihl: %x\n", iph->version, iph->ihl);
+void net_handle_ipv4(ethernet_frame_t* frame, ipv4_header_t* header) {
+  printf("ipv4: version: %x ihl: %x\n", header->version, header->ihl);
 
   // printf("ipv4: protocol: %x\n", iph->protocol);
 
-  if (iph->protocol == NET_PROTOCOL_ICMP) {
-  } else if (iph->protocol == NET_PROTOCOL_UDP) {
-    net_handle_udp(ef, (udp_header_t*)(iph + 1));
+  if (header->protocol == NET_PROTOCOL_ICMP) {
+  } else if (header->protocol == NET_PROTOCOL_UDP) {
+    net_handle_udp(frame, (udp_header_t*)(header + 1));
   }
 }
 
@@ -1439,8 +1607,9 @@ typedef struct mouse_data mouse_data_t;
 
 // This probably cannot be an enum for long. Message types are probably pretty
 // dynamic.
-enum message_type { message_type_ps2_byte };
+enum message_type { message_type_ps2_byte, mouse_byte, network_data };
 typedef enum message_type message_type_t;
+const uint8_t message_type_count = 2;
 
 typedef struct message message_t;
 struct message {
@@ -2051,26 +2220,9 @@ void task_network() {
   printf("google.com IP=%d.%d.%d.%d\n");
 }
 
-// Is this the network driver? No. The network driver would fetch data from the
-// card and pass it up the network stack.
-// This is huge. Maybe I should start with the mouse driver?
-void handle_network_interrupt() {}
-
-void service_network() {
-  // Why do I call this service? I imagine the OS always keeps the network stack
-  // in shape. Does DHCP stuff, etc. Can the kernel do this directly? Well it
-  // needs to do many network calls so it blocks.. Hence modeling it as a task
-  // or service seems to make sense?
-
-  // Reply to ARP messages?
-
-  // -> dhcp discover
-  // <- dhcp offer
-  // -> dhcp request
-}
-
 task_t* service_mouse = nullptr;
 task_t* service_keyboard = nullptr;
+task_t* service_network = nullptr;
 
 // The interrupt handler should either start this task with high priority OR
 // this task already exists and waits for the interrupt blocking. If this is
@@ -2175,6 +2327,10 @@ void message_receive(message_t** head, message_t* dst) {
   }
 }
 
+message_t* message_type_registry[2];
+
+void message_register(message_type_t type, message_t* queue) {}
+
 int mouse_bytes_received = 0;
 uint8_t mouse_data[3] = {0};
 
@@ -2201,38 +2357,11 @@ void mouse_handle_interrupt() {
 
   // printf("mouse_handle_interrupt: %x\n", byte);
 
-  // When we allocate a new byte here to send it over we will run out of memory
-  // soon, because currently I only make 2mb objects. Maybe make a ring buffer?
-
   uint8_t* ps2_byte = malloc(sizeof(uint8_t));
   *ps2_byte = byte;
-  // printf("mouse_handle_interrupt2: %x\n", *ps2_byte);
 
   // TODO: find this service differnetly
-  //  printf("mouse_handle_interrupt: sending\n");
   message_send(&service_mouse->queue, message_type_ps2_byte, ps2_byte);
-
-  // Now that we read all data, let's send it up. How? Do we create a struct
-  // and put in this data? It needs to live somewhere until the scheduler runs
-  // a task that consumes it. Do we enqueue the task here? Or maybe it's the
-  // mouse service that blocks on some queue? event queue? Should probably
-  // have a type, like 'mouse_data' and a struct.
-
-  // In Go we could just make the struct and it would choose stack or heap
-  // automatically.
-  // We allocate it here, who frees it?
-  // Maybe we create a buffer up front and reuse because this will happen a
-  // lot and we probably don't want to fragment memory so much.
-
-  /* mouse_data_t* mouse_data = (mouse_data_t*)malloc(sizeof(mouse_data_t));
-   */
-  /* // if (mouse_data == nullptr) { panic() } */
-  /* mouse_data->data = data; */
-  /* mouse_data->x = x; */
-  /* mouse_data->y = y; */
-
-  // Instead of setting this to some magic object we probably want to enqueue it
-  // somewhere. Then we can handle many events.
 
   // TODO: I have the feeling this is the ps2 driver not the mouse driver.
 }
@@ -2259,96 +2388,6 @@ void keyboard_service() {
 
     uint8 scancode = *(uint8_t*)(m.data);
     printf("scancode: %x\n", scancode);
-
-    // Scancode set 1
-    // key released
-    // It seems this is numbered from top left to bottom right.
-    // switch (scancode) {
-    //   case 0x1c:  // enter
-    //	printf("\n");
-    //	break;
-    //   case 0xb9:  // space
-    //	printf(" ");
-    //	break;
-    //   case 0x9e:
-    //	printf("a");
-    //	break;
-    //   case 0xb0:
-    //	printf("b");
-    //	break;
-    //   case 0xae:
-    //	printf("c");
-    //	break;
-    //   case 0xa0:
-    //	printf("d");
-    //	break;
-    //   case 0x92:
-    //	printf("e");
-    //	break;
-    //   case 0xa1:
-    //	printf("f");
-    //	break;
-    //   case 0xa2:
-    //	printf("g");
-    //	break;
-    //   case 0xa3:
-    //	printf("h");
-    //	break;
-    //   case 0x97:
-    //	printf("i");
-    //	break;
-    //   case 0xa4:
-    //	printf("j");
-    //	break;
-    //   case 0xa5:
-    //	printf("k");
-    //	break;
-    //   case 0xa6:
-    //	printf("l");
-    //	break;
-    //   case 0xb2:
-    //	printf("m");
-    //	break;
-    //   case 0xb1:
-    //	printf("n");
-    //	break;
-    //   case 0x98:
-    //	printf("o");
-    //	break;
-    //   case 0x99:
-    //	printf("p");
-    //	break;
-    //   case 0x90:
-    //	printf("q");
-    //	break;
-    //   case 0x93:
-    //	printf("r");
-    //	break;
-    //   case 0x9f:
-    //	printf("s");
-    //	break;
-    //   case 0x94:
-    //	printf("t");
-    //	break;
-    //   case 0x96:
-    //	printf("u");
-    //	break;
-    //   case 0xaf:
-    //	printf("v");
-    //	break;
-    //   case 0x91:
-    //	printf("w");
-    //	break;
-    //   case 0xad:
-    //	printf("x");
-    //	break;
-    //   case 0x95:
-    //	printf("y");
-    //	break;
-    //   case 0xac:
-    //	printf("z");
-    //	break;
-    // }
 
     // Scancode set 2
     // ref:
@@ -2469,42 +2508,105 @@ void keyboard_service() {
 	printf("9");
 	break;
     }
-  }
-}
 
-// We assume mouse_data_t gets allocated in here so we don't pass it in.
-mouse_data_t* wait_for_mouse_data() {
-  // This is similar to sleep. We register some marker somewhere and HLT Like
-  // task->wait_for_mouse_data = true The mouse driver then loops through all
-  // tasks and checks if they have wait_for_mouse_data and unblocks them. Where
-  // does it put the mouse data for them? If it puts a pointer directly in the
-  // task struct then who cleans it up? Several tasks will work on it. Reference
-  // counting? Do we copy it for every mouse consumer? So the mouse consumer
-  // gives us a buffer and we copy it there. Then we can free the original one
-  // after we copied it. Maybe that's not performant but simple. Let's handle
-  // this all inside the task object for now.
-  //
-  // Simplicity that will become
-  // complexity. Now that I wrote the first lines of code... What if the mouse
-  // sends many events.. right now I only have one.
-  // printf("mouse_service: waiting for mouse data\n");
-  //  service_mouse->waiting_for_mouse_data = true;
-  // What do we want to do here?
-  // Calling hlt is not nice because we waste time.
-  // Let's assume we switch to the scheduler, what will happen when mouse data
-  // arrives?
-  // switch_task saves the rip which will be on the return. So it works out.
-  // switch_task(task_current, task_scheduler);
-  // return &service_mouse->mouse_data;
-  return nullptr;
+    // Scancode set 1
+    // key released
+    // It seems this is numbered from top left to bottom right.
+    // switch (scancode) {
+    //   case 0x1c:  // enter
+    //	printf("\n");
+    //	break;
+    //   case 0xb9:  // space
+    //	printf(" ");
+    //	break;
+    //   case 0x9e:
+    //	printf("a");
+    //	break;
+    //   case 0xb0:
+    //	printf("b");
+    //	break;
+    //   case 0xae:
+    //	printf("c");
+    //	break;
+    //   case 0xa0:
+    //	printf("d");
+    //	break;
+    //   case 0x92:
+    //	printf("e");
+    //	break;
+    //   case 0xa1:
+    //	printf("f");
+    //	break;
+    //   case 0xa2:
+    //	printf("g");
+    //	break;
+    //   case 0xa3:
+    //	printf("h");
+    //	break;
+    //   case 0x97:
+    //	printf("i");
+    //	break;
+    //   case 0xa4:
+    //	printf("j");
+    //	break;
+    //   case 0xa5:
+    //	printf("k");
+    //	break;
+    //   case 0xa6:
+    //	printf("l");
+    //	break;
+    //   case 0xb2:
+    //	printf("m");
+    //	break;
+    //   case 0xb1:
+    //	printf("n");
+    //	break;
+    //   case 0x98:
+    //	printf("o");
+    //	break;
+    //   case 0x99:
+    //	printf("p");
+    //	break;
+    //   case 0x90:
+    //	printf("q");
+    //	break;
+    //   case 0x93:
+    //	printf("r");
+    //	break;
+    //   case 0x9f:
+    //	printf("s");
+    //	break;
+    //   case 0x94:
+    //	printf("t");
+    //	break;
+    //   case 0x96:
+    //	printf("u");
+    //	break;
+    //   case 0xaf:
+    //	printf("v");
+    //	break;
+    //   case 0x91:
+    //	printf("w");
+    //	break;
+    //   case 0xad:
+    //	printf("x");
+    //	break;
+    //   case 0x95:
+    //	printf("y");
+    //	break;
+    //   case 0xac:
+    //	printf("z");
+    //	break;
+    // }
+  }
 }
 
 // I imagine there are two parts to a driver. One part reads the data quickly
 // from the device to unblock it in case it has limited buffer size like a
 // network card or even keyboard.
-// The other part waits for this data to process it, so it could be a task that
-// waits on device/driver specific data. It then pieces together the data like
-// in the mouse driver case, 3 bytes make 1 packet, and publishes it to
+// The other part waits for this data to process it, so it could be a task
+// that waits on device/driver specific data. It then pieces together the data
+// like in the mouse driver case, 3 bytes make 1 packet, and publishes it to
 // consumers. Consumers can be applications. The terminal waiting for keyboard
 // input, an application waiting for a network packet, etc.
 //
@@ -2534,13 +2636,23 @@ mouse_data_t* wait_for_mouse_data() {
 // Let's go with 1 for simplicity.
 void mouse_service() {
   while (1) {
+    // Currently the mouse interrupt handler knows this tasks queue and sends it
+    // there directly. We may want to decouple this so that interrupt data can
+    // be sent to whatever registers.
+
+    // message_register registers a queue to receive messages of a specific
+    // type.
+    // TODO: This is too boring to work on right now.
+    // message_register(mouse_byte, task_current->queue);
+
     message_t m;
     message_receive(&task_current->queue, &m);
 
     uint8_t* byte = m.data;
     mouse_data[mouse_bytes_received++] = *byte;
-    // This was allocated by the sender.
-    // How can we be sure the sender does not access it afterwards?
+    // This was allocated by the sender. How can we be sure the sender does not
+    // access it afterwards? This will be even trickier once sender and receiver
+    // are not in the same address space hence I will delay.
     free(byte);
     if (mouse_bytes_received == 3) {
       // packet is complete
@@ -2559,11 +2671,218 @@ void mouse_service() {
       mouse_x = min(max(0, mouse_x + rel_x), 79);
       mouse_y = min(max(0, mouse_y + rel_y), 24);
 
-      // If there is no print we don't render the mouse pointer. Therefore mouse
-      // events should trigger a render.
-      // printf("mouse_service: %d %d\n", mouse_x, mouse_y);
+      // If there is no print we don't render the mouse pointer. Therefore
+      // mouse events should trigger a render. printf("mouse_service: %d
+      // %d\n", mouse_x, mouse_y);
       display();
     }
+  }
+}
+
+// Is this the network driver? No. The network driver would fetch data from the
+// card and pass it up the network stack.
+// This is huge. Maybe I should start with the mouse driver?
+void handle_network_interrupt() {
+  /*
+    packet header from network card
+    ref:
+    https://www.cs.usfca.edu/~cruse/cs326f04/RTL8139_ProgrammersGuide.pdf
+
+    Bit R/W Symbol Description
+
+    15 R MAR Multicast Address Received: Set to 1 indicates that a multicast
+    packet is received.
+
+    14 R PAM Physical Address Matched: Set to 1 indicates that the
+    destination address of this packet matches the value written in ID
+    registers.
+
+    13 R BAR Broadcast Address Received: Set to 1 indicates that a broadcast
+    packet is received. BAR, MAR bit will not be set simultaneously. 12-6 -
+    - Reserved
+
+    5 R ISE Invalid Symbol Error: (100BASE-TX only) An invalid symbol was
+    encountered during the reception of this packet if this bit set to 1.
+
+    4 R RUNT Runt Packet Received: Set to 1 indicates that the received
+    packet length is smaller than 64 bytes ( i.e. media header + data + CRC
+    < 64 bytes )
+
+    3 R LONG Long Packet: Set to 1 indicates that the size of the received
+    packet exceeds 4k bytes.
+
+    2 R CRC CRC Error: When set, indicates that a CRC error occurred on the
+    received packet.
+
+    1 R FAE Frame Alignment Error: When set, indicates that a frame
+    alignment error occurred on this received packet.
+
+    0 R ROK Receive OK: When set, indicates that a good packet is received.
+   */
+
+  /*
+    The receive path of RTL8139(A/B) is designed as a ring buffer. This ring
+    buffer is in a physical continuous memory. Data coming from line is
+    first stored in a Receive FIFO in the chip, and then move to the receive
+    buffer when the early receive threshold is met. The register CBA keeps
+    the current address of data moved to buffer. CAPR is the read pointer
+    which keeps the address of data that driver had read. The status of
+    receiving a packet is stored in front of the packet(packet header).
+   */
+
+  uint16_t isr = inw(base + 0x3e);
+  // printf("isr: %x\n", isr);
+  // although the docs say we only need to read, we actually need to write
+  // to reset
+  //   printf("resetting\n");
+  outw(base + 0x3e, isr);
+
+  if (isr & 0x1) {
+    // printf("isr: Rx OK\n");
+  } else if (isr & 0x4) {
+    // printf("isr: Tx OK");
+    goto eth_return;
+  } else {
+    goto eth_return;
+  }
+
+#define NET_BIT_BUFFER_EMPTY 0x1
+  while (true) {
+    uint8_t cmd = inb(base + 0x37);
+    if (cmd & NET_BIT_BUFFER_EMPTY) {  // Buffer Empty = 1
+      break;
+    }
+
+    uint16_t capr = inw(base + 0x38);
+    // printf("capr: %x\n", capr);
+
+    uint16_t cbr = inw(base + 0x3a);
+    // printf("cbr: %x\n", cbr);
+
+    // RX buffer content
+    // packet header | packet length | ethernet frame
+    // 2 bytes         | 2 bytes        |
+
+    // ethernet frame
+    // MAC dest | MAC src | Tag (optional) | EtherType / length | Payload |
+    // CRC/FCS 6 bytes   | 6 bytes | 4 bytes          | 2 bytes | 42–1500  |
+    // 4 bytes
+
+    // ether type
+    // 0x0800	Internet Protocol version 4 (IPv4)
+    // 0x86DD	Internet Protocol Version 6 (IPv6)
+    // 0x0806      ARP
+
+    // we get 0x45 = 0b0100 0101 in big endian / network byte order
+    // I assume we get protocol ipv4 so the left part is the 4 and right is
+    // 5 which is the header size of a header without options.
+
+    // Note: network byte order
+
+    // TODO: print 16 bytes before this to see what the card puts there. Since
+    // we emulate it's probably empty.
+
+    uint16_t* packet_status =
+	(uint16_t*)(network_rx_buffer + network_rx_buffer_index);
+
+    //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
+    //	     num_packets++, *packet_status, network_rx_buffer_index);
+
+    // TODO: signal this error to network service.
+    // CRC, RUNT, LONG, FAE, BAD SYMBOL errors
+    if (*packet_status & (1 << 1) || *packet_status & (1 << 2) ||
+	*packet_status & (1 << 3) || *packet_status & (1 << 4) ||
+	*packet_status & (1 << 5)) {
+      break;
+    }
+
+    uint16_t* length = (uint16_t*)(network_rx_buffer + network_rx_buffer_index +
+				   2);  // first two bytes are the rx header
+    //  printf("length: %d\n", *length);
+
+    // TODO: pull length and etheretype from this.
+    // first two bytes are the rx header followed by 2 bytes for length
+    ethernet_frame_t* ef =
+	(ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index + 4);
+
+    // Copy packet and send it to network service.
+    // The network card appends a 4 byte CRC at the end which we ignore.
+    void* buffer = malloc(*length - 4);
+    memcpy(ef, buffer, *length - 4);
+    message_send(&service_network->queue, network_data, buffer);
+
+    //     printf("network: idx before: %x\n", network_rx_buffer_index);
+
+    // length seems to not include the header and size which are 2 bytes each
+    network_rx_buffer_index += *length + 4;
+
+    // wrap
+    if (network_rx_buffer_index > RX_BUFFER_SIZE) {
+      // the controller expects us to not reset it to 0 for some reason.
+      network_rx_buffer_index -= RX_BUFFER_SIZE;
+    }
+
+    // it seems we need to align on dword boundaries.
+    // this means the first 2 bits should be 0, because 1 2 or 3 would not
+    // be 4 which is dword. just cutting them off would mean we inside are
+    // the packet we just read. is this bad? the programming guide adds 3 to
+    // make sure we are outside.
+
+    // according to qemu code there is a 4byte checksum
+    // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1161-L1165
+
+    // ~ is the complement meaning all 1s except the first 2 bits.
+    network_rx_buffer_index = (network_rx_buffer_index + 3) & ~3;
+    // Result: network_rx_buffer_index == cbr in the first run. Later cbr
+    // grows much faster. After looping until BUFFER_EMPTY == 1, CRB always
+    // matches with network_rx_buffer_index. The - 0x10 adjustment was also
+    // necessary. Otherwise BUFFER_EMPTY never gets set.
+    // ref: https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1384
+
+    // printf("new buffer index: %x %d\n", network_rx_buffer_index,
+    //	     network_rx_buffer_index);
+
+    // the doc says to subtract 0x10 to avoid overflow. also, given we use
+    // network_rx_buffer_index which is now bigger, won't this break us
+    // reading packets? for some reason this is added back
+    // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L2522 so if
+    // if we don't subtract the numbers don't match. who knows why this is
+    // done.
+    // Thinking and researching more about this I came to the conclusion that
+    // the network card must somehow reserve 16 byte for some kind of header.
+    outw(base + 0x38, network_rx_buffer_index - 0x10);
+  }
+eth_return:
+  return;
+}
+
+void network_service() {
+  send_dhcp_discover();
+  // Why do I call this service? I imagine the OS always keeps the network stack
+  // in shape. Does DHCP stuff, etc. Can the kernel do this directly? Well it
+  // needs to do many network calls so it blocks.. Hence modeling it as a task
+  // or service seems to make sense?
+
+  // Reply to ARP messages?
+
+  // -> dhcp discover
+  // <- dhcp offer
+  // -> dhcp request
+  while (true) {
+    message_t msg;
+    message_receive(&service_network->queue, &msg);
+
+    ethernet_frame_t* frame = (ethernet_frame_t*)msg.data;
+
+    uint16_t ether_type = ntohs(frame->ethertype);
+
+    if (ether_type == ETHERTYPE_ARP) {
+      net_handle_arp((arp_message_t*)(frame + 1));
+    } else if (ether_type == NET_ETHERTYPE_IP4) {
+      net_handle_ipv4(frame, (ipv4_header_t*)(frame + 1));
+    }
+
+    free(msg.data);
   }
 }
 
@@ -2610,52 +2929,12 @@ void schedule() {
 
     task_t* next_task = task_idle;
 
-    // For now, let's change this to check whether the queue has data.
-    // pre-empt hardware handling
-    // There is some data waiting for the mouse service.
-    /* if (service_mouse->waiting_for_mouse_data == false) { */
-    /*   next_task = service_mouse; */
-    /*   goto found_task; */
-    /* } */
-
-    // Here I would loop through all processes and see if they should be
-    // unblocked. Then maybe run with higher priority because they were
-    // sleeping. Is this efficient to loop through all processes? How many
-    // processes are there normally?
-    // 5000 threads on the macbook. How slow is looping 5000 times?
-    // Could the function that fills each tasks queue change the tasks state?
-    //
-    // What did I notice here?
-    // queue is not an object. I couldn't call queue->peek().
-    // message_ functions work on a global object.
-    // I would need many. One for each task.
-    // Also, the drive would send one message, but there could be many receiver
-    // queues.
-    //
-    // Now we get both keyboard and mouse messages here.
-    // What should we do?
-    // Assumptions:
-    // 1. The mouse is not interested in keyboard events and vice versa.
-    // Hence we don't want to wake them up for it.
-    // What does this imply?
-    // The services need to register for whichever event they are interested in.
-
-    // loop over all tasks, check if they can be unblocked.
-
-    // Could we do this in one loop? Imagine they are sorted by priority and
-    // time left. Device driver tasks would be high priority so they are checked
-    // before anything else, then they are run by how much time they have left,
-    // i.e. they don't starve each other. So while we loop over all tasks that
-    // are sorted well we check if they can be unblocked.
-
     // TODO:
     // - remove all _t typedefs
     // - don't cast void pointers
     // - integer return for verb function errors
     // - boolean return if function name is conditional has, is etc.
     // - use variable name in sizeof
-
-    // OK, now round robin doesn't cut it anymore.
 
     task_t* t = task_current->next;
     // If there is just one task (scheduler?) this will not run.
@@ -2667,8 +2946,8 @@ void schedule() {
       // always ready.
       // The input services... when they are unblocked they could be added to
       // the prioritized task queue.
-      // It seems having some kind of ordering vs. round robin may simplify the
-      // code, but it's still not essential for progress.
+      // It seems having some kind of ordering vs. round robin may simplify
+      // the code, but it's still not essential for progress.
 
       // Skip the scheduler task itself We probably never want to remove the
       // scheduler. If we want, we need to move this down.
@@ -2685,14 +2964,13 @@ void schedule() {
       if (t->state == blocked) {
 	// Check if it can be unblocked
 	if (message_peek(t->queue) == true) {
-	  // BUG: having any of those print statements results in the mouse not
-	  // moving.
-	  // Found it. Random guess. The schedule timer was 1ms and printing
-	  // took too much time so tasks had no time and we were constantly
-	  // scheduling. When I used the debugger I somehow ended up inside the
-	  // scheduler when I expected to end up in a task. I didn't make the
-	  // connection. I thought my pointers were messed up. I need to know
-	  // somehow when an interrupt hits.
+	  // BUG: having any of those print statements results in the mouse
+	  // not moving. Found it. Random guess. The schedule timer was 1ms
+	  // and printing took too much time so tasks had no time and we were
+	  // constantly scheduling. When I used the debugger I somehow ended
+	  // up inside the scheduler when I expected to end up in a task. I
+	  // didn't make the connection. I thought my pointers were messed up.
+	  // I need to know somehow when an interrupt hits.
 
 	  // printf("service_mouse %x service_keyboard %x\n", service_mouse,
 	  //	 service_keyboard);
@@ -2761,191 +3039,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
     return;
   }
   if (regs->int_no == IRQ_NETWORK) {  // network IRQ
-    /*
-      packet header from network card
-      ref:
-      https://www.cs.usfca.edu/~cruse/cs326f04/RTL8139_ProgrammersGuide.pdf
-
-      Bit R/W Symbol Description
-
-      15 R MAR Multicast Address Received: Set to 1 indicates that a multicast
-      packet is received.
-
-      14 R PAM Physical Address Matched: Set to 1 indicates that the
-      destination address of this packet matches the value written in ID
-      registers.
-
-      13 R BAR Broadcast Address Received: Set to 1 indicates that a broadcast
-      packet is received. BAR, MAR bit will not be set simultaneously. 12-6 -
-      - Reserved
-
-      5 R ISE Invalid Symbol Error: (100BASE-TX only) An invalid symbol was
-      encountered during the reception of this packet if this bit set to 1.
-
-      4 R RUNT Runt Packet Received: Set to 1 indicates that the received
-      packet length is smaller than 64 bytes ( i.e. media header + data + CRC
-      < 64 bytes )
-
-      3 R LONG Long Packet: Set to 1 indicates that the size of the received
-      packet exceeds 4k bytes.
-
-      2 R CRC CRC Error: When set, indicates that a CRC error occurred on the
-      received packet.
-
-      1 R FAE Frame Alignment Error: When set, indicates that a frame
-      alignment error occurred on this received packet.
-
-      0 R ROK Receive OK: When set, indicates that a good packet is received.
-     */
-
-    /*
-      The receive path of RTL8139(A/B) is designed as a ring buffer. This ring
-      buffer is in a physical continuous memory. Data coming from line is
-      first stored in a Receive FIFO in the chip, and then move to the receive
-      buffer when the early receive threshold is met. The register CBA keeps
-      the current address of data moved to buffer. CAPR is the read pointer
-      which keeps the address of data that driver had read. The status of
-      receiving a packet is stored in front of the packet(packet header).
-     */
-
-    uint16_t isr = inw(base + 0x3e);
-    // printf("isr: %x\n", isr);
-    // although the docs say we only need to read, we actually need to write
-    // to reset
-    //   printf("resetting\n");
-    outw(base + 0x3e, isr);
-
-    if (isr & 0x1) {
-      // printf("isr: Rx OK\n");
-    } else if (isr & 0x4) {
-      // printf("isr: Tx OK");
-      goto eth_return;
-    } else {
-      goto eth_return;
-    }
-
-    while (true) {
-      uint8_t cmd = inb(base + 0x37);
-      if (cmd & 0x1) {  // Buffer Empty = 1
-	break;
-      }
-
-      uint16_t capr = inw(base + 0x38);
-      // printf("capr: %x\n", capr);
-
-      uint16_t cbr = inw(base + 0x3a);
-      // printf("cbr: %x\n", cbr);
-
-      // RX buffer content
-      // packet header | packet length | ethernet frame
-      // 2 bytes         | 2 bytes        |
-
-      // ethernet frame
-      // MAC dest | MAC src | Tag (optional) | EtherType / length | Payload |
-      // CRC/FCS 6 bytes   | 6 bytes | 4 bytes          | 2 bytes | 42–1500  |
-      // 4 bytes
-
-      // ether type
-      // 0x0800	Internet Protocol version 4 (IPv4)
-      // 0x86DD	Internet Protocol Version 6 (IPv6)
-      // 0x0806      ARP
-
-      // we get 0x45 = 0b0100 0101 in big endian / network byte order
-      // I assume we get protocol ipv4 so the left part is the 4 and right is
-      // 5 which is the header size of a header without options.
-
-      // Note: network byte order
-
-      uint16_t* packet_status =
-	  (uint16_t*)(network_rx_buffer + network_rx_buffer_index);
-
-      //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
-      //	     num_packets++, *packet_status, network_rx_buffer_index);
-
-      // CRC, RUNT, LONG, FAE, BAD SYMBOL errors
-      if (*packet_status & (1 << 1) || *packet_status & (1 << 2) ||
-	  *packet_status & (1 << 3) || *packet_status & (1 << 4) ||
-	  *packet_status & (1 << 5)) {
-	break;
-      }
-
-      // TODO: pull length and etheretype from this.
-      ethernet_frame_t* ef =
-	  (ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index +
-			      4);  // first two bytes are the rx header
-				   // followed
-      // by 2 bytes for length
-
-      uint16_t* length =
-	  (uint16_t*)(network_rx_buffer + network_rx_buffer_index +
-		      2);  // first two bytes are the rx header
-      //  printf("length: %d\n", *length);
-
-      uint8_t* p = (uint8_t*)(network_rx_buffer + network_rx_buffer_index +
-			      4);  // points at destination MAC
-
-      //  uint8_t destination_mac[6] = {0};
-      //   memcpy(p, destination_mac, 6);
-      p += 6;
-
-      //   uint8_t source_mac[6] = {0};
-      //  memcpy(p, source_mac, 6);
-      p += 6;
-
-      //     printf("network: idx before: %x\n", network_rx_buffer_index);
-
-      network_rx_buffer_index +=
-	  *length + 4;  // length seems to not include the header and size
-      // which are 2 bytes each
-
-      // wrap
-      if (network_rx_buffer_index > RX_BUFFER_SIZE) {
-	// the controller expects us to not reset it to 0 for some reason.
-	network_rx_buffer_index -= RX_BUFFER_SIZE;
-      }
-
-      // it seems we need to align on dword boundaries.
-      // this means the first 2 bits should be 0, because 1 2 or 3 would not
-      // be 4 which is dword. just cutting them off would mean we inside are
-      // the packet we just read. is this bad? the programming guide adds 3 to
-      // make sure we are outside.
-
-      // according to qemu code there is a 4byte checksum
-      // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1161-L1165
-
-      // ~ is the complement meaning all 1s except the first 2 bits.
-      network_rx_buffer_index = (network_rx_buffer_index + 3) & ~3;
-      // Result: network_rx_buffer_index == cbr in the first run. Later cbr
-      // grows much faster. After looping until BUFFER_EMPTY == 1, CRB always
-      // matches with network_rx_buffer_index. The - 0x10 adjustment was also
-      // necessary. Otherwise BUFFER_EMPTY never gets set.
-      // ref: https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L1384
-
-      // printf("new buffer index: %x %d\n", network_rx_buffer_index,
-      //	     network_rx_buffer_index);
-
-      uint16_t ether_type = ntohs(*(uint16_t*)p);
-
-      // printf("ethertype: host byte order: %x network byte order: %x\n",
-      //	     ether_type, *(uint16_t*)p);
-
-      p += 2;  // protocol header
-
-      if (ether_type == ETHERTYPE_ARP) {
-	net_handle_arp((arp_message_t*)p);
-      } else if (ether_type == ETHERTYPE_IP4) {
-	net_handle_ipv4(ef, (ipv4_header_t*)p);
-      }
-
-      // the doc says to subtract 0x10 to avoid overflow. also, given we use
-      // network_rx_buffer_index which is now bigger, won't this break us
-      // reading packets? for some reason this is added back
-      // https://github.com/qemu/qemu/blob/master/hw/net/rtl8139.c#L2522 so if
-      // if we don't subtract the numbers don't match. who knows why this is
-      // done.
-      outw(base + 0x38, network_rx_buffer_index - 0x10);
-    }
-  eth_return:
+    handle_network_interrupt();
     local_apic_eoi();
     return;
   }
@@ -3453,6 +3547,8 @@ void ioapic_setup() {
 
   // how to check if ps2 controller exists
   // check bit1 = 2 in 8042 flag IA PC BOOT ARCHITECTURE FLAGS FADT
+
+  // TODO: this could be an interrupt driven state machine.
 
 #define PS2_STATUS_REGISTER 0x64
 #define PS2_COMMAND_REGISTER 0x64
@@ -4292,20 +4388,19 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // 2. extract ps2/keyboard driver
   // 2.1. we will need some way to communicate new data to the driver task
   //
-  // Extracted the mouse driver somehow.
+  // Extracted the mouse and keyboard driver somehow.
   // Issues:
-  // - there is just one message queue.
-  // - mouse input may starve other tasks because it's always prioritized.
   //
   // Next:
-  // - extract keyboard driver
   // - extract similarities to ps/2 driver
+  // - extract network handling
   //
   // 3. tasks/processes that have their own address space
-  // 4. enable more cpus
+  // 4. ?
   // 5. keyboard commands?
   // 6. two displays? kernel log and keyboard command console?
   // 7. window system?
+  // 8. enable more cpus
   //
   // What's the bigger goal?
   // Network stack is extremely brittle and works with 1 packet.
@@ -4410,10 +4505,13 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // service_mouse = 0xA
   // t1 = 0xE
   // t2 = 0x12
+  // TODO: also mentioned above, we probably don't want to rely on having
+  // pointers to service_mouse and service_keyboard, etc.
   task_current = task_scheduler = task_new_malloc((uint64_t)schedule);
   task_idle = task_new_malloc((uint64_t)idle_task);
   service_mouse = task_new_malloc((uint64_t)mouse_service);
   service_keyboard = task_new_malloc((uint64_t)keyboard_service);
+  service_network = task_new_malloc((uint64_t)network_service);
   task_new_malloc((uint64_t)task1);
   task_new_malloc((uint64_t)task2);
 
@@ -4425,7 +4523,6 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   printf("switching to scheduler task\n");
   task_replace(task_scheduler);
 
-  // send_dhcp_discover();
   return 0xDEADBABA;
 }
 
