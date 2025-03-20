@@ -866,47 +866,6 @@ uint16_t ipv4_checksum(uint16_t* addr, uint8_t count) {
   return ~sum;
 }
 
-// ref: http://www.faqs.org/rfcs/rfc768.html
-uint16_t udp_checksum(ipv4_header_t* ipv4h, uint16_t* addr) {
-  // build pseudo header
-  udp_header_t* udph = (udp_header_t*)addr;
-
-  udp_pseudo_ip_header_t ps = {0};
-  ps.source_address = ipv4h->source_address;
-  ps.destination_address = ipv4h->destination_address;
-  ps.protocol = ipv4h->protocol;
-  ps.udp_length = udph->length;
-
-  /* Compute Internet Checksum for "count" bytes
-   *         beginning at location "addr".
-   */
-  uint32_t sum = 0;
-
-  uint16_t* first = (uint16_t*)(&ps);
-  for (int i = 0; i < sizeof(udp_pseudo_ip_header_t) / 2; i++) {
-    sum += *first++;
-  }
-
-  uint16_t count = ntohs(udph->length);
-
-  while (count > 1) {
-    /*  This is the inner loop */
-    sum += *addr++;
-    count -= 2;
-  }
-
-  /*  Add left-over byte, if any */
-  if (count > 0) {
-    sum += *(uint8_t*)addr;
-  }
-
-  /*  Fold 32-bit sum to 16 bits */
-  while (sum >> 16) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-  return ~sum;
-}
-
 #define HPET_CONFIG_REG 0x10
 #define HPET_BASE 0xfed00000
 #define HPET_MAIN_COUNTER 0xf0
@@ -1039,43 +998,111 @@ struct net_device {
 // I like connection better but udp has no connections.
 struct net_request {
   // ipv6 would be longer.
+  uint8_t source_mac[6];
   uint8_t source_address[4];
-  uint8_t source_port;
+  uint32_t source_port;
+  uint8_t destination_mac[6];
   uint8_t destination_address[4];
-  uint8_t destination_port;
+  uint32_t destination_port;
+  uint32_t ether_type;
+  uint8_t protocol;
 };
 typedef struct net_request net_request;
 
-// TODO: all these functions are pointless. they need to add length afterwards.
+struct buffer {
+  uint8_t packet[1518];
+  uint32_t bytes_written_body;
+  uint32_t bytes_written_header;
+};
+typedef struct buffer buffer;
 
-// needs mac and broadcast mac
-void net_write_ethernet_frame(void* buffer) {}
+// Ethernet header 18 bytes + 1500 bytes content.
+// ref: https://en.wikipedia.org/wiki/Ethernet_frame
+// Ethernet header 18 bytes.
+// IP header is min 20 bytes and max 60 bytes.
+// UDP header is 8 bytes.
+// TCP header is min 20 bytes and max 60 bytes.
+// We can reserve 138 bytes.
+const uint32 buffer_header_offset = 138;
 
-void net_write_broadcast_ethernet_frame(/*sender address _t*/ void* buffer) {
-  ethernet_frame_t* frame = (ethernet_frame_t*)buffer;
-  memcpy(mac, frame->source_mac, 6);
-  memcpy(broadcast_mac, frame->destination_mac, 6);
-  frame->ethertype = htons(NET_ETHERTYPE_IPV4);
+// need to write content
+// then need to write all headers backwards
+// difficult to know size of ip header
+// individual write_header functions?
+// ipv4 header size depends on how many options there are, we can precompute
+// given we know the options.
+void buffer_write_body(buffer* buffer, void* bytes, size_t len) {
+  memcpy(bytes,
+	 buffer->packet + buffer_header_offset + buffer->bytes_written_body,
+	 len);
+  buffer->bytes_written_body += len;
 }
 
-// How do we know the protocol? Request?
-void net_write_ipv4_header(net_request* req, size_t length, void* buffer) {
-  ipv4_header_t* header = (ipv4_header_t*)buffer;
-  header->version = 4;
-  header->ihl = 5;  // no options
-  header->ttl = 100;
-  header->protocol = NET_PROTOCOL_UDP;
-  header->source_address = 0;
-  htonl_bytes(req->source_address);  // 0;
-  // BUG: interestingly, although this should be the same backwards and forwards
-  // it didn't work as expected.
-  header->destination_address = 0xffffffff;
-  htonl_bytes(req->destination_address);  // 0xffffffff;
+void buffer_write_byte_body(buffer* buffer, uint8 byte) {
+  buffer_write_body(buffer, &byte, sizeof(byte));
+}
+
+void buffer_write_header(buffer* buffer, void* bytes, size_t len) {
+  buffer->bytes_written_header += len;
+  memcpy(bytes,
+	 buffer->packet + buffer_header_offset - buffer->bytes_written_header,
+	 len);
+}
+
+void* buffer_packet(buffer* buffer) {
+  return buffer->packet + buffer_header_offset - buffer->bytes_written_header;
+}
+
+void* buffer_body(buffer* buffer) {
+  return buffer->packet + buffer_header_offset;
+}
+
+uint32_t buffer_length(buffer* buffer) {
+  return buffer->bytes_written_body + buffer->bytes_written_header;
+}
+
+void net_write_ethernet_frame(net_request* req, buffer* buffer) {
+  ethernet_frame_t frame = {0};
+  memcpy(req->source_mac, frame.source_mac, 6);
+  memcpy(req->destination_mac, frame.destination_mac, 6);
+  if (req->ether_type != 0) {
+    frame.ethertype = htons(req->ether_type);
+  } else {
+    frame.ethertype = htons(NET_ETHERTYPE_IPV4);
+  }
+  buffer_write_header(buffer, &frame, sizeof(frame));
+}
+
+void net_write_broadcast_ethernet_frame(
+    /*sender address _t*/ buffer* buffer) {
+  ethernet_frame_t frame = {0};
+  memcpy(mac, frame.source_mac, 6);
+  memcpy(broadcast_mac, frame.destination_mac, 6);
+  frame.ethertype = htons(NET_ETHERTYPE_IPV4);
+  buffer_write_header(buffer, &frame, sizeof(frame));
+}
+
+void net_write_ipv4_header(net_request* req, buffer* buffer) {
+  ipv4_header_t header = {0};
+  header.version = 4;
+  header.ihl = 5;  // no options
+  header.ttl = 100;
+  if (req->protocol != 0) {
+    header.protocol = req->protocol;
+  } else {
+    header.protocol = NET_PROTOCOL_UDP;
+  }
+  header.source_address = htonl_bytes(req->source_address);
+  header.destination_address = htonl_bytes(req->destination_address);
+
   // For one moment I thought we could just access the udp header here and get
   // the length, but it's not feasible for this code to know about other
   // headers.
-  header->length = htons(header->ihl * 4 + length);
-  header->checksum = ipv4_checksum((uint16_t*)header, header->ihl * 4);
+  header.length = htons(header.ihl * 4 + buffer->bytes_written_header +
+			buffer->bytes_written_body);
+
+  header.checksum = ipv4_checksum((uint16_t*)&header, header.ihl * 4);
+  buffer_write_header(buffer, &header, sizeof(header));
 }
 
 // Checksum is the 16-bit one's complement of the one's complement sum of a
@@ -1084,7 +1111,11 @@ void net_write_ipv4_header(net_request* req, size_t length, void* buffer) {
 // two octets.
 // ref: https://datatracker.ietf.org/doc/html/rfc768
 // ref: http://www.faqs.org/rfcs/rfc768.html
-uint16_t udp_checksum2(net_request* req, uint16_t* addr, size_t length) {
+
+uint16_t udp_checksum(net_request* req,
+		      udp_header_t* udph,
+		      uint16_t* addr,
+		      size_t length) {
   udp_pseudo_ip_header_t ps = {0};
   ps.source_address = htonl_bytes(req->source_address);
   ps.destination_address = htonl_bytes(req->destination_address);
@@ -1098,6 +1129,12 @@ uint16_t udp_checksum2(net_request* req, uint16_t* addr, size_t length) {
 
   uint16_t* first = (uint16_t*)(&ps);
   for (uint32 i = 0; i < sizeof(ps) / 2; i++) {
+    sum += *first++;
+  }
+
+  first = (uint16_t*)(udph);
+
+  for (uint32 i = 0; i < sizeof(*udph) / 2; i++) {
     sum += *first++;
   }
 
@@ -1122,61 +1159,57 @@ uint16_t udp_checksum2(net_request* req, uint16_t* addr, size_t length) {
   return ~sum;
 }
 
-void net_write_udp_header(struct net_request* req,
-			  void* content,
-			  size_t length,
-			  void* buffer) {
-  udp_header_t* header = (udp_header_t*)buffer;
-  header->source_port = htons(req->source_port);            // htons(68);
-  header->destination_port = htons(req->destination_port);  // htons(67);
-  header->length = htons(sizeof(*header) + length);
+void net_write_udp_header(struct net_request* req, buffer* buffer) {
+  udp_header_t header = {0};
+  header.source_port = htons(req->source_port);            // htons(68);
+  header.destination_port = htons(req->destination_port);  // htons(67);
+  header.length = htons(sizeof(header) + buffer->bytes_written_body);
 
-  // content is actually behind this header size so do we need it?
-  header->checksum = udp_checksum2(req, buffer, header->length);
+  // Tricky. We need the header.
+  // Accessor for content would be good.
+  header.checksum = udp_checksum(
+      req, &header, (uint16_t*)(buffer->packet + buffer_header_offset),
+      header.length);
+
+  buffer_write_header(buffer, &header, sizeof(header));
 }
 
 // TODO: take a net_device as first parameter for access to mac and ip
 // Should this move the FP or return how many bytes written?
-uint32 net_write_dhcp_discover_message(uint32_t xid, void* buffer) {
-  dhcp_message_t* msg = (dhcp_message_t*)(buffer);
+void net_write_dhcp_discover_message(uint32_t xid, buffer* buffer) {
+  dhcp_message_t msg = {0};
 
-  msg->op = DHCP_OP_DISCOVER;
-  msg->htype = DHCP_HARDWARE_TYPE_ETHERNET;
-  msg->hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
-  msg->hops = 0x00;
+  msg.op = DHCP_OP_DISCOVER;
+  msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
+  msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
+  msg.hops = 0x00;
   // Used to match return messages
-  msg->xid = xid;
-  msg->secs = 0;
-  msg->flags = 0;  // Set broadcast bit?
+  msg.xid = xid;
+  msg.secs = 0;
+  msg.flags = 0;  // Set broadcast bit?
   // MAC
-  msg->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  msg->chaddr[1] = (mac[5] << 8) | mac[4];
+  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  msg.chaddr[1] = (mac[5] << 8) | mac[4];
   // TODO: make this a constant? It's the options header.
   // ref: https://datatracker.ietf.org/doc/html/rfc2131#section-3
-  msg->magic[0] = 0x63;
-  msg->magic[1] = 0x82;
-  msg->magic[2] = 0x53;
-  msg->magic[3] = 0x63;
+  msg.magic[0] = 0x63;
+  msg.magic[1] = 0x82;
+  msg.magic[2] = 0x53;
+  msg.magic[3] = 0x63;
+
+  buffer_write_body(buffer, &msg, sizeof(msg));
 
   // net_write_dhcp_option(option, buffer)
-  uint8_t* options = (uint8_t*)(msg + 1);
-  options[0] = DHCP_OPTION_MESSAGE_TYPE;
-  options[1] = DHCP_OPTION_MESSAGE_TYPE_LENGTH;
-  options[2] = DHCP_OP_DISCOVER;
-  options[3] = DHCP_OPTION_END;
-
-  // 4 bytes for the options.
-  return sizeof(*msg) + 4;
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE);
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_LENGTH);
+  buffer_write_byte_body(buffer, DHCP_OP_DISCOVER);
+  buffer_write_byte_body(buffer, DHCP_OPTION_END);
 }
 
 void send_dhcp_discover() {
-  // start by building the dhcp message
-  // alloc enough space for it and headers
-  // add headers backwards, udp, ip, eth
   uint32_t xid = (uint32_t)get_global_timer_value();
 
   net_request req = {
-      //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
       .source_address = {0},
       .source_port = NET_PORT_DHCP_CLIENT,
       .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
@@ -1184,84 +1217,53 @@ void send_dhcp_discover() {
       .destination_port = NET_PORT_DHCP_SERVER,
   };
 
-  // Ethernet header 18 bytes + 1500 bytes content.
-  // ref: https://en.wikipedia.org/wiki/Ethernet_frame
-  uint8_t packet[1518] = {};
+  buffer buffer = {0};
+  net_write_dhcp_discover_message(xid, &buffer);
+  net_write_udp_header(&req, &buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_broadcast_ethernet_frame(&buffer);
 
-  // Ethernet header 18 bytes.
-  // IP header is min 20 bytes and max 60 bytes.
-  // UDP header is 8 bytes.
-  // TCP header is min 20 bytes and max 60 bytes.
-  // We can reserve 138 bytes.
-  // Maybe more would be good for buffer.
-  void* content_start = packet + 138;
-  // Make space for the UDP header.
-  uint32 length = net_write_dhcp_discover_message(xid, content_start);
-  // can the ptr be a writer that keeps track of bytes written?
-
-  void* header_start = content_start - sizeof(udp_header_t);
-  // TODO: what about encapsulating this in a net_packet_t that has pointer.
-  // needs pointer and size for data for checksum.
-  net_write_udp_header(&req, content_start, length, header_start);
-  length += sizeof(udp_header_t);
-  ipv4_header_t* iph = header_start = header_start - sizeof(ipv4_header_t);
-  // needs pointer and size for data for checksum. I guess udp header becomes
-  // part of it.
-  net_write_ipv4_header(content_start, length, header_start);
-  header_start = header_start - sizeof(ethernet_frame_t);
-  net_write_broadcast_ethernet_frame(header_start);
-
-  // if (memcmp(dhcpm, content_start, 50) == false) {
-  //   printf("did not match\n");
-  //   __asm__("cli");
-  //   __asm__("hlt");
-  // }
-
-  net_transmit(header_start, sizeof(ethernet_frame_t) + ntohs(iph->length));
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
 
-size_t net_write_dhcp_request_message(uint32_t xid, void* buffer) {
-  dhcp_message_t* msg = (dhcp_message_t*)buffer;
-
-  msg->op = DHCP_OP_REQUEST;
-  msg->htype = DHCP_HARDWARE_TYPE_ETHERNET;
-  msg->hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
-  msg->hops = 0x00;
+void net_write_dhcp_request_message(uint32_t xid, void* buffer) {
+  dhcp_message_t msg = {0};
+  msg.op = DHCP_OP_REQUEST;
+  msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
+  msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
+  msg.hops = 0x00;
   // TODO: there is some state per request.
-  msg->xid = dhcp_offer_xid;
-  msg->secs = 0;
-  msg->flags = 0;
-  msg->chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  msg->chaddr[1] = (mac[5] << 8) | mac[4];
-  msg->siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
-		(dhcp_router[1] << 8) |
-		dhcp_router[0];  // htonl_bytes(dhcp_router);
-  msg->magic[0] = 0x63;
-  msg->magic[1] = 0x82;
-  msg->magic[2] = 0x53;
-  msg->magic[3] = 0x63;
+  msg.xid = xid;
+  msg.secs = 0;
+  msg.flags = 0;
+  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  msg.chaddr[1] = (mac[5] << 8) | mac[4];
+  msg.siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
+	       (dhcp_router[1] << 8) |
+	       dhcp_router[0];  // htonl_bytes(dhcp_router);
+  msg.magic[0] = 0x63;
+  msg.magic[1] = 0x82;
+  msg.magic[2] = 0x53;
+  msg.magic[3] = 0x63;
 
-  uint8_t* options = (uint8_t*)(msg + 1);
+  buffer_write_body(buffer, &msg, sizeof(msg));
 
-  options[0] = DHCP_OPTION_MESSAGE_TYPE;
-  options[1] = DHCP_OPTION_MESSAGE_TYPE_LENGTH;
-  options[2] = DHCP_OP_REQUEST;
-  options[3] = DHCP_OPTION_IP_REQUEST;
-  options[4] = DHCP_OPTION_IP_REQUEST_LENGTH;
-  options[5] = ip[0];
-  options[6] = ip[1];
-  options[7] = ip[2];
-  options[8] = ip[3];
-  options[9] = DHCP_OPTION_SERVER;
-  options[10] = DHCP_OPTION_SERVER_LENGTH;
-  options[11] = dhcp_router[0];
-  options[12] = dhcp_router[1];
-  options[13] = dhcp_router[2];
-  options[14] = dhcp_router[3];
-  options[15] = 0xff;
-
-  // 16 bytes for options
-  return sizeof(*msg) + 16;
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE);
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_LENGTH);
+  buffer_write_byte_body(buffer, DHCP_OP_REQUEST);
+  buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST);
+  buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST_LENGTH);
+  buffer_write_byte_body(buffer, ip[0]);
+  buffer_write_byte_body(buffer, ip[1]);
+  buffer_write_byte_body(buffer, ip[2]);
+  buffer_write_byte_body(buffer, ip[3]);
+  buffer_write_byte_body(buffer, DHCP_OPTION_SERVER);
+  buffer_write_byte_body(buffer, DHCP_OPTION_SERVER_LENGTH);
+  buffer_write_byte_body(buffer, dhcp_router[0]);
+  buffer_write_byte_body(buffer, dhcp_router[1]);
+  buffer_write_byte_body(buffer, dhcp_router[2]);
+  buffer_write_byte_body(buffer, dhcp_router[3]);
+  buffer_write_byte_body(buffer, 0xff);
 }
 
 void send_dhcp_request() {
@@ -1276,159 +1278,119 @@ void send_dhcp_request() {
       .destination_port = NET_PORT_DHCP_SERVER,
   };
 
-  // Ethernet header 18 bytes + 1500 bytes content.
-  // ref: https://en.wikipedia.org/wiki/Ethernet_frame
-  uint8_t packet[1518] = {};
+  buffer buffer = {0};
+  net_write_dhcp_request_message(xid, &buffer);
+  net_write_udp_header(&req, &buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_broadcast_ethernet_frame(&buffer);
 
-  // Ethernet header 18 bytes.
-  // IP header is min 20 bytes and max 60 bytes.
-  // UDP header is 8 bytes.
-  // TCP header is min 20 bytes and max 60 bytes.
-  // We can reserve 138 bytes.
-  // Maybe more would be good for buffer.
-  void* content_start = packet + 138;
-  // Make space for the UDP header.
-  uint32 length = net_write_dhcp_request_message(xid, content_start);
-  // can the ptr be a writer that keeps track of bytes written?
-
-  void* header_start = content_start - sizeof(udp_header_t);
-  // TODO: what about encapsulating this in a net_packet_t that has pointer.
-  // needs pointer and size for data for checksum.
-  net_write_udp_header(&req, content_start, length, header_start);
-  length += sizeof(udp_header_t);
-  ipv4_header_t* iph = header_start = header_start - sizeof(ipv4_header_t);
-  // needs pointer and size for data for checksum. I guess udp header becomes
-  // part of it.
-
-  // configure ttl
-  net_write_ipv4_header(content_start, length, header_start);
-  header_start = header_start - sizeof(ethernet_frame_t);
-  net_write_broadcast_ethernet_frame(header_start);
-
-  net_transmit(header_start, sizeof(ethernet_frame_t) + ntohs(iph->length));
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
 
+#define DNS_FLAG_QUERY 0
+#define DNS_FLAG_RESPONSE 1
+#define DNS_NULL_LABEL 0
+
+// Inject hostname
+size_t net_write_dns_query_b(buffer* buffer) {
+  dns_header_t header = {0};
+
+  // transaction id
+  header.id = htons(5);
+  // number of questions
+  header.qdcount = htons(1);
+  header.qr = DNS_FLAG_QUERY;
+  // recursion desired
+  header.rd = 1;
+
+  buffer_write_body(buffer, &header, sizeof(header));
+
+  buffer_write_byte_body(buffer, 6);
+  buffer_write_byte_body(buffer, 'g');
+  buffer_write_byte_body(buffer, 'o');
+  buffer_write_byte_body(buffer, 'o');
+  buffer_write_byte_body(buffer, 'g');
+  buffer_write_byte_body(buffer, 'l');
+  buffer_write_byte_body(buffer, 'e');
+  buffer_write_byte_body(buffer, 3);
+  buffer_write_byte_body(buffer, 'c');
+  buffer_write_byte_body(buffer, 'o');
+  buffer_write_byte_body(buffer, 'm');
+  buffer_write_byte_body(buffer, DNS_NULL_LABEL);
+  // Type A
+  buffer_write_byte_body(buffer, 0);  // type byte
+  buffer_write_byte_body(buffer, 1);  // type byte
+  // Class Internet
+  buffer_write_byte_body(buffer, 0);  // class byte
+  buffer_write_byte_body(buffer, 1);  // class byte
+}
+
+#define NET_PORT_DNS 53
+
 void send_dns_request() {
-  // TODO: more duplication!
-  uint8_t packet[1024];
-  memset(packet, 0, 1024);
+  // How do we usually know the mac address?
+  // Is the mac address the one from the router always?
+  net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+      .source_address = {ip[0], ip[1], ip[2], ip[3]},
+      .source_port = NET_PORT_DNS,
+      .destination_mac = {dhcp_router_mac[0], dhcp_router_mac[1],
+			  dhcp_router_mac[2], dhcp_router_mac[3],
+			  dhcp_router_mac[4], dhcp_router_mac[5]},
+      .destination_address = {dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
+			      dhcp_dns[3]},
+      .destination_port = NET_PORT_DNS,
+  };
 
-  // TODO: duplicated
-  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
-  memcpy(mac, ef->source_mac, 6);
-  memcpy(dhcp_router_mac, ef->destination_mac, 6);
+  buffer buffer = {0};
+  net_write_dns_query_b(&buffer);
+  net_write_udp_header(&req, &buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_ethernet_frame(&req, &buffer);
 
-  ef->ethertype = htons(NET_ETHERTYPE_IPV4);
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
+}
 
-  // TODO: factory function
-  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
-  iph->version = 4;
-  iph->ihl = 5;  // no options
-  iph->ttl = 100;
-  iph->protocol = 0x11;  // UDP
-  iph->source_address = (ip[3] << 24) | (ip[2] << 16) | (ip[1] << 8) | ip[0];
-  iph->destination_address = (dhcp_dns[3] << 24) | (dhcp_dns[2] << 16) |
-			     (dhcp_dns[1] << 8) | dhcp_dns[0];
-
-  udp_header_t* udph =
-      (udp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
-  udph->source_port = htons(53);
-  udph->destination_port = htons(53);
-
-  dns_header_t* dnsh = (dns_header_t*)(packet + sizeof(ethernet_frame_t) +
-				       iph->ihl * 4 + sizeof(udp_header_t));
-
-  dnsh->id = htons(5);
-  dnsh->qdcount = htons(1);
-  dnsh->rd = 1;
-
-  uint8_t* q = (uint8_t*)(dnsh + 1);
-  q[0] = 6;
-  q[1] = 'g';
-  q[2] = 'o';
-  q[3] = 'o';
-  q[4] = 'g';
-  q[5] = 'l';
-  q[6] = 'e';
-  q[7] = 3;
-  q[8] = 'c';
-  q[9] = 'o';
-  q[10] = 'm';
-  q[11] = 0;
-  q[12] = 0;
-  q[13] = 1;
-  q[14] = 0;
-  q[15] = 1;
-
-  udph->length = htons(sizeof(udp_header_t) + sizeof(dns_header_t) + 16);
-
-  // Checksum is the 16-bit one's complement of the one's complement sum of a
-  // pseudo header of information from the IP header, the UDP header, and the
-  // data, padded with zero octets at the end (if necessary) to make a multiple
-  // of two octets.
-  // ref: https://datatracker.ietf.org/doc/html/rfc768
-  udph->checksum = udp_checksum(iph, (uint16_t*)udph);
-
-  iph->length = htons(iph->ihl * 4 + ntohs(udph->length));
-
-  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
-
-  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
+void net_write_arp_response(net_request* req, buffer* buffer) {
+  arp_message_t msg = {0};
+  msg.htype = htons(1);  // ethernet
+  msg.hlen = 6;
+  msg.ptype = htons(NET_ETHERTYPE_IPV4);
+  msg.plen = 4;
+  msg.oper = htons(2);  // reply
+  memcpy(req->source_mac, &msg.sender_mac_1, 6);
+  memcpy(req->source_address, &msg.sender_protocol_address_1, 4);
+  memcpy(req->destination_mac, &msg.target_mac_1, 6);
+  memcpy(req->destination_address, &msg.target_protocol_address_1, 4);
+  buffer_write_body(buffer, &msg, sizeof(msg));
 }
 
 void send_arp_response(uint8_t* sender_mac, uint8_t* sender_ip) {
-  uint8_t packet[1024];
-  memset(packet, 0, 1024);
+  net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+      .source_address = {ip[0], ip[1], ip[2], ip[3]},
+      .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_mac = {sender_mac[0], sender_mac[1], sender_mac[2],
+			  sender_mac[3], sender_mac[4], sender_mac[5]},
+      .destination_address = {sender_ip[0], sender_ip[1], sender_ip[2],
+			      sender_ip[3]},
+      .destination_port = NET_PORT_DHCP_SERVER,
+      .ether_type = NET_ETHERTYPE_ARP,
+  };
+  buffer buffer = {0};
+  net_write_arp_response(&req, &buffer);
+  net_write_ethernet_frame(&req, &buffer);
 
-  // build ethernet frame
-  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
-  memcpy(mac, ef->source_mac, 6);
-  memcpy(sender_mac, ef->destination_mac, 6);
+  //  Can this be async?
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 
-  ef->ethertype = htons(NET_ETHERTYPE_ARP);
-
-  // TODO: factory function
-  arp_message_t* a = (arp_message_t*)(packet + sizeof(ethernet_frame_t));
-  a->htype = htons(1);  // ethernet
-  a->hlen = 6;
-  a->ptype = htons(NET_ETHERTYPE_IPV4);
-  a->plen = 4;
-  a->oper = htons(2);  // reply
-  memcpy(mac, &a->sender_mac_1, 6);
-  memcpy(ip, &a->sender_protocol_address_1, 4);
-  memcpy(sender_mac, &a->target_mac_1, 6);
-  memcpy(sender_ip, &a->target_protocol_address_1, 4);
-
-  net_transmit(packet, sizeof(ethernet_frame_t) + sizeof(arp_message_t));
-  // TODO: free packet because it's on the network card buffer now.
-  // Can this be async?
+  //  TODO: free packet because it's on the network card buffer now.
 }
 
-void send_echo() {
-  uint8_t packet[1024];
-  memset(packet, 0, 1024);
-
-  // TODO: duplicated
-  ethernet_frame_t* ef = (ethernet_frame_t*)packet;
-  memcpy(mac, ef->source_mac, 6);
-  memcpy(dhcp_router_mac, ef->destination_mac, 6);
-
-  ef->ethertype = htons(NET_ETHERTYPE_IPV4);
-
-  uint8_t google_ip[4] = {142, 250, 207, 46};
-  // TODO: factory function
-  ipv4_header_t* iph = (ipv4_header_t*)(packet + sizeof(ethernet_frame_t));
-  iph->version = 4;
-  iph->ihl = 5;  // no options
-  iph->ttl = 100;
-  iph->protocol = 0x1;  // ICMP
-  iph->source_address = (ip[3] << 24) | (ip[2] << 16) | (ip[1] << 8) | ip[0];
-  //  iph->destination_address = 0xffffffff;  // should be network byte order
-  iph->destination_address = (google_ip[3] << 24) | (google_ip[2] << 16) |
-			     (google_ip[1] << 8) | google_ip[0];
-
-  icmp_header_t* h =
-      (icmp_header_t*)(packet + sizeof(ethernet_frame_t) + iph->ihl * 4);
+// TODO: split into header and message
+void net_write_icmp_echo(buffer* buffer) {
+  uint16_t packet[4] = {0};
+  icmp_header_t* h = (icmp_header_t*)packet;
   h->type = 8;
   h->code = 0;
 
@@ -1437,14 +1399,39 @@ void send_echo() {
   m->sequence_number = 0;
 
   h->checksum = ipv4_checksum(
-      (uint16_t*)h, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+      packet, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+  buffer_write_body(buffer, packet,
+		    sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+}
 
-  iph->length =
-      htons(iph->ihl * 4 + sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+void send_echo() {
+  // TODO: resolve via dns query first.
+  // so we need to block until it's resolved. Interesting.
+  uint8_t google_ip[4] = {142, 250, 207, 46};
+  net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+      .source_address = {ip[0], ip[1], ip[2], ip[3]},
 
-  iph->checksum = ipv4_checksum((uint16_t*)iph, iph->ihl * 4);
+      .destination_mac = {dhcp_router_mac[0], dhcp_router_mac[1],
+			  dhcp_router_mac[2], dhcp_router_mac[3],
+			  dhcp_router_mac[4], dhcp_router_mac[5]},
+      .destination_address = {google_ip[0], google_ip[1], google_ip[2],
+			      google_ip[3]},
+      .protocol = NET_PROTOCOL_ICMP,
+  };
 
-  net_transmit(packet, sizeof(ethernet_frame_t) + ntohs(iph->length));
+  buffer buffer = {0};
+  net_write_icmp_echo(&buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_ethernet_frame(&req, &buffer);
+
+  // if (memcmp(ef, buffer_packet(&buffer), buffer_length(&buffer)) == false) {
+  //   printf("[net_write] did not match\n");
+  //   __asm__("cli");
+  //   __asm__("hlt");
+  // }
+
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
 
 // net_handle_arp handles the address resolution protocol.
@@ -2876,9 +2863,9 @@ void network_service() {
 
     uint16_t ether_type = ntohs(frame->ethertype);
 
-    if (ether_type == ETHERTYPE_ARP) {
+    if (ether_type == NET_ETHERTYPE_ARP) {
       net_handle_arp((arp_message_t*)(frame + 1));
-    } else if (ether_type == NET_ETHERTYPE_IP4) {
+    } else if (ether_type == NET_ETHERTYPE_IPV4) {
       net_handle_ipv4(frame, (ipv4_header_t*)(frame + 1));
     }
 

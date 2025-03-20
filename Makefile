@@ -11,7 +11,10 @@ LD = x86_64-elf-ld
 LDFLAGS = -T linker.ld -nostdlib -z max-page-size=0x1000
 
 CC = x86_64-elf-gcc
-CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone -std=c23 # -mgeneral-regs-only
+# -mgeneral-regs-only disables usage of sse registers, etc.
+# We would have to restore them on every context switch. For now I delay this.
+# ref: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=70738
+CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone -std=c23 -mgeneral-regs-only
 
 AS = nasm
 ASFLAGS = -f elf64 -g -F dwarf
