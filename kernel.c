@@ -2,6 +2,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef uint64_t u64;
+typedef int64_t s64;
+typedef uint32_t u32;
+typedef int32_t s32;
+typedef uint16_t u16;
+typedef int16_t s16;
+typedef uint8_t u8;
+typedef int8_t s8;
+
 #define va_start(v, l) __builtin_va_start(v, l)
 #define va_arg(v, l) __builtin_va_arg(v, l)
 #define va_end(v) __builtin_va_end(v)
@@ -66,7 +75,7 @@ char* itoa(int value, char* buffer, unsigned int base) {
  */
 
 // ref: https://en.wikipedia.org/wiki/VGA_text_mode#Access_methods
-uint8_t* videoram = (uint8_t*)0xb8000;
+u8* videoram = (u8*)0xb8000;
 
 int xpos = 0;
 int ypos = 0;
@@ -87,15 +96,14 @@ int mouse_y = 0;
 #define num_rows 25
 #define num_cols 80
 #define terminal_buffer_size (num_cols * num_rows * 2 * num_pages)
-uint8_t terminal_buffer[num_cols * num_rows * 2 * num_pages] = {
-    0};  // 100 pages
+u8 terminal_buffer[num_cols * num_rows * 2 * num_pages] = {0};  // 100 pages
 
 // ring buffer start. once we are at the end it needs to wrap. should be aligned
 // to start of line I guess.
-uint16_t terminal_buffer_start = 0;
-uint16_t terminal_buffer_row_index = 0;
-uint16_t terminal_buffer_column_index = 0;
-uint16_t terminal_cursor_index = 0;
+u16 terminal_buffer_start = 0;
+u16 terminal_buffer_row_index = 0;
+u16 terminal_buffer_column_index = 0;
+u16 terminal_cursor_index = 0;
 
 int printf(const char* format, ...);
 
@@ -130,8 +138,8 @@ void display() {
 }
 
 void clear_page() {
-  for (uint32_t i = 0; i < num_rows * num_cols * 2; i++) {
-    uint32_t idx =
+  for (u32 i = 0; i < num_rows * num_cols * 2; i++) {
+    u32 idx =
 	(terminal_buffer_row_index * num_cols * 2 + i) % terminal_buffer_size;
     terminal_buffer[idx] = 0;
   }
@@ -168,8 +176,8 @@ void print_character_color(char c, char color) {
       break;
     default:
       // Possible integer overrun
-      uint16_t idx = terminal_buffer_row_index * num_cols * 2 +
-		     terminal_buffer_column_index * 2;
+      u16 idx = terminal_buffer_row_index * num_cols * 2 +
+		terminal_buffer_column_index * 2;
       terminal_buffer[idx] = (int)c;
       terminal_buffer[idx + 1] = color;
       terminal_buffer_column_index++;
@@ -317,87 +325,72 @@ int printf(const char* format, ...) {
    12:light red, 13:light magneta, 14: light brown, 15: white
  */
 
-typedef uint64_t uint64;
-typedef int64_t int64;
-// typedef unsigned int uint32;
-typedef uint32_t uint32;
-// typedef int int32;
-typedef int32_t int32;
-// typedef unsigned short uint16;
-typedef uint16_t uint16;
-// typedef short int16;
-typedef int16_t int16;
-// typedef unsigned char uint8;
-typedef uint8_t uint8;
-// typedef char int8;
-typedef int8_t int8;
-
 /* task-state segment */
 struct tss_struct {
-  uint16 link;
-  uint16 link_r;
-  uint32 esp0;
-  uint16 ss0;
-  uint16 ss0_r;
-  uint32 esp1;
-  uint16 ss1;
-  uint16 ss1_r;
-  uint32 esp2;
-  uint16 ss2;
-  uint16 ss2_r;
-  uint32 cr3;
-  uint32 eip;
-  uint32 eflags;
-  uint32 eax;
-  uint32 ecx;
-  uint32 edx;
-  uint32 ebx;
-  uint32 esp;
-  uint32 ebp;
-  uint32 esi;
-  uint32 edi;
-  uint16 es;
-  uint16 es_r;
-  uint16 cs;
-  uint16 cs_r;
-  uint16 ss;
-  uint16 ss_r;
-  uint16 ds;
-  uint16 ds_r;
-  uint16 fs;
-  uint16 fs_r;
-  uint16 gs;
-  uint16 gs_r;
-  uint16 iopb_r;
-  uint16 iopb;
+  u16 link;
+  u16 link_r;
+  u32 esp0;
+  u16 ss0;
+  u16 ss0_r;
+  u32 esp1;
+  u16 ss1;
+  u16 ss1_r;
+  u32 esp2;
+  u16 ss2;
+  u16 ss2_r;
+  u32 cr3;
+  u32 eip;
+  u32 eflags;
+  u32 eax;
+  u32 ecx;
+  u32 edx;
+  u32 ebx;
+  u32 esp;
+  u32 ebp;
+  u32 esi;
+  u32 edi;
+  u16 es;
+  u16 es_r;
+  u16 cs;
+  u16 cs_r;
+  u16 ss;
+  u16 ss_r;
+  u16 ds;
+  u16 ds_r;
+  u16 fs;
+  u16 fs_r;
+  u16 gs;
+  u16 gs_r;
+  u16 iopb_r;
+  u16 iopb;
 } __attribute__((packed));
 typedef struct tss_struct tss_t;
 
 struct gdt_entry_struct {
-  uint16 limit_start;
-  uint16 base_start;
-  uint8 base_middle;
-  uint8 access;
-  uint8 limit_and_flags;
-  uint8 base_end;
+  u16 limit_start;
+  u16 base_start;
+  u8 base_middle;
+  u8 access;
+  u8 limit_and_flags;
+  u8 base_end;
 } __attribute__((packed));
 typedef struct gdt_entry_struct gdt_entry_t;
 
 struct gdt_ptr_struct {
-  uint16 limit;
-  uint32 base;
+  u16 limit;
+  u32 base;
 } __attribute__((packed));
 typedef struct gdt_ptr_struct gdt_ptr_t;
 
 // #IFDEF __x86_64__
 struct idt_entry {
-  uint16 offset_start;
-  uint16 selector;
-  uint8 zero;
-  uint8 type_attr;
-  uint16 offset_mid;
-  uint32 offset_end;
-  uint32 reserved;
+  u16 offset_start;
+  u16 selector;
+  u8 zero;
+  u8 type_attr;
+  u16 offset_mid;
+  u32 offset_end;
+  u32 reserved;
 } __attribute__((packed));
 typedef struct idt_entry idt_entry_t;
 /* #ELSE */
@@ -420,9 +413,9 @@ struct idt_ptr_struct {
   // Also: In 64-bit mode, the instruction’s operand size is fixed at 8+2 bytes
   // (an 8-byte base and a 2-byte limit).
   // ref: https://www.felixcloutier.com/x86/lgdt:lidt
-  uint16 limit;
+  u16 limit;
 
-  uint64 base;
+  u64 base;
 } __attribute__((packed));
 typedef struct idt_ptr_struct idt_ptr_t;
 
@@ -438,19 +431,12 @@ extern void gdt_update(gdt_ptr_t*);
 extern void idt_update(idt_ptr_t*);
 
 void gdt_setup();
-void gdt_set_entry(uint32, uint32, uint32, uint8, uint8);
-void gdt_set_gate(uint32 entry,
-		  uint32 base,
-		  uint32 limit,
-		  uint8 access,
-		  uint8 flags);
+void gdt_set_entry(u32, u32, u32, u8, u8);
+void gdt_set_gate(u32 entry, u32 base, u32 limit, u8 access, u8 flags);
 
 void idt_setup();
 // void idt_set_entry(uint32, uint32, uint16, uint8);
-void idt_set_gate(uint32 interrupt,
-		  uint64 offset,
-		  uint16 selector,
-		  uint8 type_attr);
+void idt_set_gate(u32 interrupt, u64 offset, u16 selector, u8 type_attr);
 
 /*
   struct interrupt_registers_struct {
@@ -478,12 +464,11 @@ extern void isr0x34(void);
 
 struct interrupt_registers {
   //  uint32 ds;                                     // data segment selector
-  uint64 r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx,
-      rax;
-  uint64 int_no, err_code;
-  uint64 eip, cs, rflags, rsp, ss;  // pushed by cpu after interrupt
+  u64 r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx, rax;
+  u64 int_no, err_code;
+  u64 eip, cs, rflags, rsp, ss;  // pushed by cpu after interrupt
 } __attribute__((packed));
-typedef struct interrupt_registers interrupt_registers_t;
+typedef struct interrupt_registers interrupt_registers;
 
 #define EXCEPTION_PAGE_FAULT 14
 
@@ -513,55 +498,55 @@ char* interrupt_names[22] = {
 };
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint32_t p : 1;
-    uint32_t wr : 1;
-    uint32_t us : 1;
-    uint32_t rsvd : 1;
-    uint32_t id : 1;
-    uint32_t pk : 1;
-    uint32_t ss : 1;
-    uint32_t hlat : 1;
-    uint32_t reserved : 24;
+    u32 p : 1;
+    u32 wr : 1;
+    u32 us : 1;
+    u32 rsvd : 1;
+    u32 id : 1;
+    u32 pk : 1;
+    u32 ss : 1;
+    u32 hlat : 1;
+    u32 reserved : 24;
   } flags;
 } page_fault_error_t;
 
 // assembler
-static inline void outb(uint16 port, uint8 val) {
+static inline void outb(u16 port, u8 val) {
   __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
   /* There's an outb %al, $imm8  encoding, for compile-time constant port
    * numbers that fit in 8b.  (N constraint).
    * Wider immediate constants would be truncated at assemble-time (e.g. "i"
    * constraint).
    * The  outb  %al, %dx  encoding is the only option for all other cases.
-   * %1 expands to %dx because  port  is a uint16_t.  %w1 could be used if
+   * %1 expands to %dx because  port  is a u16.  %w1 could be used if
    * we
    * had the port number a wider C type */
 }
 
-static inline uint8 inb(uint16 port) {
-  uint8 ret;
+static inline u8 inb(u16 port) {
+  u8 ret;
   __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
   return ret;
 }
 
-static inline void outl(uint16_t port, uint32_t val) {
+static inline void outl(u16 port, u32 val) {
   __asm__ volatile("outl %k0, %w1" : : "a"(val), "Nd"(port) : "memory");
 }
 
-static inline uint32_t inl(uint16_t port) {
-  uint32_t ret;
+static inline u32 inl(u16 port) {
+  u32 ret;
   __asm__ volatile("inl %w1, %k0" : "=a"(ret) : "Nd"(port) : "memory");
   return ret;
 }
 
-static inline void outw(uint16_t port, uint16_t val) {
+static inline void outw(u16 port, u16 val) {
   __asm__ volatile("outw %w0, %w1" : : "a"(val), "Nd"(port) : "memory");
 }
 
-static inline uint16_t inw(uint16_t port) {
-  uint16_t ret;
+static inline u16 inw(u16 port) {
+  u16 ret;
   __asm__ volatile("inw %w1, %w0" : "=a"(ret) : "Nd"(port) : "memory");
   return ret;
 }
@@ -603,13 +588,13 @@ int min(int x, int y) {
 // TODO: optimize by copying bigger blocks at once.
 void memcpy(void* src, void* dst, size_t len) {
   for (int i = 0; i < len; i++) {
-    ((uint8_t*)dst)[i] = ((uint8_t*)src)[i];
+    ((u8*)dst)[i] = ((u8*)src)[i];
   }
 }
 
-void memset(void* dst, uint8_t byte, size_t len) {
+void memset(void* dst, u8 byte, size_t len) {
   for (size_t i = 0; i < len; i++) {
-    ((uint8_t*)dst)[i] = byte;
+    ((u8*)dst)[i] = byte;
   }
 }
 
@@ -624,23 +609,23 @@ void memset(void* dst, uint8_t byte, size_t len) {
 // bytes buffer to accept the remainder of the packet. We assume that the
 // remainder of the packet is X bytes. The next packet will be moved into the
 // memory from the X byte offset at the top of the Rx buffer.
-uint8_t network_rx_buffer[RX_BUFFER_SIZE + 16 + 1500]
+u8 network_rx_buffer[RX_BUFFER_SIZE + 16 + 1500]
     __attribute__((aligned(4))) = {0};
-uint16_t network_rx_buffer_index = {0};
+u16 network_rx_buffer_index = {0};
 
-uint8_t network_packet[1518] = {0};
+u8 network_packet[1518] = {0};
 
-uint8_t network_current_tx_descriptor = 0;
+u8 network_current_tx_descriptor = 0;
 
-uint16_t num_packets = 0;
+u16 num_packets = 0;
 
 // Now it's starting to get super dirty.
-uint32_t base = 0;
+u32 base = 0;
 
-uint8_t mac[6] = {0};
-uint8_t broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-uint8_t ip[4] = {0};
-uint8_t broadcast_ip[4] = {0xff, 0xff, 0xff, 0xff};
+u8 mac[6] = {0};
+u8 broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+u8 ip[4] = {0};
+u8 broadcast_ip[4] = {0xff, 0xff, 0xff, 0xff};
 
 // How are IPs stored in memory?
 // ip global
@@ -655,169 +640,179 @@ uint8_t broadcast_ip[4] = {0xff, 0xff, 0xff, 0xff};
 // 000000000041f0e4: 0x080ba8c0 0x010ba8c0 0x00ffffff 0x010ba8c0
 
 // note: I was confused. The UDP checksum was wrong, because I mistakenly put
-// the address fields down as uint16_t. Because I noticed that the only thing
+// the address fields down as u16. Because I noticed that the only thing
 // that made it fail were the addresses I thought it had something to do with
 // endianess. I wondered why the above resulted in the same memory layout, but
-// taking a step back it became obvious. I laid out the little endian uint32_t
+// taking a step back it became obvious. I laid out the little endian u32
 // value ip_2 such that as a little endian value it would be laid out like the
 // address in big endian. Not sure why I was confused :)
 
-uint8_t dhcp_identifier[4];
-uint8_t dhcp_subnet_mask[4];
-uint8_t dhcp_router[4];
-uint8_t dhcp_router_mac[6];
-uint8_t dhcp_dns[4];
-uint32_t dhcp_offer_xid;
+u8 dhcp_identifier[4];
+u8 dhcp_subnet_mask[4];
+u8 dhcp_router[4];
+u8 dhcp_router_mac[6];
+u8 dhcp_dns[4];
+u32 dhcp_offer_xid;
 
-uint16_t ntohs(uint16_t netshort) {
+u16 ntohs(u16 netshort) {
   return (netshort >> 8) | (netshort << 8);
 }
 
 struct ethernet_frame {
-  uint8_t destination_mac[6];
-  uint8_t source_mac[6];
-  uint16_t ethertype;  // network byte order
-  // payload
-  // crc
+  u8 destination_mac[6];
+  u8 source_mac[6];
+  u16 ethertype;  // network byte order
+  // 14
+  //  payload
+  //  crc
 } __attribute__((packed));
-typedef struct ethernet_frame ethernet_frame_t;
+typedef struct ethernet_frame ethernet_frame;
 
 struct ipv4_header {
-  uint8_t ihl : 4;
-  uint8_t version : 4;
-  uint8_t ecn : 2;   // congestion notification
-  uint8_t dscp : 6;  // type of service. so routers can see what to prioritize
+  u8 ihl : 4;
+  u8 version : 4;
+  u8 ecn : 2;   // congestion notification
+  u8 dscp : 6;  // type of service. so routers can see what to prioritize
+  // 15
   // minimum is 20 with is just the ipv4 header.
-  uint16_t length;                // network byte order
-  uint16_t identification;        // network byte order
-  uint16_t fragment_offset : 13;  // network byte order
-  uint16_t flags : 3;             // network byte order
-  uint8_t ttl;
-  uint8_t protocol;  // ref:
-  // https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
-  uint16_t checksum;             // network byte order?
-  uint32_t source_address;       // network byte order
-  uint32_t destination_address;  // network byte order
+  u16 length;                // network byte order
+  u16 identification;        // network byte order
+  u16 fragment_offset : 13;  // network byte order
+  u16 flags : 3;             // network byte order
+  // 21
+  u8 ttl;
+  // 22
+  // ref: https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
+  u8 protocol;
+  // 23
+  u16 checksum;  // network byte order?
+  // 25
+  u32 source_address;  // network byte order
+  // 29
+  u32 destination_address;  // network byte order
+  // 33
 } __attribute__((packed));
-typedef struct ipv4_header ipv4_header_t;
+typedef struct ipv4_header ipv4_header;
 
 struct udp_header {
-  uint16_t source_port;       // network byte order
-  uint16_t destination_port;  // network byte order
-  uint16_t length;            // network byte order
-  uint16_t checksum;          // network byte order
+  u16 source_port;  // network byte order
+  // 35
+  u16 destination_port;  // network byte order
+  // 37
+  u16 length;    // network byte order
+  u16 checksum;  // network byte order
 } __attribute__((packed));
-typedef struct udp_header udp_header_t;
+typedef struct udp_header udp_header;
 
 // ref: http://www.faqs.org/rfcs/rfc768.html
 struct udp_pseudo_ip_header {
-  uint32_t source_address;       // network byte order
-  uint32_t destination_address;  // network byte order
-  uint8_t zero;
-  uint8_t protocol;
-  uint16_t udp_length;  // network byte order
+  u32 source_address;       // network byte order
+  u32 destination_address;  // network byte order
+  u8 zero;
+  u8 protocol;
+  u16 udp_length;  // network byte order
 } __attribute__((packed));
-typedef struct udp_pseudo_ip_header udp_pseudo_ip_header_t;
+typedef struct udp_pseudo_ip_header udp_pseudo_ip_header;
 
 struct dhcp_message {
-  uint8_t op;
-  uint8_t htype;
-  uint8_t hlen;
-  uint8_t hops;
-  uint32_t xid;        // network byte order
-  uint16_t secs;       // network byte order
-  uint16_t flags;      // network byte order
-  uint32_t ciaddr;     // network byte order
-  uint8_t yiaddr[4];   // network byte order
-  uint32_t siaddr;     // network byte order
-  uint32_t giaddr;     // network byte order
-  uint32_t chaddr[4];  // network byte order
-  uint8_t reserved[192];
-  uint8_t magic[4];
+  u8 op;
+  u8 htype;
+  u8 hlen;
+  u8 hops;
+  u32 xid;        // network byte order
+  u16 secs;       // network byte order
+  u16 flags;      // network byte order
+  u32 ciaddr;     // network byte order
+  u8 yiaddr[4];   // network byte order
+  u32 siaddr;     // network byte order
+  u32 giaddr;     // network byte order
+  u32 chaddr[4];  // network byte order
+  u8 reserved[192];
+  u8 magic[4];
 } __attribute__((packed));
-typedef struct dhcp_message dhcp_message_t;
+typedef struct dhcp_message dhcp_message;
 
 struct dns_header {
-  uint16_t id;
-  uint8_t rd : 1;  // recursion desired
-  uint8_t tc : 1;
-  uint8_t aa : 1;
+  u16 id;
+  u8 rd : 1;  // recursion desired
+  u8 tc : 1;
+  u8 aa : 1;
   // standard query (0), inverse query (1), server status request (2)
-  uint8_t opcode : 4;
-  uint8_t qr : 1;  // query (0), response (1)
+  u8 opcode : 4;
+  u8 qr : 1;  // query (0), response (1)
 
   // response code: no error (0), format error (1), server failure (2), name
   // error (3), not implemented (4), refused (5)
-  uint8_t rcode : 4;
-  uint8_t z : 3;
-  uint8_t ra : 1;  // recusion available
+  u8 rcode : 4;
+  u8 z : 3;
+  u8 ra : 1;  // recusion available
 
-  uint16_t qdcount;
-  uint16_t ancount;
-  uint16_t nscount;
-  uint16_t arcount;
+  u16 qdcount;
+  u16 ancount;
+  u16 nscount;
+  u16 arcount;
 } __attribute__((packed));
-typedef struct dns_header dns_header_t;
+typedef struct dns_header dns_header;
 
 struct dns_question {
-  uint16_t qname;  // this is actually flex. so could be pretty long.
-  uint16_t qtype;
-  uint16_t qclass;
+  u16 qname;  // this is actually flex. so could be pretty long.
+  u16 qtype;
+  u16 qclass;
 } __attribute__((packed));
-typedef struct dns_question dns_question_t;
+typedef struct dns_question dns_question;
 
 struct dns_resource {
-  uint16_t name;
-  uint16_t type;
-  uint16_t class;
-  uint16_t ttl;
-  uint16_t rdlength;
-  uint16_t rdata;
+  u16 name;
+  u16 type;
+  u16 class;
+  u16 ttl;
+  u16 rdlength;
+  u16 rdata;
 } __attribute__((packed));
-typedef struct dns_resource dns_resource_t;
+typedef struct dns_resource dns_resource;
 
 struct arp_message {
-  uint16_t htype;  // 1 = ethernet, 0x0800 IPv4
-  uint16_t ptype;
-  uint8_t hlen;
-  uint8_t plen;  // Protocol length in octets. IPv4 = 4
-  uint16_t oper;
-  uint16_t sender_mac_1;
-  uint16_t sender_mac_2;
-  uint16_t sender_mac_3;
-  uint16_t sender_protocol_address_1;
-  uint16_t sender_protocol_address_2;
-  uint16_t target_mac_1;
-  uint16_t target_mac_2;
-  uint16_t target_mac_3;
-  uint16_t target_protocol_address_1;
-  uint16_t target_protocol_address_2;
+  u16 htype;  // 1 = ethernet, 0x0800 IPv4
+  u16 ptype;
+  u8 hlen;
+  u8 plen;  // Protocol length in octets. IPv4 = 4
+  u16 oper;
+  u16 sender_mac_1;
+  u16 sender_mac_2;
+  u16 sender_mac_3;
+  u16 sender_protocol_address_1;
+  u16 sender_protocol_address_2;
+  u16 target_mac_1;
+  u16 target_mac_2;
+  u16 target_mac_3;
+  u16 target_protocol_address_1;
+  u16 target_protocol_address_2;
 } __attribute__((packed));
-typedef struct arp_message arp_message_t;
+typedef struct arp_message arp_message;
 
 struct icmp_header {
-  uint8_t type;  // 8 = echo, 0 = echo reply
-  uint8_t code;  // 0 = echo(?)
-  uint16_t checksum;
+  u8 type;  // 8 = echo, 0 = echo reply
+  u8 code;  // 0 = echo(?)
+  u16 checksum;
 };
-typedef struct icmp_header icmp_header_t;
+typedef struct icmp_header icmp_header;
 
 struct icmp_echo_message {
-  uint16_t identifier;
-  uint16_t sequence_number;
+  u16 identifier;
+  u16 sequence_number;
 };
-typedef struct icmp_echo_message icmp_echo_message_t;
+typedef struct icmp_echo_message icmp_echo_message;
 
-uint16_t htons(uint16_t hostshort) {
+u16 htons(u16 hostshort) {
   return (hostshort >> 8) | (hostshort << 8);
 }
 
-uint32_t htonl(uint32_t hostlong) {
+u32 htonl(u32 hostlong) {
   return ((hostlong & 0x000000ff) << 24) | ((hostlong & 0x0000ff00) << 8) |
 	 ((hostlong & 0x00ff0000) >> 8) | ((hostlong & 0xff000000) >> 24);
 }
 
-uint32_t htonl_bytes(uint8_t bytes[4]) {
+u32 htonl_bytes(u8 bytes[4]) {
   return (bytes[3] << 24) | (bytes[2] << 16) | (bytes[1] << 8) | bytes[0];
 }
 
@@ -833,7 +828,8 @@ bool strncmp(char* s1, char* s2, int n) {
 
 bool memcmp(void* s1, void* s2, size_t n) {
   for (size_t i = 0; i < n; i++) {
-    if (((uint8_t*)s1)[i] != ((uint8_t*)s2)[i]) {
+    if (((u8*)s1)[i] != ((u8*)s2)[i]) {
+      printf("i: %d s1: %d s2: %d\n", i, ((u8*)s1)[i], ((u8*)s2)[i]);
       return false;
     }
   }
@@ -841,11 +837,11 @@ bool memcmp(void* s1, void* s2, size_t n) {
 }
 
 // source: https://datatracker.ietf.org/doc/html/rfc1071#section-4.1
-uint16_t ipv4_checksum(uint16_t* addr, uint8_t count) {
+u16 ipv4_checksum(u16* addr, u8 count) {
   /* Compute Internet Checksum for "count" bytes
    *         beginning at location "addr".
    */
-  uint32_t sum = 0;
+  u32 sum = 0;
 
   while (count > 1) {
     /*  This is the inner loop */
@@ -855,7 +851,7 @@ uint16_t ipv4_checksum(uint16_t* addr, uint8_t count) {
 
   /*  Add left-over byte, if any */
   if (count > 0) {
-    sum += *(uint8_t*)addr;
+    sum += *(u8*)addr;
   }
 
   /*  Fold 32-bit sum to 16 bits */
@@ -874,18 +870,18 @@ uint16_t ipv4_checksum(uint16_t* addr, uint8_t count) {
 // The main timer tick interval is 10000000 (1e+7) femto seconds, read from
 // config. This equals 10 nanoseconds. 1000000 (1e+6) nanoseconds are 1
 // millisecond.
-const uint64_t _1ms = 100000;  // we need this many timer periods to have 1 ms
-const uint64_t _1s = _1ms * 1000;
+const u64 _1ms = 100000;  // we need this many timer periods to have 1 ms
+const u64 _1s = _1ms * 1000;
 
 void set_timer0() {
   // main counter 0xf0
-  uint64_t* counter_value = (uint64_t*)(HPET_BASE + HPET_MAIN_COUNTER);
+  u64* counter_value = (u64*)(HPET_BASE + HPET_MAIN_COUNTER);
   // TODO: crash because of large number
   // printf("hpet: counter: %d", *counter_value);
 
   // comparator timer 0 0x108
   // printf("hpet: setting timer to %x %d\n", _1s, _1s);
-  uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
+  u64* comparator_0 = (u64*)(HPET_BASE + 0x108);
   // TODO: how is wrapping handled? By GPE :D
   *comparator_0 = *counter_value + _1ms * 10;
 
@@ -894,36 +890,35 @@ void set_timer0() {
   // printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
 }
 
-uint64_t get_global_timer_value() {
-  return *(uint64_t*)(HPET_BASE + HPET_MAIN_COUNTER);
+u64 get_global_timer_value() {
+  return *(u64*)(HPET_BASE + HPET_MAIN_COUNTER);
 }
 
 void setup_hpet() {
   // Timer 0: 100h – 107h, Timer 1: 120h – 127h, Timer 2: 140h – 147h
-  uint32_t* available_interrupts = (uint32_t*)(HPET_BASE + 0x104);
+  u32* available_interrupts = (u32*)(HPET_BASE + 0x104);
   printf("hpet: interrupts timer 0: %x\n", *available_interrupts);
 
-  uint32_t* timer_0 =
-      (uint32_t*)(HPET_BASE + 0x100);  // set bit 2 and maybe 9-13
+  u32* timer_0 = (u32*)(HPET_BASE + 0x100);  // set bit 2 and maybe 9-13
   printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
   *timer_0 = (*timer_0) | (1 << 2) | (4 << 9);
   printf("hpet: configured interrupt: %x\n", ((*timer_0) >> 9) & 31);
 
-  uint32_t* timer_period = (uint32_t*)(HPET_BASE + 0x4);
+  u32* timer_period = (u32*)(HPET_BASE + 0x4);
   printf("hpet: femto: %d\n", *timer_period);
 
   // main counter 0xf0
-  uint64_t* counter_value = (uint64_t*)(HPET_BASE + HPET_MAIN_COUNTER);
+  u64* counter_value = (u64*)(HPET_BASE + HPET_MAIN_COUNTER);
   printf("hpet: counter: %d", *counter_value);
 
   // comparator timer 0 0x108
   printf("hpet: setting timer to %x %d\n", _1s, _1s);
-  uint64_t* comparator_0 = (uint64_t*)(HPET_BASE + 0x108);
+  u64* comparator_0 = (u64*)(HPET_BASE + 0x108);
   *comparator_0 = _1s;
   printf("hpet: set timer to %x %d\n", *comparator_0, *comparator_0);
 
   // bit 0 is enable flag
-  uint32_t* c = (uint32_t*)(HPET_BASE + HPET_CONFIG_REG);
+  u32* c = (u32*)(HPET_BASE + HPET_CONFIG_REG);
   printf("hpet: config %x\n", *c);
   *c = (*c) | 0x1;
   printf("hpet: config %x\n", *c);
@@ -932,14 +927,14 @@ void setup_hpet() {
 
 // TODO: can this be async?
 // We probably get an interrupt that tells us TX was done.
-void net_transmit(void* data, uint32_t length) {
+void net_transmit(void* data, u32 length) {
   // set address to descriptor
   // set size
   // set 0 to own
   // printf("network: tx: using descriptor %d\n",
   // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, (uint32_t)data);
-  // uint32_t a = inl(base + 0x20);
+  outl(base + 0x20 + network_current_tx_descriptor * 4, (u32)data);
+  // u32 a = inl(base + 0x20);
   // printf("TX addr: %x\n", a);
   // bit 0-12 = size, bit 13 = own
   outl(base + 0x10 + network_current_tx_descriptor * 4, length);
@@ -986,8 +981,8 @@ void net_transmit(void* data, uint32_t length) {
 #define DHCP_OPTION_SERVER_LENGTH 4
 
 struct net_device {
-  uint8_t mac[6];
-  uint8_t ip[4];
+  u8 mac[6];
+  u8 ip[4];
 };
 
 // needs source and dest port
@@ -998,21 +993,21 @@ struct net_device {
 // I like connection better but udp has no connections.
 struct net_request {
   // ipv6 would be longer.
-  uint8_t source_mac[6];
-  uint8_t source_address[4];
-  uint32_t source_port;
-  uint8_t destination_mac[6];
-  uint8_t destination_address[4];
-  uint32_t destination_port;
-  uint32_t ether_type;
-  uint8_t protocol;
+  u8 source_mac[6];
+  u8 source_address[4];
+  u32 source_port;
+  u8 destination_mac[6];
+  u8 destination_address[4];
+  u32 destination_port;
+  u32 ether_type;
+  u8 protocol;
 };
 typedef struct net_request net_request;
 
 struct buffer {
-  uint8_t packet[1518];
-  uint32_t bytes_written_body;
-  uint32_t bytes_written_header;
+  u8 packet[1518];
+  u32 bytes_written_body;
+  u32 bytes_written_header;
 };
 typedef struct buffer buffer;
 
@@ -1023,7 +1018,7 @@ typedef struct buffer buffer;
 // UDP header is 8 bytes.
 // TCP header is min 20 bytes and max 60 bytes.
 // We can reserve 138 bytes.
-const uint32 buffer_header_offset = 138;
+const u32 buffer_header_offset = 138;
 
 // need to write content
 // then need to write all headers backwards
@@ -1038,7 +1033,7 @@ void buffer_write_body(buffer* buffer, void* bytes, size_t len) {
   buffer->bytes_written_body += len;
 }
 
-void buffer_write_byte_body(buffer* buffer, uint8 byte) {
+void buffer_write_byte_body(buffer* buffer, u8 byte) {
   buffer_write_body(buffer, &byte, sizeof(byte));
 }
 
@@ -1057,12 +1052,12 @@ void* buffer_body(buffer* buffer) {
   return buffer->packet + buffer_header_offset;
 }
 
-uint32_t buffer_length(buffer* buffer) {
+u32 buffer_length(buffer* buffer) {
   return buffer->bytes_written_body + buffer->bytes_written_header;
 }
 
 void net_write_ethernet_frame(net_request* req, buffer* buffer) {
-  ethernet_frame_t frame = {0};
+  ethernet_frame frame = {0};
   memcpy(req->source_mac, frame.source_mac, 6);
   memcpy(req->destination_mac, frame.destination_mac, 6);
   if (req->ether_type != 0) {
@@ -1075,7 +1070,7 @@ void net_write_ethernet_frame(net_request* req, buffer* buffer) {
 
 void net_write_broadcast_ethernet_frame(
     /*sender address _t*/ buffer* buffer) {
-  ethernet_frame_t frame = {0};
+  ethernet_frame frame = {0};
   memcpy(mac, frame.source_mac, 6);
   memcpy(broadcast_mac, frame.destination_mac, 6);
   frame.ethertype = htons(NET_ETHERTYPE_IPV4);
@@ -1083,7 +1078,7 @@ void net_write_broadcast_ethernet_frame(
 }
 
 void net_write_ipv4_header(net_request* req, buffer* buffer) {
-  ipv4_header_t header = {0};
+  ipv4_header header = {0};
   header.version = 4;
   header.ihl = 5;  // no options
   header.ttl = 100;
@@ -1101,7 +1096,7 @@ void net_write_ipv4_header(net_request* req, buffer* buffer) {
   header.length = htons(header.ihl * 4 + buffer->bytes_written_header +
 			buffer->bytes_written_body);
 
-  header.checksum = ipv4_checksum((uint16_t*)&header, header.ihl * 4);
+  header.checksum = ipv4_checksum((u16*)&header, header.ihl * 4);
   buffer_write_header(buffer, &header, sizeof(header));
 }
 
@@ -1112,11 +1107,8 @@ void net_write_ipv4_header(net_request* req, buffer* buffer) {
 // ref: https://datatracker.ietf.org/doc/html/rfc768
 // ref: http://www.faqs.org/rfcs/rfc768.html
 
-uint16_t udp_checksum(net_request* req,
-		      udp_header_t* udph,
-		      uint16_t* addr,
-		      size_t length) {
-  udp_pseudo_ip_header_t ps = {0};
+u16 udp_checksum(net_request* req, udp_header* udph, u16* addr, size_t length) {
+  udp_pseudo_ip_header ps = {0};
   ps.source_address = htonl_bytes(req->source_address);
   ps.destination_address = htonl_bytes(req->destination_address);
   ps.protocol = NET_PROTOCOL_UDP;
@@ -1125,20 +1117,20 @@ uint16_t udp_checksum(net_request* req,
   /* Compute Internet Checksum for "count" bytes
    *         beginning at location "addr".
    */
-  uint32_t sum = 0;
+  u32 sum = 0;
 
-  uint16_t* first = (uint16_t*)(&ps);
-  for (uint32 i = 0; i < sizeof(ps) / 2; i++) {
+  u16* first = (u16*)(&ps);
+  for (u32 i = 0; i < sizeof(ps) / 2; i++) {
     sum += *first++;
   }
 
-  first = (uint16_t*)(udph);
+  first = (u16*)(udph);
 
-  for (uint32 i = 0; i < sizeof(*udph) / 2; i++) {
+  for (u32 i = 0; i < sizeof(*udph) / 2; i++) {
     sum += *first++;
   }
 
-  uint16_t count = ntohs(length);
+  u16 count = ntohs(length);
 
   while (count > 1) {
     /*  This is the inner loop */
@@ -1148,7 +1140,7 @@ uint16_t udp_checksum(net_request* req,
 
   /*  Add left-over byte, if any */
   if (count > 0) {
-    sum += *(uint8_t*)addr;
+    sum += *(u8*)addr;
   }
 
   /*  Fold 32-bit sum to 16 bits */
@@ -1160,24 +1152,24 @@ uint16_t udp_checksum(net_request* req,
 }
 
 void net_write_udp_header(struct net_request* req, buffer* buffer) {
-  udp_header_t header = {0};
+  udp_header header = {0};
   header.source_port = htons(req->source_port);            // htons(68);
   header.destination_port = htons(req->destination_port);  // htons(67);
   header.length = htons(sizeof(header) + buffer->bytes_written_body);
 
   // Tricky. We need the header.
   // Accessor for content would be good.
-  header.checksum = udp_checksum(
-      req, &header, (uint16_t*)(buffer->packet + buffer_header_offset),
-      header.length);
+  header.checksum =
+      udp_checksum(req, &header, (u16*)(buffer->packet + buffer_header_offset),
+		   header.length);
 
   buffer_write_header(buffer, &header, sizeof(header));
 }
 
 // TODO: take a net_device as first parameter for access to mac and ip
 // Should this move the FP or return how many bytes written?
-void net_write_dhcp_discover_message(uint32_t xid, buffer* buffer) {
-  dhcp_message_t msg = {0};
+void net_write_dhcp_discover_message(u32 xid, buffer* buffer) {
+  dhcp_message msg = {0};
 
   msg.op = DHCP_OP_DISCOVER;
   msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
@@ -1207,7 +1199,7 @@ void net_write_dhcp_discover_message(uint32_t xid, buffer* buffer) {
 }
 
 void send_dhcp_discover() {
-  uint32_t xid = (uint32_t)get_global_timer_value();
+  u32 xid = (u32)get_global_timer_value();
 
   net_request req = {
       .source_address = {0},
@@ -1226,8 +1218,8 @@ void send_dhcp_discover() {
   net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
 
-void net_write_dhcp_request_message(uint32_t xid, void* buffer) {
-  dhcp_message_t msg = {0};
+void net_write_dhcp_request_message(u32 xid, void* buffer) {
+  dhcp_message msg = {0};
   msg.op = DHCP_OP_REQUEST;
   msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
   msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
@@ -1268,7 +1260,7 @@ void net_write_dhcp_request_message(uint32_t xid, void* buffer) {
 
 void send_dhcp_request() {
   // we have the DHCPOFFER reply parameters in the global variables
-  uint32_t xid = dhcp_offer_xid;
+  u32 xid = dhcp_offer_xid;
   net_request req = {
       //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
       .source_address = {0},
@@ -1293,7 +1285,7 @@ void send_dhcp_request() {
 
 // Inject hostname
 size_t net_write_dns_query_b(buffer* buffer) {
-  dns_header_t header = {0};
+  dns_header header = {0};
 
   // transaction id
   header.id = htons(5);
@@ -1352,7 +1344,7 @@ void send_dns_request() {
 }
 
 void net_write_arp_response(net_request* req, buffer* buffer) {
-  arp_message_t msg = {0};
+  arp_message msg = {0};
   msg.htype = htons(1);  // ethernet
   msg.hlen = 6;
   msg.ptype = htons(NET_ETHERTYPE_IPV4);
@@ -1365,7 +1357,7 @@ void net_write_arp_response(net_request* req, buffer* buffer) {
   buffer_write_body(buffer, &msg, sizeof(msg));
 }
 
-void send_arp_response(uint8_t* sender_mac, uint8_t* sender_ip) {
+void send_arp_response(u8* sender_mac, u8* sender_ip) {
   net_request req = {
       .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
       .source_address = {ip[0], ip[1], ip[2], ip[3]},
@@ -1389,25 +1381,25 @@ void send_arp_response(uint8_t* sender_mac, uint8_t* sender_ip) {
 
 // TODO: split into header and message
 void net_write_icmp_echo(buffer* buffer) {
-  uint16_t packet[4] = {0};
-  icmp_header_t* h = (icmp_header_t*)packet;
+  u16 packet[4] = {0};
+  icmp_header* h = (icmp_header*)packet;
   h->type = 8;
   h->code = 0;
 
-  icmp_echo_message_t* m = (icmp_echo_message_t*)(h + 1);
+  icmp_echo_message* m = (icmp_echo_message*)(h + 1);
   m->identifier = 0x1;
   m->sequence_number = 0;
 
-  h->checksum = ipv4_checksum(
-      packet, sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+  h->checksum =
+      ipv4_checksum(packet, sizeof(icmp_header) + sizeof(icmp_echo_message));
   buffer_write_body(buffer, packet,
-		    sizeof(icmp_header_t) + sizeof(icmp_echo_message_t));
+		    sizeof(icmp_header) + sizeof(icmp_echo_message));
 }
 
 void send_echo() {
   // TODO: resolve via dns query first.
   // so we need to block until it's resolved. Interesting.
-  uint8_t google_ip[4] = {142, 250, 207, 46};
+  u8 google_ip[4] = {142, 250, 207, 46};
   net_request req = {
       .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
       .source_address = {ip[0], ip[1], ip[2], ip[3]},
@@ -1439,7 +1431,7 @@ void send_echo() {
 // ARP can be used to test if an IP address is free to use by sending a probing
 // packet.
 // ref: https://datatracker.ietf.org/doc/html/rfc826
-void net_handle_arp(arp_message_t* msg) {
+void net_handle_arp(arp_message* msg) {
   printf("arp: htype: %x, ptype: %x, hlen: %x, plen: %x, oper: %x\n",
 	 ntohs(msg->htype), ntohs(msg->ptype), msg->hlen, msg->plen,
 	 ntohs(msg->oper));
@@ -1447,20 +1439,20 @@ void net_handle_arp(arp_message_t* msg) {
   // TODO: memcmp so I don't have to copy?
   if (ntohs(msg->oper) == NET_ARP_OP_REQUEST) {
     // check if our IP matches
-    uint8_t* target_ip = (uint8_t*)&msg->target_protocol_address_1;
+    u8* target_ip = (u8*)&msg->target_protocol_address_1;
     printf("arp: target IP: %d.%d.%d.%d\n", target_ip[0], target_ip[1],
 	   target_ip[2], target_ip[3]);
 
     if (memcmp(target_ip, ip, 4)) {
       // Can this be typed somehow?
-      uint8_t* sender_mac = (uint8_t*)&msg->sender_mac_1;
-      uint8_t* sender_ip = (uint8_t*)&msg->sender_protocol_address_1;
+      u8* sender_mac = (u8*)&msg->sender_mac_1;
+      u8* sender_ip = (u8*)&msg->sender_protocol_address_1;
       send_arp_response(sender_mac, sender_ip);
     }
   }
 }
 
-void net_handle_dns(dns_header_t* h) {
+void net_handle_dns(dns_header* h) {
   printf("dns: id: %x, opcode: %x, qr: %x acount: %x\n", ntohs(h->id),
 	 h->opcode, h->qr, ntohs(h->ancount));
 
@@ -1473,7 +1465,7 @@ void net_handle_dns(dns_header_t* h) {
   send_echo();
 }
 
-void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
+void net_handle_dhcp(ethernet_frame* ef, dhcp_message* m) {
   printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op, m->htype,
 	 m->hlen, m->hops, m->xid);
 
@@ -1481,11 +1473,11 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
     return;
   }
 
-  uint8_t* o = (uint8_t*)(m + 1);  // end of dhcp message for options
+  u8* o = (u8*)(m + 1);  // end of dhcp message for options
 
   // TODO: double check that we don't go over length of message.
 
-  uint8 dhcp_type = 0;
+  u8 dhcp_type = 0;
 
   bool done = false;
   while (!done) {
@@ -1562,33 +1554,33 @@ void net_handle_dhcp(ethernet_frame_t* ef, dhcp_message_t* m) {
   }
 }
 
-void net_handle_udp(ethernet_frame_t* frame, udp_header_t* header) {
+void net_handle_udp(ethernet_frame* frame, udp_header* header) {
   printf("udp: src port: %d dst port: %d\n", ntohs(header->source_port),
 	 ntohs(header->destination_port));
 
   if (ntohs(header->destination_port) == NET_PORT_DNS) {  // DNS
-    net_handle_dns((dns_header_t*)(header + 1));
+    net_handle_dns((dns_header*)(header + 1));
   } else if (ntohs(header->source_port) == 67 &&
 	     ntohs(header->destination_port) == 68) {  // DHCP
-    net_handle_dhcp(frame, (dhcp_message_t*)(header + 1));
+    net_handle_dhcp(frame, (dhcp_message*)(header + 1));
   }
 }
 
-void net_handle_ipv4(ethernet_frame_t* frame, ipv4_header_t* header) {
+void net_handle_ipv4(ethernet_frame* frame, ipv4_header* header) {
   printf("ipv4: version: %x ihl: %x\n", header->version, header->ihl);
 
   // printf("ipv4: protocol: %x\n", iph->protocol);
 
   if (header->protocol == NET_PROTOCOL_ICMP) {
   } else if (header->protocol == NET_PROTOCOL_UDP) {
-    net_handle_udp(frame, (udp_header_t*)(header + 1));
+    net_handle_udp(frame, (udp_header*)(header + 1));
   }
 }
 
 struct mouse_data {
-  uint8_t data;
-  uint8_t x;
-  uint8_t y;
+  u8 data;
+  u8 x;
+  u8 y;
 };
 typedef struct mouse_data mouse_data_t;
 
@@ -1596,80 +1588,80 @@ typedef struct mouse_data mouse_data_t;
 // dynamic.
 enum message_type { message_type_ps2_byte, mouse_byte, network_data };
 typedef enum message_type message_type_t;
-const uint8_t message_type_count = 2;
+const u8 message_type_count = 2;
 
-typedef struct message message_t;
+typedef struct message message;
 struct message {
   message_type_t type;
   void* data;
-  message_t* next;
+  message* next;
 };
 
 enum task_state { running, blocked, finished };
-typedef enum task_state task_state_t;
+typedef enum task_state task_state;
 
-typedef struct task task_t;
+typedef struct task task;
 struct task {
-  uint8_t id;  // TODO: remove
-  uint64_t rsp;
-  uint64_t eip;
-  uint64_t rax;
-  uint64_t rbx;
-  uint64_t rcx;
-  uint64_t rdx;
-  uint64_t rsi;
-  uint64_t rdi;
-  uint64_t rbp;
-  uint64_t r8;
-  uint64_t r9;
-  uint64_t r10;
-  uint64_t r11;
-  uint64_t r12;
-  uint64_t r13;
-  uint64_t r14;
-  uint64_t r15;
-  uint64_t rflags;
+  u8 id;  // TODO: remove
+  u64 rsp;
+  u64 eip;
+  u64 rax;
+  u64 rbx;
+  u64 rcx;
+  u64 rdx;
+  u64 rsi;
+  u64 rdi;
+  u64 rbp;
+  u64 r8;
+  u64 r9;
+  u64 r10;
+  u64 r11;
+  u64 r12;
+  u64 r13;
+  u64 r14;
+  u64 r15;
+  u64 rflags;
   // Don't change the order above. It will impact assembly code in switch_task.s
-  task_t* next;
-  task_state_t state;
-  uint64_t sleep_until;
-  message_t* queue;
+  task* next;
+  task_state state;
+  u64 sleep_until;
+  message* queue;
 };
 
-task_t* task_first = NULL;
-task_t* task_current = NULL;
+task* task_first = NULL;
+task* task_current = NULL;
 
 void trampoline();
 
-extern void switch_task(task_t* current, task_t* next);
-extern void task_replace(task_t* task);
+extern void switch_task(task* current, task* next);
+extern void task_replace(task* task);
 
 // Defined in linker script.
 // Need to take the address, because the address is the value in this case.
 // ref: https://sourceware.org/binutils/docs/ld/Source-Code-Reference.html
-extern uint64_t _kernel_start;
-extern uint64_t _kernel_end;
+extern u64 _kernel_start;
+extern u64 _kernel_end;
 
-const uint32_t page_size = 0x200000;  // 2mb
+const u32 page_size = 0x200000;  // 2mb
 
-typedef struct memory memory_t;
+typedef struct memory memory;
 struct memory {
-  uint64_t address;
-  uint64_t size;  // 4kb, 2mb, etc.
-  memory_t* next;
-  memory_t* prev;
+  u64 address;
+  u64 size;  // 4kb, 2mb, etc.
+  memory* next;
+  memory* prev;
 };
 
 // Current thought, keep two lists. Free and used memory.
 // When we malloc we take from the free list and put it into the used list.
 // When we free we search the address in the used list and move it back.
 // What other way is there to implement free?
-memory_t* memory_free_first = NULL;
-memory_t* memory_used_first = NULL;
+memory* memory_free_first = NULL;
+memory* memory_used_first = NULL;
 
-// memory_init creates the first memory_ts in physical memory, because we cannot
+// memory_init creates the first memorys in physical memory, because we cannot
 // call malloc.
-void memory_init(uint64_t base_address, uint64_t length) {
+void memory_init(u64 base_address, u64 length) {
   // We don't want to touch the memory block from 0 - 1mb.
   // All BIOS things live there.
   if (base_address == 0) {
@@ -1681,10 +1673,10 @@ void memory_init(uint64_t base_address, uint64_t length) {
   }
 
   // Kernel size was off because it was doing address arithmetic. Casting to
-  // uint64_t fixed it. This caused the memory_ts to be allocated on kernel
+  // u64 fixed it. This caused the memorys to be allocated on kernel
   // memory which caused memory corruption.
-  uint64_t base_address_after_kernel =
-      base_address + ((uint64_t)&_kernel_end - (uint64_t)&_kernel_start);
+  u64 base_address_after_kernel =
+      base_address + ((u64)&_kernel_end - (u64)&_kernel_start);
 
   printf("memory_init: available memory with base %x and length %x\n",
 	 base_address, length);
@@ -1694,26 +1686,26 @@ void memory_init(uint64_t base_address, uint64_t length) {
 
   // TODO: I think this overcounts. I.e. the last page is too big for the
   // available physical memory.
-  // Maybe for now we don't track the memory_ts themselves.
+  // Maybe for now we don't track the memorys themselves.
   // How many do we need?
-  uint64_t page_count = length / page_size;
-  uint64_t memory_size = page_count * sizeof(memory_t);
+  u64 page_count = length / page_size;
+  u64 memory_size = page_count * sizeof(memory);
 
-  // After our memory_ts
+  // After our memorys
   // Aligned on page_size.
-  uint64_t usable_memory =
+  u64 usable_memory =
       ((base_address_after_kernel + memory_size + (page_size - 1)) &
        ~(page_size - 1));
 
   printf("memory_init: %d 2mb pages available\n", page_count);
   printf("memory_init: usable memory starts from %x\n", usable_memory);
 
-  memory_t* current = (memory_t*)base_address_after_kernel;
-  memory_t* prev = NULL;
+  memory* current = (memory*)base_address_after_kernel;
+  memory* prev = NULL;
 
   memory_free_first = current;
 
-  for (uint64_t i = 0; i < page_count; i++) {
+  for (u64 i = 0; i < page_count; i++) {
     current->address = usable_memory;
     current->next = NULL;
     current->prev = prev;
@@ -1730,29 +1722,29 @@ void memory_init(uint64_t base_address, uint64_t length) {
     prev = current;
     current++;
   }
-  for (memory_t* m = memory_free_first; m != NULL; m = m->next) {
+  for (memory* m = memory_free_first; m != NULL; m = m->next) {
     printf("memory_init: %x %x %x\n", m->address, m->next, m->prev);
   }
 }
 
-void memory_add(uint64_t address) {
+void memory_add(u64 address) {
   if (memory_free_first == NULL) {
     memory_used_first = NULL;
-    // Ouch! We want a new memory_t. Now do we malloc one? Haha.. Maybe the
+    // Ouch! We want a new memory. Now do we malloc one? Haha.. Maybe the
     // kernel needs to reserve some memory beforehand for some kind of
     // bootstrap?
     // So when we read available memory, we remove the kernel area.
     // Then we know the real start of the memory.
-    // Then we can just do memory_t * m = start of memory;
+    // Then we can just do memory * m = start of memory;
     // And so on.
   }
 }
 
-memory_t* memory_remove() {
+memory* memory_remove() {
   if (memory_free_first == NULL) {
     return NULL;
   }
-  memory_t* memory = memory_free_first;
+  memory* memory = memory_free_first;
   memory_free_first = memory->next;
   memory_free_first->prev = memory->prev;
   return memory;
@@ -1812,36 +1804,35 @@ memory_t* memory_remove() {
 // I'll reuse the headers of the allocated memory that are used for freeing as
 // free list structures.
 
-typedef struct memory_header memory_header_t;
+typedef struct memory_header memory_header;
 struct memory_header {
-  uint64_t size;
-  memory_header_t* next;
+  u64 size;
+  memory_header* next;
 };
 
-memory_header_t* malloc_free_list = nullptr;
+memory_header* malloc_free_list = nullptr;
 
-void* malloc(uint64_t size) {
+void* malloc(u64 size) {
   if (malloc_free_list == nullptr) {
     // Reserve a 2mb page.
-    memory_t* m = memory_remove();
+    memory* m = memory_remove();
     // TODO: all these printfs should be converted to a debug logger.
     // printf("malloc: received %d bytes from kernel\n", m->size);
-    memory_header_t* h = (memory_header_t*)(m->address);
+    memory_header* h = (memory_header*)(m->address);
     h->size = m->size;
     h->next = NULL;
     malloc_free_list = h;
   }
 
-  uint64_t actual_size =
-      size + sizeof(memory_header_t) + sizeof(memory_header_t);
-  // memory_header_t is 16 bytes. Times 2 is 32 bytes. If we allocate 1 byte we
+  u64 actual_size = size + sizeof(memory_header) + sizeof(memory_header);
+  // memory_header is 16 bytes. Times 2 is 32 bytes. If we allocate 1 byte we
   // have 32 bytes overhead.
   // printf("malloc: allocating %d bytes for the requested %d bytes\n",
   //	 actual_size, size);
 
   // First fit
-  memory_header_t* m = malloc_free_list;
-  memory_header_t* prev = nullptr;
+  memory_header* m = malloc_free_list;
+  memory_header* prev = nullptr;
   while (m != nullptr) {
     // Not big enough
     if (m->size < actual_size) {
@@ -1854,11 +1845,11 @@ void* malloc(uint64_t size) {
     // chop it up. Maybe we can merge the cases by passing the perfect size to
     // the chop function which results in a no-op.
     if (m->size == actual_size) {
-      uint64_t address = (uint64_t)m;
+      u64 address = (u64)m;
       // printf("malloc2 perfect: %x\n", (void*)(address));
 
       // TODO: we don't need to do this anymore. It's the same type.
-      memory_header_t* h = (memory_header_t*)address;
+      memory_header* h = (memory_header*)address;
       h->size = actual_size;
 
       // TODO: I am not removing this from the free list so I expect it to be
@@ -1873,11 +1864,11 @@ void* malloc(uint64_t size) {
       }
 
       // printf("malloc: current free list\n");
-      // for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next)
+      // for (memory_header* m = malloc_free_list; m != nullptr; m = m->next)
       // {	printf("malloc: %x %d\n", m, m->size);
       // }
 
-      return (void*)(address + sizeof(memory_header_t));
+      return (void*)(address + sizeof(memory_header));
     } else {
       // We need to chop it up. Because the address is the address of the
       // struct, it needs to move.
@@ -1890,7 +1881,7 @@ void* malloc(uint64_t size) {
       // the new header. Allocate the space with header.
 
       // IMPORTANT: It was bigger than actual_size, but we don't know if it was
-      // big enough to fit another memory_header_t into it. We can check, if
+      // big enough to fit another memory_header into it. We can check, if
       // it's not big enough we could merge with the next slot if it's free, but
       // there is no guarantee for that. If it's not free we are out of luck.
       // Maybe best is to check if it's big enough. Worst case we write a header
@@ -1901,12 +1892,12 @@ void* malloc(uint64_t size) {
       // For now I went with the 0 size element by changing the continue
       // condition above.
 
-      uint64_t address = (uint64_t)m;
+      u64 address = (u64)m;
 
       // printf("malloc: found %d bytes slot to chop at %x\n", m->size,
       // address);
 
-      memory_header_t* moved_m = (memory_header_t*)(address + actual_size);
+      memory_header* moved_m = (memory_header*)(address + actual_size);
       moved_m->size = m->size - actual_size;
       moved_m->next = m->next;
 
@@ -1920,15 +1911,15 @@ void* malloc(uint64_t size) {
 
       // Allocate the space with a header and return the address after the
       // header.
-      memory_header_t* h = (memory_header_t*)address;
+      memory_header* h = (memory_header*)address;
       h->size = actual_size;
 
       // printf("malloc: current free list\n");
-      // for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next)
+      // for (memory_header* m = malloc_free_list; m != nullptr; m = m->next)
       // {	printf("malloc: %x %d\n", m, m->size);
       // }
 
-      return (void*)(address + sizeof(memory_header_t));
+      return (void*)(address + sizeof(memory_header));
     }
   }
 
@@ -1940,20 +1931,20 @@ void* malloc(uint64_t size) {
 void free(void* memory) {
   // All we know currently is the address. We stored a struct that contains the
   // size before the address.
-  memory_header_t* h = (memory_header_t*)memory - 1;
+  memory_header* h = (memory_header*)memory - 1;
   // printf("free: %d\n", h->size);
 
   // Put it back into the free list.
   // Sort it by address so that merging is easier.
   // Hunch: I only have to check prev and next to see if they are mergable.
 
-  uint64_t address = (uint64)h;
+  u64 address = (u64)h;
 
-  memory_header_t* current = malloc_free_list;
-  memory_header_t* prev = nullptr;
+  memory_header* current = malloc_free_list;
+  memory_header* prev = nullptr;
   while (current != nullptr) {
     // TODO: having the address in here is waste because we already know it.
-    if ((uint64_t)current < (uint64_t)address) {
+    if ((u64)current < (u64)address) {
       prev = current;
       current = current->next;
       continue;
@@ -1996,7 +1987,7 @@ void free(void* memory) {
   }
 
   // printf("free: current free list\n");
-  // for (memory_header_t* m = malloc_free_list; m != nullptr; m = m->next) {
+  // for (memory_header* m = malloc_free_list; m != nullptr; m = m->next) {
   //   printf("free: %x %d\n", m, m->size);
   // }
 }
@@ -2005,23 +1996,20 @@ void free(void* memory) {
 // Which means we create a new stack and switch to a new task that we define
 // here. What happens with the initial kernel stack? Can we clean it up somehow?
 // It won't be needed anymore because we jump out of kmain.
-task_t* task_scheduler = nullptr;
-task_t* task_idle = nullptr;
+task* task_scheduler = nullptr;
+task* task_idle = nullptr;
 
 // TODO: added task prefix for namespacing. Check C best practices.
-void task_setup_stack(uint64_t rsp) {
+void task_setup_stack(u64 rsp) {
   // TODO: we could null it, but maybe that's too much work, also, how big is it
   // even?
   // Make space for the pointer by subtracting it. The stack grows down.
-  uint64_t* s = (uint64_t*)(rsp - sizeof(uint64_t*));
-  s[0] = (uint64_t)&trampoline;
+  u64* s = (u64*)(rsp - sizeof(u64*));
+  s[0] = (u64)&trampoline;
 }
 
 // TODO: actually we want to allocate a new stack/task now..
-void task_new(uint64_t entry_point,
-	      uint64_t stack_bottom,
-	      uint32_t stack_size,
-	      task_t* task) {
+void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   printf("New task %x\n", entry_point);
   // memset to 0
   task->state = running;
@@ -2031,9 +2019,9 @@ void task_new(uint64_t entry_point,
 
   // Set rsp to end of stack memory because it grows down.
   // E.g. Stack is from 0x200000 to 0x400000. We set it to 0x400000.
-  uint64_t rsp = stack_bottom + stack_size;
+  u64 rsp = stack_bottom + stack_size;
   task_setup_stack(rsp);
-  rsp = rsp - sizeof(uint64_t*);
+  rsp = rsp - sizeof(u64*);
   // We push the trampoline pointer on the stack so we need to update rsp.
   task->rsp = rsp;
 
@@ -2043,7 +2031,7 @@ void task_new(uint64_t entry_point,
     task_first->next = task_first;
   } else {
     // Add to end of list
-    task_t* t = task_first;
+    struct task* t = task_first;
     for (; t->next != task_first; t = t->next) {
     }
     t->next = task;
@@ -2053,14 +2041,14 @@ void task_new(uint64_t entry_point,
 
 #define STACK_SIZE 8192
 
-task_t* task_new_malloc(uint64_t entry_point) {
-  task_t* task = (task_t*)malloc(sizeof(task_t));
-  uint64_t stack = (uint64_t)malloc(STACK_SIZE);
+task* task_new_malloc(u64 entry_point) {
+  task* task = (struct task*)malloc(sizeof(*task));
+  u64 stack = (u64)malloc(STACK_SIZE);
   task_new(entry_point, stack, STACK_SIZE, task);
   return task;
 }
 
-task_t* task_remove(task_t* task) {
+task* task_remove(task* task) {
   printf("Removing task %d\n", task->id);
 
   // Case 1: It's the first task
@@ -2070,7 +2058,7 @@ task_t* task_remove(task_t* task) {
   }
 
   // Case 2: It's in the middle or the last task. Behavior is the same.
-  task_t* t = task_first;
+  struct task* t = task_first;
   for (; t->next != task_first; t = t->next) {
     if (t->next == task) {
       t->next = task->next;
@@ -2079,11 +2067,11 @@ task_t* task_remove(task_t* task) {
   }
 }
 
-void task_mark_finished(task_t* task) {
+void task_mark_finished(task* task) {
   task->state = finished;
 }
 
-void sleep(uint64_t ms) {
+void sleep(u64 ms) {
   // how do I find the task that this should apply
   // let's assume it's current
   task_current->sleep_until = get_global_timer_value() + ms * _1ms;
@@ -2095,7 +2083,7 @@ void sleep(uint64_t ms) {
   switch_task(task_current, task_scheduler);
 }
 
-void print_task(task_t* task) {
+void print_task(task* task) {
   printf(
       "task: rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = "
       "%x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n",
@@ -2103,7 +2091,7 @@ void print_task(task_t* task) {
       task->rdi, task->r8, task->r9, task->r10, task->r11);
 }
 
-void print_regs(interrupt_registers_t* regs) {
+void print_regs(interrupt_registers* regs) {
   printf(
       "regs:  rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi "
       "= %x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n",
@@ -2111,7 +2099,7 @@ void print_regs(interrupt_registers_t* regs) {
       regs->rdi, regs->r8, regs->r9, regs->r10, regs->r11);
 }
 
-void task_update_context(task_t* task, interrupt_registers_t* regs) {
+void task_update_context(task* task, interrupt_registers* regs) {
   // printf("task before\n");
   // print_task(task);
   // If the layout were the same we could memcpy.
@@ -2139,7 +2127,7 @@ void task_update_context(task_t* task, interrupt_registers_t* regs) {
 }
 
 // I guess this should be normalized and just one function, from -> to.
-void update_regs_from_task(task_t* task, interrupt_registers_t* regs) {
+void update_regs_from_task(task* task, interrupt_registers* regs) {
   // printf("regs before\n");
   // print_regs(regs);
   //  If the layout were the same we could memcpy.
@@ -2182,34 +2170,34 @@ void idle_task() {
   }
 }
 
-void task1(uint8_t id) {
+void task1(u8 id) {
   while (1) {
     printf("running task 1 %d\n", id);
     sleep(2000);
   }
 }
 
-void task2(uint8_t id) {
+void task2(u8 id) {
   printf("running task 2 %d\n", id);
 }
 
-void dns_resolve(char* host, uint8_t addr[4]) {}
+void dns_resolve(char* host, u8 addr[4]) {}
 
 void task_network() {
   // what do I want to do here?
   // I want to improve memory management and task management.
   // Using the network stack can help.
 
-  uint8_t addr[4];
+  u8 addr[4];
   // This will cause a bunch of network requests. We cannot do this before we
   // got a network address ourselves so I need to run a dhcp task.
   dns_resolve("google.com", addr);
   printf("google.com IP=%d.%d.%d.%d\n");
 }
 
-task_t* service_mouse = nullptr;
-task_t* service_keyboard = nullptr;
-task_t* service_network = nullptr;
+task* service_mouse = nullptr;
+task* service_keyboard = nullptr;
+task* service_network = nullptr;
 
 // The interrupt handler should either start this task with high priority OR
 // this task already exists and waits for the interrupt blocking. If this is
@@ -2255,13 +2243,13 @@ task_t* service_network = nullptr;
 // Send(type, data)
 //
 
-// message_t* message_first = nullptr;
+// message* message_first = nullptr;
 
 // TODO: maybe it's time to abstract a queue..
 
 // message_peek returns true if there are messages waiting.
 // TODO: what's the naming here? queue, head, first?
-bool message_peek(message_t* head) {
+bool message_peek(message* head) {
   // if length of queue > 0 return true
   if (head != nullptr) {
     return true;
@@ -2272,37 +2260,37 @@ bool message_peek(message_t* head) {
 
 // Let's do point to point first.
 // Let's replace 'wait_for_mouse_data'.
-void message_send(message_t** head, message_type_t type, void* data) {
+void message_send(message** head, message_type_t type, void* data) {
   // printf("message_send\n");
   // printf("message_send %d\n", message_peek(*head));
   //  alloc message or get from pool.
   //  add to queue
-  message_t* message = malloc(sizeof(message_t));
-  message->next = nullptr;
-  message->type = type;
-  message->data = data;
+  message* msg = malloc(sizeof(*msg));
+  msg->next = nullptr;
+  msg->type = type;
+  msg->data = data;
 
   if (*head == nullptr) {
     // TODO: here we probably need pointer to pointer.
-    *head = message;
+    *head = msg;
     return;
   }
 
   // TODO: keep a pointer to tail for faster append.
-  message_t* m = *head;
+  message* m = *head;
   for (; m->next != nullptr; m = m->next) {
   }
-  m->next = message;
+  m->next = msg;
 }
 
 // mssage_receive checks if there is a message and if not sets the task to a
 // waiting state and calls the scheduler. The scheduler wakes it up in case
 // there is data waiting, which will restart the loop.
-void message_receive(message_t** head, message_t* dst) {
+void message_receive(message** head, message* dst) {
   while (true) {
     // TODO: there is a risk to dereference a null pointer here.
     if (*head != nullptr) {
-      message_t* m = *head;
+      message* m = *head;
       *head = m->next;
       dst->type = m->type;
       dst->data = m->data;
@@ -2314,12 +2302,12 @@ void message_receive(message_t** head, message_t* dst) {
   }
 }
 
-message_t* message_type_registry[2];
+message* message_type_registry[2];
 
-void message_register(message_type_t type, message_t* queue) {}
+void message_register(message_type_t type, message* queue) {}
 
 int mouse_bytes_received = 0;
-uint8_t mouse_data[3] = {0};
+u8 mouse_data[3] = {0};
 
 // This function will look the same for the keyboard, because it's the ps/2
 // driver. It just differs where it sends the byte. One time it's to the mouse
@@ -2340,11 +2328,11 @@ void mouse_handle_interrupt() {
   // 2nd byte: x
   // 3rd byte: y
 
-  uint8_t byte = inb(0x60);
+  u8 byte = inb(0x60);
 
   // printf("mouse_handle_interrupt: %x\n", byte);
 
-  uint8_t* ps2_byte = malloc(sizeof(uint8_t));
+  u8* ps2_byte = malloc(sizeof(u8));
   *ps2_byte = byte;
 
   // TODO: find this service differnetly
@@ -2354,9 +2342,9 @@ void mouse_handle_interrupt() {
 }
 
 void keyboard_handle_interrupt() {
-  uint8_t byte = inb(0x60);
+  u8 byte = inb(0x60);
 
-  uint8_t* ps2_byte = malloc(sizeof(uint8_t));
+  u8* ps2_byte = malloc(sizeof(u8));
   *ps2_byte = byte;
 
   // If I were to merge the things into a ps/2 handler we would need to know the
@@ -2370,10 +2358,10 @@ void keyboard_handle_interrupt() {
 // scancodes.
 void keyboard_service() {
   while (true) {
-    message_t m;
+    message m;
     message_receive(&task_current->queue, &m);
 
-    uint8 scancode = *(uint8_t*)(m.data);
+    u8 scancode = *(u8*)(m.data);
     printf("scancode: %x\n", scancode);
 
     // Scancode set 2
@@ -2632,10 +2620,10 @@ void mouse_service() {
     // TODO: This is too boring to work on right now.
     // message_register(mouse_byte, task_current->queue);
 
-    message_t m;
+    message m;
     message_receive(&task_current->queue, &m);
 
-    uint8_t* byte = m.data;
+    u8* byte = m.data;
     mouse_data[mouse_bytes_received++] = *byte;
     // This was allocated by the sender. How can we be sure the sender does not
     // access it afterwards? This will be even trickier once sender and receiver
@@ -2717,7 +2705,7 @@ void handle_network_interrupt() {
     receiving a packet is stored in front of the packet(packet header).
    */
 
-  uint16_t isr = inw(base + 0x3e);
+  u16 isr = inw(base + 0x3e);
   // printf("isr: %x\n", isr);
   // although the docs say we only need to read, we actually need to write
   // to reset
@@ -2735,15 +2723,15 @@ void handle_network_interrupt() {
 
 #define NET_BIT_BUFFER_EMPTY 0x1
   while (true) {
-    uint8_t cmd = inb(base + 0x37);
+    u8 cmd = inb(base + 0x37);
     if (cmd & NET_BIT_BUFFER_EMPTY) {  // Buffer Empty = 1
       break;
     }
 
-    uint16_t capr = inw(base + 0x38);
+    u16 capr = inw(base + 0x38);
     // printf("capr: %x\n", capr);
 
-    uint16_t cbr = inw(base + 0x3a);
+    u16 cbr = inw(base + 0x3a);
     // printf("cbr: %x\n", cbr);
 
     // RX buffer content
@@ -2769,8 +2757,7 @@ void handle_network_interrupt() {
     // TODO: print 16 bytes before this to see what the card puts there. Since
     // we emulate it's probably empty.
 
-    uint16_t* packet_status =
-	(uint16_t*)(network_rx_buffer + network_rx_buffer_index);
+    u16* packet_status = (u16*)(network_rx_buffer + network_rx_buffer_index);
 
     //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
     //	     num_packets++, *packet_status, network_rx_buffer_index);
@@ -2783,14 +2770,14 @@ void handle_network_interrupt() {
       break;
     }
 
-    uint16_t* length = (uint16_t*)(network_rx_buffer + network_rx_buffer_index +
-				   2);  // first two bytes are the rx header
+    u16* length = (u16*)(network_rx_buffer + network_rx_buffer_index +
+			 2);  // first two bytes are the rx header
     //  printf("length: %d\n", *length);
 
     // TODO: pull length and etheretype from this.
     // first two bytes are the rx header followed by 2 bytes for length
-    ethernet_frame_t* ef =
-	(ethernet_frame_t*)(network_rx_buffer + network_rx_buffer_index + 4);
+    ethernet_frame* ef =
+	(ethernet_frame*)(network_rx_buffer + network_rx_buffer_index + 4);
 
     // Copy packet and send it to network service.
     // The network card appends a 4 byte CRC at the end which we ignore.
@@ -2856,17 +2843,17 @@ void network_service() {
   // <- dhcp offer
   // -> dhcp request
   while (true) {
-    message_t msg;
+    message msg;
     message_receive(&service_network->queue, &msg);
 
-    ethernet_frame_t* frame = (ethernet_frame_t*)msg.data;
+    ethernet_frame* frame = (ethernet_frame*)msg.data;
 
-    uint16_t ether_type = ntohs(frame->ethertype);
+    u16 ether_type = ntohs(frame->ethertype);
 
     if (ether_type == NET_ETHERTYPE_ARP) {
-      net_handle_arp((arp_message_t*)(frame + 1));
+      net_handle_arp((arp_message*)(frame + 1));
     } else if (ether_type == NET_ETHERTYPE_IPV4) {
-      net_handle_ipv4(frame, (ipv4_header_t*)(frame + 1));
+      net_handle_ipv4(frame, (ipv4_header*)(frame + 1));
     }
 
     free(msg.data);
@@ -2886,7 +2873,7 @@ void schedule() {
     // Instead of just picking the next task lets iterate until we find a good
     // task, because tasks may sleep now.
     // We should probably now loop around to the beginning.
-    uint64_t now = get_global_timer_value();
+    u64 now = get_global_timer_value();
 
     // Note:
     // Why did I take so much time to implement this? (2h) I tried to wing it
@@ -2914,7 +2901,7 @@ void schedule() {
       task_current = task_remove(task_current);
     }
 
-    task_t* next_task = task_idle;
+    task* next_task = task_idle;
 
     // TODO:
     // - remove all _t typedefs
@@ -2923,7 +2910,7 @@ void schedule() {
     // - boolean return if function name is conditional has, is etc.
     // - use variable name in sizeof
 
-    task_t* t = task_current->next;
+    task* t = task_current->next;
     // If there is just one task (scheduler?) this will not run.
     for (; t != task_current; t = t->next) {
       // TODO: how to get rid of all these exceptions?
@@ -2995,7 +2982,7 @@ void schedule() {
 }
 
 void local_apic_eoi() {
-  volatile uint32_t* local_apic_eoi = (volatile uint32_t*)0xfee000b0;
+  volatile u32* local_apic_eoi = (volatile u32*)0xfee000b0;
   *local_apic_eoi = 0;
 }
 
@@ -3005,7 +2992,7 @@ void local_apic_eoi() {
 #define IRQ_KEYBOARD 0x31
 
 // regs is passed via rdi
-void interrupt_handler(interrupt_registers_t* regs) {
+void interrupt_handler(interrupt_registers* regs) {
   // Timer IRQ
   if (regs->int_no == IRQ_TIMER) {
     // This is our schedule timer.
@@ -3077,7 +3064,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
 	e->flags.p, e->flags.wr, e->flags.us, e->flags.rsvd, e->flags.id,
 	e->flags.pk, e->flags.ss, e->flags.hlat);
     // cr2 contains the address that caused the page fault.
-    uint64_t addr;
+    u64 addr;
     __asm__ volatile("mov %%cr2, %0" : "=r"(addr));
     printf("fault address: %x\n", addr);
   } else {
@@ -3092,7 +3079,7 @@ void interrupt_handler(interrupt_registers_t* regs) {
 void idt_setup() {
   idt.limit = sizeof(idt_entry_t) * 256 - 1;
   //  idt.base = (uint32)&idt_entries;
-  idt.base = (uint64)&idt_entries;
+  idt.base = (u64)&idt_entries;
   // 0x0E = 14 = 64-bit Interrupt Gate
   // but this has p=0 (present bit)
   // 0x8E has p=1 and type=14
@@ -3119,23 +3106,24 @@ void idt_setup() {
   // ref: 6.4.2 Software-Generated Exceptions
 
   // 00077694943d[CPU0  ] LONG MODE IRET
-  // 00077694943e[CPU0  ] fetch_raw_descriptor: GDT: index (e67) 1cc > limit (f)
+  // 00077694943e[CPU0  ] fetch_raw_descriptor: GDT: index (e67) 1cc > limit
+  // (f)
 #define INTERRUPT_GATE 0x8E
   idt_set_gate(0, 0, 0x08, 0x0E);
   idt_set_gate(1, 0, 0x08, 0x0E);
   idt_set_gate(2, 0, 0x08, 0x0E);
-  idt_set_gate(3, (uint64_t)isr3, 0x08, 0x8E);
-  idt_set_gate(4, (uint64_t)isr4, 0x08, 0x8E);
+  idt_set_gate(3, (u64)isr3, 0x08, 0x8E);
+  idt_set_gate(4, (u64)isr4, 0x08, 0x8E);
   idt_set_gate(5, 0, 0x08, 0x0E);
   idt_set_gate(6, 0, 0x08, 0x0E);
   idt_set_gate(7, 0, 0x08, 0x0E);
-  idt_set_gate(8, (uint64_t)isr8, 0x08, 0x8E);
+  idt_set_gate(8, (u64)isr8, 0x08, 0x8E);
   idt_set_gate(9, 0, 0x08, 0x0E);
   idt_set_gate(10, 0, 0x08, 0x0E);
   idt_set_gate(11, 0, 0x08, 0x0E);
   idt_set_gate(12, 0, 0x08, 0x0E);
-  idt_set_gate(13, (uint64_t)isr13, 0x08, 0x8E);
-  idt_set_gate(14, (uint64_t)isr14, 0x08, 0x8E);
+  idt_set_gate(13, (u64)isr13, 0x08, 0x8E);
+  idt_set_gate(14, (u64)isr14, 0x08, 0x8E);
   idt_set_gate(15, 0, 0x08, 0x0E);
   idt_set_gate(16, 0, 0x08, 0x0E);
   idt_set_gate(17, 0, 0x08, 0x0E);
@@ -3153,19 +3141,16 @@ void idt_setup() {
   idt_set_gate(29, 0, 0x08, 0x0E);
   idt_set_gate(30, 0, 0x08, 0x0E);
   idt_set_gate(31, 0, 0x08, 0x0E);
-  idt_set_gate(32, (uint64_t)isr32, 0x08, 0x8E);
-  idt_set_gate(0x31, (uint64_t)isr0x31, 0x08, 0x8E);  // keyboard
-  idt_set_gate(0x32, (uint64_t)isr0x32, 0x08, 0x8E);  // mouse
-  idt_set_gate(0x33, (uint64_t)isr0x33, 0x08, 0x8e);  // ethernet
-  idt_set_gate(0x34, (uint64_t)isr0x34, 0x08, 0x8e);  // timer
+  idt_set_gate(32, (u64)isr32, 0x08, 0x8E);
+  idt_set_gate(0x31, (u64)isr0x31, 0x08, 0x8E);  // keyboard
+  idt_set_gate(0x32, (u64)isr0x32, 0x08, 0x8E);  // mouse
+  idt_set_gate(0x33, (u64)isr0x33, 0x08, 0x8e);  // ethernet
+  idt_set_gate(0x34, (u64)isr0x34, 0x08, 0x8e);  // timer
 
   idt_update(&idt);
 }
 
-void idt_set_gate(uint32 interrupt,
-		  uint64_t offset,
-		  uint16 selector,
-		  uint8 type_attr) {
+void idt_set_gate(u32 interrupt, u64 offset, u16 selector, u8 type_attr) {
   // first 16 bits
   idt_entries[interrupt].offset_start = offset;  //(offset & 0xFFFF);
   // next 16 bits
@@ -3207,24 +3192,20 @@ void idt_set_gate(uint32 interrupt,
 
 void gdt_setup() {
   gdt.limit = sizeof(gdt_entry_t) * 5 - 1;
-  gdt.base = (uint32)&gdt_entries;
+  gdt.base = (u32)&gdt_entries;
 
   gdt_set_gate(0, 0, 0, 0, 0);
   gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf);  // kernel mode code segment
   gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf);  // kernel mode data segment
   gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf);  // user mode code segment
   gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf);  // user mode data segment
-  gdt_set_gate(5, (uint32)&tss, sizeof(tss), 0x89,
+  gdt_set_gate(5, (u32)&tss, sizeof(tss), 0x89,
 	       0x40);  // cpu1 task switching segment
 
   gdt_update(&gdt);
 }
 
-void gdt_set_gate(uint32 entry,
-		  uint32 base,
-		  uint32 limit,
-		  uint8 access,
-		  uint8 flags) {
+void gdt_set_gate(u32 entry, u32 base, u32 limit, u8 access, u8 flags) {
   gdt_entries[entry].base_start = (0xffff & base);
   gdt_entries[entry].base_middle = (base >> 16) & 0xff;
   gdt_entries[entry].base_end = (base >> 24) & 0xff;
@@ -3297,52 +3278,52 @@ void pic_remap(int offset1, int offset2) {
 }
 
 struct apic_registers {
-  uint64_t reserve_1[4] __attribute__((aligned(16)));
-  uint32_t local_apic_id __attribute__((aligned(16)));
-  uint64_t local_apic_version[2] __attribute__((aligned(16)));
-  uint64_t reserve_2[8] __attribute__((aligned(16)));
-  uint64_t tpr __attribute__((aligned(16)));
-  uint64_t apr __attribute__((aligned(16)));
-  uint64_t prr __attribute__((aligned(16)));
-  uint64_t eoi __attribute__((aligned(16)));
-  uint64_t rrd __attribute__((aligned(16)));
-  uint64_t logical_destination __attribute__((aligned(16)));
-  uint64_t destination_format __attribute__((aligned(16)));
-  uint64_t spurious_interrupt_vector __attribute__((aligned(16)));
-  uint32_t isr_0 __attribute__((aligned(16)));  // in service register ro
-  uint32_t isr_1 __attribute__((aligned(16)));
-  uint32_t isr_2 __attribute__((aligned(16)));
-  uint32_t isr_3 __attribute__((aligned(16)));
-  uint32_t isr_4 __attribute__((aligned(16)));
-  uint32_t isr_5 __attribute__((aligned(16)));
-  uint32_t isr_6 __attribute__((aligned(16)));
-  uint32_t isr_7 __attribute__((aligned(16)));
-  uint32_t tmr_0 __attribute__((aligned(16)));  // trigger mode register ro
-  uint32_t tmr_1 __attribute__((aligned(16)));
-  uint32_t tmr_2 __attribute__((aligned(16)));
-  uint32_t tmr_3 __attribute__((aligned(16)));
-  uint32_t tmr_4 __attribute__((aligned(16)));
-  uint32_t tmr_5 __attribute__((aligned(16)));
-  uint32_t tmr_6 __attribute__((aligned(16)));
-  uint32_t tmr_7 __attribute__((aligned(16)));
-  uint32_t irr_0 __attribute__((aligned(16)));  // interrupt request register ro
-  uint32_t irr_1 __attribute__((aligned(16)));
-  uint32_t irr_2 __attribute__((aligned(16)));
-  uint32_t irr_3 __attribute__((aligned(16)));
-  uint32_t irr_4 __attribute__((aligned(16)));
-  uint32_t irr_5 __attribute__((aligned(16)));
-  uint32_t irr_6 __attribute__((aligned(16)));
-  uint32_t irr_7 __attribute__((aligned(16)));
-  uint32_t error_status __attribute__((aligned(16)));
-  uint64_t reserve_3[12] __attribute__((aligned(16)));
-  uint32_t cmci __attribute__((aligned(16)));
-  uint32_t icr_low __attribute__((aligned(16)));
-  uint32_t icr_high __attribute__((aligned(16)));
-  uint32_t lvt_timer __attribute__((aligned(16)));
-  uint32_t lvt_thermal_sensor __attribute__((aligned(16)));
-  uint32_t lvt_performance_monitoring_counters __attribute__((aligned(16)));
-  uint32_t lvt_lint0 __attribute__((aligned(16)));  // FEE00350
-  uint32_t lvt_lint1 __attribute__((aligned(16)));  // FEE00360
+  u64 reserve_1[4] __attribute__((aligned(16)));
+  u32 local_apic_id __attribute__((aligned(16)));
+  u64 local_apic_version[2] __attribute__((aligned(16)));
+  u64 reserve_2[8] __attribute__((aligned(16)));
+  u64 tpr __attribute__((aligned(16)));
+  u64 apr __attribute__((aligned(16)));
+  u64 prr __attribute__((aligned(16)));
+  u64 eoi __attribute__((aligned(16)));
+  u64 rrd __attribute__((aligned(16)));
+  u64 logical_destination __attribute__((aligned(16)));
+  u64 destination_format __attribute__((aligned(16)));
+  u64 spurious_interrupt_vector __attribute__((aligned(16)));
+  u32 isr_0 __attribute__((aligned(16)));  // in service register ro
+  u32 isr_1 __attribute__((aligned(16)));
+  u32 isr_2 __attribute__((aligned(16)));
+  u32 isr_3 __attribute__((aligned(16)));
+  u32 isr_4 __attribute__((aligned(16)));
+  u32 isr_5 __attribute__((aligned(16)));
+  u32 isr_6 __attribute__((aligned(16)));
+  u32 isr_7 __attribute__((aligned(16)));
+  u32 tmr_0 __attribute__((aligned(16)));  // trigger mode register ro
+  u32 tmr_1 __attribute__((aligned(16)));
+  u32 tmr_2 __attribute__((aligned(16)));
+  u32 tmr_3 __attribute__((aligned(16)));
+  u32 tmr_4 __attribute__((aligned(16)));
+  u32 tmr_5 __attribute__((aligned(16)));
+  u32 tmr_6 __attribute__((aligned(16)));
+  u32 tmr_7 __attribute__((aligned(16)));
+  u32 irr_0 __attribute__((aligned(16)));  // interrupt request register ro
+  u32 irr_1 __attribute__((aligned(16)));
+  u32 irr_2 __attribute__((aligned(16)));
+  u32 irr_3 __attribute__((aligned(16)));
+  u32 irr_4 __attribute__((aligned(16)));
+  u32 irr_5 __attribute__((aligned(16)));
+  u32 irr_6 __attribute__((aligned(16)));
+  u32 irr_7 __attribute__((aligned(16)));
+  u32 error_status __attribute__((aligned(16)));
+  u64 reserve_3[12] __attribute__((aligned(16)));
+  u32 cmci __attribute__((aligned(16)));
+  u32 icr_low __attribute__((aligned(16)));
+  u32 icr_high __attribute__((aligned(16)));
+  u32 lvt_timer __attribute__((aligned(16)));
+  u32 lvt_thermal_sensor __attribute__((aligned(16)));
+  u32 lvt_performance_monitoring_counters __attribute__((aligned(16)));
+  u32 lvt_lint0 __attribute__((aligned(16)));  // FEE00350
+  u32 lvt_lint1 __attribute__((aligned(16)));  // FEE00360
 } __attribute__((aligned(16)));
 typedef struct apic_registers apic_registers_t;
 
@@ -3369,8 +3350,8 @@ void apic_setup() {
 
 // TODO: use timer to print clock
 
-uint64_t rdmsr(uint32_t reg) {
-  uint64_t value;
+u64 rdmsr(u32 reg) {
+  u64 value;
   // A = eax + edx
   // c = ecx (the c register)
   // ref:
@@ -3383,38 +3364,38 @@ uint64_t rdmsr(uint32_t reg) {
 
 // ref: Vol 4 2.1
 typedef union {
-  uint64_t raw;
+  u64 raw;
   struct {
-    uint64_t reserved : 8;
-    uint64_t bsp : 1;
-    uint64_t reserved_2 : 1;
-    uint64_t x2apic : 1;
-    uint64_t apic_global : 1;
-    uint64_t base_address : 52;
+    u64 reserved : 8;
+    u64 bsp : 1;
+    u64 reserved_2 : 1;
+    u64 x2apic : 1;
+    u64 apic_global : 1;
+    u64 base_address : 52;
   } bits;
 } msr_apic_base_t;
 
 struct ioapic_redirection_register {
   union {
-    uint32_t lower;
+    u32 lower;
     struct {
-      uint32_t interrupt_vector : 8;
-      uint32_t delivery_mode : 3;
-      uint32_t destination_mode : 1;
-      uint32_t delivery_status : 1;
-      uint32_t pin_polarity : 1;
-      uint32_t remote_irr : 1;
-      uint32_t trigger_mode : 1;  // 1=level, 0=edge
-      uint32_t interrupt_mask : 1;
-      uint32_t reserved : 16;
+      u32 interrupt_vector : 8;
+      u32 delivery_mode : 3;
+      u32 destination_mode : 1;
+      u32 delivery_status : 1;
+      u32 pin_polarity : 1;
+      u32 remote_irr : 1;
+      u32 trigger_mode : 1;  // 1=level, 0=edge
+      u32 interrupt_mask : 1;
+      u32 reserved : 16;
     } lower_bits;
   };
 
   union {
-    uint32_t upper;
+    u32 upper;
     struct {
-      uint32_t reserved : 24;
-      uint32_t destination : 8;
+      u32 reserved : 24;
+      u32 destination : 8;
     } upper_bits;
   };
 } __attribute__((packed));
@@ -3439,15 +3420,15 @@ typedef struct ioapic_redirection_register ioapic_redirection_register_t;
   2. Read data as 32bit value from IOWIN.
  */
 
-uint32_t ioapic_read_register(uint32_t reg) {
-  uint32_t volatile* ioregsel = (uint32_t volatile*)IOAPIC_IOREGSEL;
+u32 ioapic_read_register(u32 reg) {
+  u32 volatile* ioregsel = (u32 volatile*)IOAPIC_IOREGSEL;
   ioregsel[0] = reg;
   return ioregsel[4];  // IOAPIC_IOREGSEL+10h (4*4 byte = 16 byte) =
   // IOAPIC_IOWIN
 }
 
-void ioapic_write_register(uint32_t reg, ioapic_redirection_register_t* r) {
-  uint32_t volatile* ioregsel = (uint32_t volatile*)IOAPIC_IOREGSEL;
+void ioapic_write_register(u32 reg, ioapic_redirection_register_t* r) {
+  u32 volatile* ioregsel = (u32 volatile*)IOAPIC_IOREGSEL;
   ioregsel[0] = reg;
   ioregsel[4] = r->lower;
   ioregsel[0] = reg + 1;
@@ -3556,10 +3537,10 @@ void ioapic_setup() {
 #define PS2_DEVICE_COMMAND_IDENTIFY 0xF2
 #define PS2_DEVICE_RESPONSE_ACK 0xFA
 
-  uint8_t status = inb(PS2_STATUS_REGISTER);
+  u8 status = inb(PS2_STATUS_REGISTER);
   printf("configuring ps2: %x\n", status);
 
-  uint8 config;
+  u8 config;
   ps2_wait_ready();
   outb(PS2_COMMAND_REGISTER, PS2_COMMAND_DISABLE_PORT_1);
   ps2_wait_ready();
@@ -3587,7 +3568,7 @@ void ioapic_setup() {
   ps2_wait_ready();
   outb(PS2_COMMAND_REGISTER, PS2_COMMAND_TEST_CONTROLLER);
   ps2_wait_data();
-  uint8 resp = inb(PS2_DATA_REGISTER);
+  u8 resp = inb(PS2_DATA_REGISTER);
   printf("self test response: %x\n", resp);
   // Must be 0x55
 
@@ -3602,7 +3583,7 @@ void ioapic_setup() {
   ps2_wait_ready();
   outb(PS2_COMMAND_REGISTER, PS2_COMMAND_TEST_PORT_1);
   ps2_wait_data();
-  uint8 response = inb(PS2_DATA_REGISTER);
+  u8 response = inb(PS2_DATA_REGISTER);
   printf("test port 1: %x\n", response);
   // Must be 0 otherwise error
 
@@ -3710,38 +3691,38 @@ void ioapic_setup() {
 // TODO: pull entries out as 'first' into sdt struct.
 // sdt: system description table
 struct acpi_sdt_header2 {
-  uint8_t signature[4];
-  uint32_t length;
-  uint8_t revision;
-  uint8_t checksum;
-  uint8_t oem_id[6];
-  uint8_t oem_table_id[8];
-  uint32_t oem_revision;
-  uint32_t creator_id;
-  uint32_t creator_revision;
+  u8 signature[4];
+  u32 length;
+  u8 revision;
+  u8 checksum;
+  u8 oem_id[6];
+  u8 oem_table_id[8];
+  u32 oem_revision;
+  u32 creator_id;
+  u32 creator_revision;
 } __attribute__((packed));
 typedef struct acpi_sdt_header2 acpi_sdt_header2_t;
 
 struct acpi_sdt_header {
-  uint8_t signature[4];
-  uint32_t length;
-  uint8_t revision;
-  uint8_t checksum;
-  uint8_t oem_id[6];
-  uint8_t oem_table_id[8];
-  uint32_t oem_revision;
-  uint32_t creator_id;
-  uint32_t creator_revision;
-  uint32_t entries;  // length - (sizeof(header) - 4 byte)
+  u8 signature[4];
+  u32 length;
+  u8 revision;
+  u8 checksum;
+  u8 oem_id[6];
+  u8 oem_table_id[8];
+  u32 oem_revision;
+  u32 creator_id;
+  u32 creator_revision;
+  u32 entries;  // length - (sizeof(header) - 4 byte)
 } __attribute__((packed));
 typedef struct acpi_sdt_header acpi_sdt_header_t;
 
 struct acpi_rsdp {
-  uint8_t signature[8];
-  uint8_t checksum;
-  uint8_t oem_id[6];
-  uint8_t revision;
-  uint32_t rsdt;
+  u8 signature[8];
+  u8 checksum;
+  u8 oem_id[6];
+  u8 revision;
+  u32 rsdt;
 } __attribute__((packed));
 typedef struct acpi_rsdp acpi_rsdp_t;
 
@@ -3749,12 +3730,12 @@ acpi_rsdp_t* locate_rsdp() {
   // ref: https://wiki.osdev.org/RSDP
   // ref:
   // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#finding-the-rsdp-on-ia-pc-systems
-  uint64_t* start = (uint64_t*)0xE0000;
-  uint64_t* end = (uint64_t*)0xFFFFF;
+  u64* start = (u64*)0xE0000;
+  u64* end = (u64*)0xFFFFF;
 
   // "RSD PTR "
   for (; start < end; start += 2) {
-    uint8_t* s = (uint8_t*)start;
+    u8* s = (u8*)start;
     if (s[0] == 'R' && s[1] == 'S' && s[2] == 'D' && s[3] == ' ' &&
 	s[4] == 'P' && s[5] == 'T' && s[6] == 'R' && s[7] == ' ') {
       return (acpi_rsdp_t*)start;
@@ -3765,63 +3746,63 @@ acpi_rsdp_t* locate_rsdp() {
 
 struct acpi_madt {
   acpi_sdt_header2_t header;
-  uint32_t local_interrupt_controller_address;
-  uint32_t flags;
-  uint32_t first;
+  u32 local_interrupt_controller_address;
+  u32 flags;
+  u32 first;
 } __attribute__((packed));
 typedef struct acpi_madt acpi_madt_t;
 
 // ics = interrupt controller structure
 struct acpi_ics_header {
-  uint8_t type;
-  uint8_t length;
+  u8 type;
+  u8 length;
 } __attribute__((packed));
 typedef struct acpi_ics_header acpi_ics_header_t;
 
 struct acpi_ics_ioapic {
   acpi_ics_header_t header;
-  uint8_t id;
-  uint8_t reserved;
-  uint32_t address;
-  uint32_t global_system_interrupt_base;
+  u8 id;
+  u8 reserved;
+  u32 address;
+  u32 global_system_interrupt_base;
 } __attribute__((packed));
 typedef struct acpi_ics_ioapic acpi_ics_ioapic_t;
 
 struct acpi_ics_input_source_override {
   acpi_ics_header_t header;
-  uint8_t bus;
-  uint8_t source;
-  uint32_t global_system_interrupt;
-  uint16_t flags;
+  u8 bus;
+  u8 source;
+  u32 global_system_interrupt;
+  u16 flags;
 } __attribute__((packed));
 typedef struct acpi_ics_input_source_override acpi_ics_input_source_override_t;
 
 struct acpi_generic_address_structure {
-  uint8_t address_space_id;
-  uint8_t register_bit_width;
-  uint8_t register_bit_offset;
-  uint8_t reserved;
-  uint64_t address;
+  u8 address_space_id;
+  u8 register_bit_width;
+  u8 register_bit_offset;
+  u8 reserved;
+  u64 address;
 } __attribute__((packed));
 typedef struct acpi_generic_address_structure acpi_generic_address_structure_t;
 
 struct acpi_hpet_header {
-  uint32_t event_timer_block_id;
+  u32 event_timer_block_id;
   acpi_generic_address_structure_t base_address;
-  uint8_t hpet_number;
-  uint16_t main_counter_minimum_clock_tick;
-  uint8_t page_attribution;
+  u8 hpet_number;
+  u16 main_counter_minimum_clock_tick;
+  u8 page_attribution;
 } __attribute__((packed));
 typedef struct acpi_hpet_header acpi_hpet_header_t;
 
 // note: take care when taking references of a pointer.
 void list_tables(acpi_sdt_header_t* rsdt) {
-  int count = (rsdt->length - sizeof(acpi_sdt_header_t) + sizeof(uint32_t)) /
-	      sizeof(uint32_t);
+  int count =
+      (rsdt->length - sizeof(acpi_sdt_header_t) + sizeof(u32)) / sizeof(u32);
   printf("rsdt: entry count: %d\n", count);
   for (int i = 0; i < count; i++) {
     // &entries to get the first entry.
-    // +i uses size of type which is uint32_t.
+    // +i uses size of type which is u32.
     // * because it's a pointer to some place.
     acpi_sdt_header_t* h = (acpi_sdt_header_t*)(*(&rsdt->entries + i));
     printf("table %d: %.*s\n", i, 4, h->signature);
@@ -3860,9 +3841,9 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	}
       }
     } else if (strncmp(h->signature, "HPET", 4)) {
-      // note: without uint8_t case here we go too far.
+      // note: without u8 case here we go too far.
       acpi_hpet_header_t* hpet =
-	  (acpi_hpet_header_t*)((uint8_t*)h + sizeof(acpi_sdt_header2_t));
+	  (acpi_hpet_header_t*)((u8*)h + sizeof(acpi_sdt_header2_t));
       printf("HPET: hpet number: %d\n", hpet->hpet_number);
       printf("HPET: address space: %d base: %x\n",
 	     hpet->base_address.address_space_id, hpet->base_address.address);
@@ -3874,104 +3855,104 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 #define PCI_CONFIG_DATA 0xcfc
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint32_t offset : 8;
-    uint32_t function : 3;
-    uint32_t device : 5;
-    uint32_t bus : 8;
-    uint32_t reserved : 7;
-    uint32_t enabled : 1;
+    u32 offset : 8;
+    u32 function : 3;
+    u32 device : 5;
+    u32 bus : 8;
+    u32 reserved : 7;
+    u32 enabled : 1;
   } bits;
 } pci_config_address_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint16_t vendor_id;
-    uint16_t device_id;
+    u16 vendor_id;
+    u16 device_id;
   } __attribute__((packed)) fields;
 } pci_config_register_0_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
     union {
-      uint16_t command;
+      u16 command;
       struct {
-	uint16_t io_space : 1;
-	uint16_t memory_space : 1;
-	uint16_t bus_master : 1;
-	uint16_t reserved : 13;
+	u16 io_space : 1;
+	u16 memory_space : 1;
+	u16 bus_master : 1;
+	u16 reserved : 13;
       } command_bits;
     };
     union {
-      uint16_t status;
+      u16 status;
       struct {
-	uint16_t reserved : 16;
+	u16 reserved : 16;
       } status_bits;
     };
   } __attribute__((packed)) fields;
 } pci_config_register_1_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint8_t revision_id;
-    uint8_t prog_if;
-    uint8_t subclass;
-    uint8_t class;
+    u8 revision_id;
+    u8 prog_if;
+    u8 subclass;
+    u8 class;
   } __attribute__((packed)) fields;
 } pci_config_register_2_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint8_t cache_line_size;
-    uint8_t latency_timer;
-    uint8_t header_type;
-    uint8_t bist;
+    u8 cache_line_size;
+    u8 latency_timer;
+    u8 header_type;
+    u8 bist;
   } __attribute__((packed)) fields;
 } pci_config_register_3_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint32_t is_io_space : 1;
-    uint32_t type : 2;
-    uint32_t prefetchable : 1;
-    uint32_t address : 28;
+    u32 is_io_space : 1;
+    u32 type : 2;
+    u32 prefetchable : 1;
+    u32 address : 28;
   } __attribute__((packed)) memory_space;
   struct {
-    uint32_t is_io_space : 1;
-    uint32_t reserved : 1;
-    uint32_t address : 30;
+    u32 is_io_space : 1;
+    u32 reserved : 1;
+    u32 address : 30;
   } __attribute__((packed)) io_space;
 } pci_config_register_4_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint32_t is_io_space : 1;
-    uint32_t type : 2;
-    uint32_t prefetchable : 1;
-    uint32_t address : 28;
+    u32 is_io_space : 1;
+    u32 type : 2;
+    u32 prefetchable : 1;
+    u32 address : 28;
   } __attribute__((packed)) memory_space;
   struct {
-    uint32_t is_io_space : 1;
-    uint32_t reserved : 1;
-    uint32_t io_size : 6;
-    uint32_t address : 24;
+    u32 is_io_space : 1;
+    u32 reserved : 1;
+    u32 io_size : 6;
+    u32 address : 24;
   } __attribute__((packed)) io_space;
 } pci_config_register_4_rtl8139_t;
 
 typedef union {
-  uint32_t raw;
+  u32 raw;
   struct {
-    uint8_t interrupt_line;
-    uint8_t interrupt_pin;
-    uint8_t min_grant;
-    uint8_t max_latency;
+    u8 interrupt_line;
+    u8 interrupt_pin;
+    u8 min_grant;
+    u8 max_latency;
   } __attribute__((packed)) fields;
 } pci_config_register_f_t;
 
@@ -4086,16 +4067,16 @@ void pci_enumerate() {
 	  printf("ethernet: mac: %x:%x:%x:%x:%x:%x\n", mac[0], mac[1], mac[2],
 		 mac[3], mac[4], mac[5]);
 
-	  //	  uint8_t config_1 = inb(base + RTL8139_CONFIG_1);
+	  //	  u8 config_1 = inb(base + RTL8139_CONFIG_1);
 	  //	  printf("ethernet: config 1: %x\n", config_1);
 
-	  //	  uint8_t config_3 = inb(base + 0x59);
+	  //	  u8 config_3 = inb(base + 0x59);
 	  //	  printf("ethernet: config 3: %x\n", config_3);
 
-	  //	  uint8_t config_4 = inb(base + 0x5A);
+	  //	  u8 config_4 = inb(base + 0x5A);
 	  //	  printf("ethernet: config 4: %x\n", config_4);
 
-	  uint8_t cmd = inb(base + RTL8139_CMD);
+	  u8 cmd = inb(base + RTL8139_CMD);
 	  // here reset is 1 as written on osdev. qemu bug.
 	  printf("ethernet: cmd: %x\n", cmd);
 
@@ -4106,7 +4087,7 @@ void pci_enumerate() {
 	  printf("ethernet: reset successful \n");
 
 	  // 0x30 is a 4 byte receive buffer start address register.
-	  outl(base + 0x30, (uint32_t)network_rx_buffer);
+	  outl(base + 0x30, (u32)network_rx_buffer);
 
 	  // Interrupt Mask Register
 	  // 0x3c 16 bit
@@ -4159,61 +4140,61 @@ void pci_enumerate() {
 }
 
 struct pcmp_processor_entry {
-  uint8_t type;  // 0
-  uint8_t local_apic_id;
-  uint8_t local_apic_version;
-  uint8_t cpu_flags;
-  uint32_t signature;
-  uint32_t feature_flags;
-  uint64_t reserved;
+  u8 type;  // 0
+  u8 local_apic_id;
+  u8 local_apic_version;
+  u8 cpu_flags;
+  u32 signature;
+  u32 feature_flags;
+  u64 reserved;
 } __attribute__((packed));
 typedef struct pcmp_processor_entry pcmp_processor_entry_t;
 
 // TODO: since we use sizeof later during parsing we need to make sure this
 // actually is the right size.
 struct pcmp_bus_entry {
-  uint32_t type : 8;  // 1
-  uint32_t bus_id : 8;
-  uint64_t bus_type : 48;
+  u32 type : 8;  // 1
+  u32 bus_id : 8;
+  u64 bus_type : 48;
 } __attribute__((packed));
 typedef struct pcmp_bus_entry pcmp_bus_entry_t;
 
 struct pcmp_ioapic_entry {
-  uint8_t type;  // 2
-  uint8_t apic_io;
-  uint8_t apic_version;
-  uint8_t apic_flags;
-  uint32_t address;
+  u8 type;  // 2
+  u8 apic_io;
+  u8 apic_version;
+  u8 apic_flags;
+  u32 address;
 } __attribute__((packed));
 typedef struct pcmp_ioapic_entry pcmp_ioapic_entry_t;
 
 struct pcmp_interrupt_entry {
-  uint8_t type;  // 3
-  uint8_t interrupt_type;
-  uint16_t interrupt_flags;
-  uint8_t source_bus_id;
+  u8 type;  // 3
+  u8 interrupt_type;
+  u16 interrupt_flags;
+  u8 source_bus_id;
   struct {
-    uint8_t signal_type : 2;
-    uint8_t pci_device_number : 5;
-    uint8_t reserved : 1;
+    u8 signal_type : 2;
+    u8 pci_device_number : 5;
+    u8 reserved : 1;
   } source_bus_irq;
-  uint8_t destination_apic_id;
-  uint8_t destination_apic_int;
+  u8 destination_apic_id;
+  u8 destination_apic_int;
 } __attribute__((packed));
 typedef struct pcmp_interrupt_entry pcmp_interrupt_entry_t;
 
 void locate_pcmp() {
   // ref:
   // https://web.archive.org/web/20121002210153/http://download.intel.com/design/archives/processors/pro/docs/24201606.pdf
-  uint8_t* start = (uint8_t*)0xE0000;
-  uint8_t* end = (uint8_t*)0xFFFFF;
+  u8* start = (u8*)0xE0000;
+  u8* end = (u8*)0xFFFFF;
 
   // "RSD PTR "
   for (; start < end; start += 1) {
-    uint8_t* s = start;
+    u8* s = start;
     if (s[0] == 'P' && s[1] == 'C' && s[2] == 'M' && s[3] == 'P') {
       // find PCI interrupt on I/O apic
-      uint16_t count = *(uint16_t*)(start + 34);
+      u16 count = *(u16*)(start + 34);
       start += 44;  // skip header
       printf("first entry: %x count: %d\n", start, count);
       s = start;
@@ -4265,31 +4246,31 @@ void locate_pcmp() {
 }
 
 struct multiboot2_information {
-  uint32_t total_size;
-  uint32_t reserved;
+  u32 total_size;
+  u32 reserved;
 } __attribute__((packed));
 typedef struct multiboot2_information multiboot2_information_t;
 
 struct multiboot2_tag_header {
-  uint32_t type;
-  uint32_t size;
+  u32 type;
+  u32 size;
 } __attribute__((packed));
 typedef struct multiboot2_tag_header multiboot2_tag_header_t;
 
 struct multiboot2_tag_memory_map_header {
-  uint32_t type;
-  uint32_t size;
-  uint32_t entry_size;
-  uint32_t entry_version;
+  u32 type;
+  u32 size;
+  u32 entry_size;
+  u32 entry_version;
 } __attribute__((packed));
 typedef struct multiboot2_tag_memory_map_header
     multiboot2_tag_memory_map_header_t;
 
 struct multiboot2_tag_memory_map_entry {
-  uint64_t base_addr;
-  uint64_t length;
-  uint32_t type;
-  uint32_t reserved;
+  u64 base_addr;
+  u64 length;
+  u32 type;
+  u32 reserved;
 } __attribute__((packed));
 typedef struct multiboot2_tag_memory_map_entry
     multiboot2_tag_memory_map_entry_t;
@@ -4297,9 +4278,9 @@ typedef struct multiboot2_tag_memory_map_entry
 #define MULTIBOOT2_TAG_END 0
 #define MULTIBOOT2_TAG_MEMORY_MAP 6
 
-int kmain(multiboot2_information_t* mbd, uint32_t magic) {
+int kmain(multiboot2_information_t* mbd, u32 magic) {
   printf("kernel start=%x end=%x size=%x\n", &_kernel_start, &_kernel_end,
-	 (uint64_t)&_kernel_end - (uint64_t)&_kernel_start);
+	 (u64)&_kernel_end - (u64)&_kernel_start);
 
   if (magic != 0x36d76289) {
     printf("multiboot error: %x\n", magic);
@@ -4419,13 +4400,13 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
     if (h->type == MULTIBOOT2_TAG_MEMORY_MAP) {
       multiboot2_tag_memory_map_header_t* mh =
 	  (multiboot2_tag_memory_map_header_t*)h;
-      uint32_t num_entries = mh->size / mh->entry_size;
+      u32 num_entries = mh->size / mh->entry_size;
       //   printf("memory map: entries = %d\n", num_entries);
       multiboot2_tag_memory_map_entry_t* e =
 	  (multiboot2_tag_memory_map_entry_t*)((uintptr_t)h +
 					       sizeof(
 						   multiboot2_tag_memory_map_header_t));
-      for (uint8_t i = 0; i < num_entries; i++) {
+      for (u8 i = 0; i < num_entries; i++) {
 	e += i;
 
 	// type
@@ -4448,13 +4429,13 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   }
 
   // Should give chopped log
-  uint8* c = malloc(1);
-  uint8* c2 = malloc(1);
-  uint8* c3 = malloc(1);
+  u8* c = malloc(1);
+  u8* c2 = malloc(1);
+  u8* c3 = malloc(1);
   free(c);
   // Should give perfect size log
-  uint8* c4 = malloc(1);
-  uint8* c5 = malloc(1);
+  u8* c4 = malloc(1);
+  u8* c5 = malloc(1);
   free(c2);
 
   free(c3);
@@ -4465,8 +4446,8 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // something.
 
   // Testing the message_ functions
-  message_t* test_head = nullptr;
-  uint8_t* c6 = malloc(1);
+  message* test_head = nullptr;
+  u8* c6 = malloc(1);
   *c6 = 234;
   message_send(&test_head, message_type_ps2_byte, c6);
   if (test_head == nullptr) {
@@ -4475,9 +4456,9 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   if (message_peek(test_head) == false) {
     return -1;
   }
-  message_t test_message;
+  message test_message;
   message_receive(&test_head, &test_message);
-  uint8_t* c7 = test_message.data;
+  u8* c7 = test_message.data;
   if (*c7 != 234) {
     return -1;
   }
@@ -4494,13 +4475,13 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
   // t2 = 0x12
   // TODO: also mentioned above, we probably don't want to rely on having
   // pointers to service_mouse and service_keyboard, etc.
-  task_current = task_scheduler = task_new_malloc((uint64_t)schedule);
-  task_idle = task_new_malloc((uint64_t)idle_task);
-  service_mouse = task_new_malloc((uint64_t)mouse_service);
-  service_keyboard = task_new_malloc((uint64_t)keyboard_service);
-  service_network = task_new_malloc((uint64_t)network_service);
-  task_new_malloc((uint64_t)task1);
-  task_new_malloc((uint64_t)task2);
+  task_current = task_scheduler = task_new_malloc((u64)schedule);
+  task_idle = task_new_malloc((u64)idle_task);
+  service_mouse = task_new_malloc((u64)mouse_service);
+  service_keyboard = task_new_malloc((u64)keyboard_service);
+  service_network = task_new_malloc((u64)network_service);
+  task_new_malloc((u64)task1);
+  task_new_malloc((u64)task2);
 
   // How do we start the schedule task here? Call 'switch_task'? We will lose
   // the current stack. Can we reclaim it, or we don't care because it's so
@@ -4650,3 +4631,7 @@ int kmain(multiboot2_information_t* mbd, uint32_t magic) {
 
 // gdb to lldb
 // https://lldb.llvm.org/use/map.html
+
+// Linus on typedefs
+// https://yarchive.net/comp/linux/typedefs.html
+// https://yarchive.net/comp/linux/bitfields.html
