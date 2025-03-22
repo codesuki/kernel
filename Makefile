@@ -7,6 +7,10 @@ OBJECTS = $(ASM_SOURCES:.s=.o)
 C_SOURCES = $(wildcard *.c)
 OBJECTS += $(C_SOURCES:.c=.o)
 
+# ref: https://make.mad-scientist.net/papers/advanced-auto-dependency-generation/
+DEPDIR := .deps
+DEPFLAGS = -MT $@ -MMD -MP -MF $(DEPDIR)/$*.d
+
 LD = x86_64-elf-ld
 LDFLAGS = -T linker.ld -nostdlib -z max-page-size=0x1000
 
@@ -24,7 +28,7 @@ ASFLAGS = -f elf64 -g -F dwarf
 all: $(ISO)
 
 clean:
-	@rm $(OBJECTS) $(KERNEL) $(ISO)
+	@rm -f $(OBJECTS) $(KERNEL) $(ISO)
 	@rm -r dist/
 
 run: $(ISO)
@@ -41,7 +45,7 @@ run: $(ISO)
 	#-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
 
 debug: $(ISO)
-	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -monitor stdio #-S
+	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -monitor stdio # -S
 
 run-bochs: $(ISO)
 	bochs -f bochs.rc
@@ -58,5 +62,12 @@ $(KERNEL): $(OBJECTS)
 %.o: %.s
 	$(AS) $(ASFLAGS) $< -o $@
 
-%.o: %.c %.h
-	$(CC) -c $(CFLAGS) $(CPPFLAGS) $< -o $@
+%.o: %.c
+%.o: %.c $(DEPDIR)/%.d | $(DEPDIR)
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) $< -o $@
+
+$(DEPDIR): ; @mkdir -p $@
+
+DEPFILES := $(C_SOURCES:%.c=$(DEPDIR)/%.d)
+$(DEPFILES):
+include $(wildcard $(DEPFILES))

@@ -1,4 +1,5 @@
 .DS_Store
+.deps/
 iso/
 *.o
 *.img
