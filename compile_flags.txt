@@ -1,0 +1,6 @@
+-g
+-Wall
+-Wextra
+-ffreestanding
+-mno-red-zone
+-std=c23
