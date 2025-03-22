@@ -56,3 +56,8 @@ extern task* task_current;
 // It won't be needed anymore because we jump out of kmain.
 extern task* task_scheduler;
 extern task* task_idle;
+extern task* service_mouse;
+extern task* service_keyboard;
+extern task* service_network;
+extern task* service_dhcp;
+extern task* service_dns;

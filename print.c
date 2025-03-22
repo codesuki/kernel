@@ -1,6 +1,7 @@
 #include "print.h"
 
 #include "types.h"
+#include "lib.h"
 
 #define va_start(v, l) __builtin_va_start(v, l)
 #define va_arg(v, l) __builtin_va_arg(v, l)
@@ -8,51 +9,7 @@
 #define va_copy(d, s) __builtin_va_copy(d, s)
 typedef __builtin_va_list va_list;
 
-char* reverse(char* buffer, unsigned int length) {
-  char* start = buffer;
-  char* end = buffer + length - 1;
-  while (start < end) {
-    char tmp = *start;
-    *start++ = *end;
-    *end-- = tmp;
-  }
-  return buffer;
-}
 
-char digit(int value) {
-  // Hack: jumps over ascii values between 9 and A to display hex.
-  if (value > 9) {
-    return '0' + 7 + value;
-  } else {
-    return '0' + value;
-  }
-}
-
-char* itoa(int value, char* buffer, unsigned int base) {
-  char* s = buffer;
-  // This seems too specific to base 10?
-  // Answer from stdlib:
-  // If base is 10 and value is negative, the resulting string is preceded with
-  // a minus sign (-). With any other base, value is always considered unsigned.
-  if (base == 10 && value < 0) {
-    *s++ = '-';
-    ++buffer;
-    value = -value;
-  }
-  while (value >= base) {
-    int remainder = value % base;
-    value /= base;
-    *s++ = digit(remainder);
-  }
-  *s++ = digit(value);
-  if (base == 16) {
-    *s++ = 'x';
-    *s++ = '0';
-  }
-  *s = 0;
-  reverse(buffer, s - buffer);
-  return buffer;
-}
 
 // Do we have a memory problem?
 
@@ -95,8 +52,6 @@ u16 terminal_buffer_start = 0;
 u16 terminal_buffer_row_index = 0;
 u16 terminal_buffer_column_index = 0;
 u16 terminal_cursor_index = 0;
-
-int printf(const char* format, ...);
 
 // We need to wrap around and look at the end of the ring buffer if we are on
 // the first screen. This is the adjusted_cursor_index.

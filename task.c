@@ -12,6 +12,11 @@ task* task_current = nullptr;
 // It won't be needed anymore because we jump out of kmain.
 task* task_scheduler = nullptr;
 task* task_idle = nullptr;
+task* service_mouse = nullptr;
+task* service_keyboard = nullptr;
+task* service_network = nullptr;
+task* service_dhcp = nullptr;
+task* service_dns = nullptr;
 
 void task_mark_finished(task* task) {
   task->state = finished;
