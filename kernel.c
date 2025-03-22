@@ -1,329 +1,6 @@
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-
-typedef uint64_t u64;
-typedef int64_t s64;
-typedef uint32_t u32;
-typedef int32_t s32;
-typedef uint16_t u16;
-typedef int16_t s16;
-typedef uint8_t u8;
-typedef int8_t s8;
-
-#define va_start(v, l) __builtin_va_start(v, l)
-#define va_arg(v, l) __builtin_va_arg(v, l)
-#define va_end(v) __builtin_va_end(v)
-#define va_copy(d, s) __builtin_va_copy(d, s)
-typedef __builtin_va_list va_list;
-
-char* reverse(char* buffer, unsigned int length) {
-  char* start = buffer;
-  char* end = buffer + length - 1;
-  while (start < end) {
-    char tmp = *start;
-    *start++ = *end;
-    *end-- = tmp;
-  }
-  return buffer;
-}
-
-char digit(int value) {
-  // Hack: jumps over ascii values between 9 and A to display hex.
-  if (value > 9) {
-    return '0' + 7 + value;
-  } else {
-    return '0' + value;
-  }
-}
-
-char* itoa(int value, char* buffer, unsigned int base) {
-  char* s = buffer;
-  // This seems too specific to base 10?
-  // Answer from stdlib:
-  // If base is 10 and value is negative, the resulting string is preceded with
-  // a minus sign (-). With any other base, value is always considered unsigned.
-  if (base == 10 && value < 0) {
-    *s++ = '-';
-    ++buffer;
-    value = -value;
-  }
-  while (value >= base) {
-    int remainder = value % base;
-    value /= base;
-    *s++ = digit(remainder);
-  }
-  *s++ = digit(value);
-  if (base == 16) {
-    *s++ = 'x';
-    *s++ = '0';
-  }
-  *s = 0;
-  reverse(buffer, s - buffer);
-  return buffer;
-}
-
-// Do we have a memory problem?
-
-/*
-  without terminal buffer
-  000000000010d0e0 g     O .bss   0000000000002010 network_rx_buffer
-
-  with terminal buffer
-  000000000041a500 g     O .bss   0000000000002010 network_rx_buffer
-  000000000010c020 g     O .bss   000000000030d400 terminal_buffer
- */
-
-// ref: https://en.wikipedia.org/wiki/VGA_text_mode#Access_methods
-u8* videoram = (u8*)0xb8000;
-
-int xpos = 0;
-int ypos = 0;
-
-int mouse_x = 0;
-int mouse_y = 0;
-
-// How can we improve this?
-// Have a ring buffer that holds N pages 25*80
-// How do we write to it? Printf should do what?
-// Just write to that buffer instead of the video ram.
-// Write that buffer to video ram, could be optimized, but not needed, yet.
-// Have a pointer/"cursor" that says which line is the top/bottom line on the
-// screen. Can control the pointer with arrow keys to scroll up and down.
-
-// 2 is because every character has the character and a color/format.
-#define num_pages 3
-#define num_rows 25
-#define num_cols 80
-#define terminal_buffer_size (num_cols * num_rows * 2 * num_pages)
-u8 terminal_buffer[num_cols * num_rows * 2 * num_pages] = {0};  // 100 pages
-
-// ring buffer start. once we are at the end it needs to wrap. should be aligned
-// to start of line I guess.
-u16 terminal_buffer_start = 0;
-u16 terminal_buffer_row_index = 0;
-u16 terminal_buffer_column_index = 0;
-u16 terminal_cursor_index = 0;
-
-int printf(const char* format, ...);
-
-// We need to wrap around and look at the end of the ring buffer if we are on
-// the first screen. This is the adjusted_cursor_index.
-void display() {
-  for (int y = 0; y < num_rows; y++) {
-    for (int x = 0; x < num_cols; x++) {
-      if (x == mouse_x && y == mouse_y) {
-	int idx = y * num_cols * 2 + x * 2;
-	videoram[idx] = 'o';
-	videoram[idx + 1] = 0x4;
-	continue;
-      }
-      // contract: at minimum we want to start at terminal_buffer_start default
-      // is cursor locked at last line so we want to subtract 25 lines, but only
-      // if we are over 25.
-      bool is_after_first_page = terminal_cursor_index > 24;
-      int adjusted_cursor_index =
-	  is_after_first_page * (terminal_cursor_index - 24) +
-	  (1 - is_after_first_page) *
-	      (num_rows * num_pages - num_rows + terminal_cursor_index);
-      int terminal_buffer_offset =
-	  terminal_buffer_start + adjusted_cursor_index * num_cols * 2;
-      int idx = y * num_cols * 2 + x * 2;
-      videoram[idx] = terminal_buffer[(terminal_buffer_offset + idx) %
-				      terminal_buffer_size];
-      videoram[idx + 1] = terminal_buffer[(terminal_buffer_offset + idx + 1) %
-					  terminal_buffer_size];
-    }
-  }
-}
-
-void clear_page() {
-  for (u32 i = 0; i < num_rows * num_cols * 2; i++) {
-    u32 idx =
-	(terminal_buffer_row_index * num_cols * 2 + i) % terminal_buffer_size;
-    terminal_buffer[idx] = 0;
-  }
-  // printf("cleared from %d to %d\n", terminal_buffer_row_index,
-  // terminal_buffer_row_index + num_rows );
-}
-
-void new_line() {
-  // reset to first column
-  terminal_buffer_column_index = 0;
-  // one line down
-  // printf("%d/%d L%d:", terminal_buffer_row_index/num_rows, num_pages,
-  // terminal_buffer_row_index);
-
-  terminal_buffer_row_index =
-      (terminal_buffer_row_index + 1) % (num_rows * num_pages);
-  if (terminal_buffer_row_index % num_rows == 0) {
-    clear_page();
-  }
-  // lock cursor at last line
-  terminal_cursor_index = terminal_buffer_row_index;
-  /* // super hacky */
-  /* if (terminal_buffer_row_index % 25 == 0) { */
-  /*   // cls(); */
-  /*   // automatically move cursor */
-  /*   terminal_buffer_row_index++; */
-  /* } */
-}
-
-void print_character_color(char c, char color) {
-  switch (c) {
-    case '\n':
-      new_line();
-      break;
-    default:
-      // Possible integer overrun
-      u16 idx = terminal_buffer_row_index * num_cols * 2 +
-		terminal_buffer_column_index * 2;
-      terminal_buffer[idx] = (int)c;
-      terminal_buffer[idx + 1] = color;
-      terminal_buffer_column_index++;
-  }
-}
-
-/* void new_line() { */
-/*   xpos = 0; */
-/*   ++ypos; */
-/*   if (ypos > 25) { */
-/*     ypos = 0; */
-/*   } */
-/* } */
-
-/* void print_character_color(char c, char color) { */
-/*   switch (c) { */
-/*     case '\n': */
-/*       new_line(); */
-/*       break; */
-/*     default: */
-/*       if (xpos > 80 * 2) { */
-/*	new_line(); */
-/*       } */
-/*       videoram[ypos * 80 * 2 + xpos * 2] = (int)c; */
-/*       videoram[ypos * 80 * 2 + xpos * 2 + 1] = color; */
-/*       xpos++; */
-/*   } */
-/* } */
-
-void print_character(char c) {
-  print_character_color(c, 0x07);
-}
-
-void print_string_n(char* s, int limit) {
-  int i = 0;
-  while (*s != 0) {
-    print_character(*s);
-    s++;
-    i++;
-    if (i == limit) {
-      return;
-    }
-  }
-}
-
-void print_string(char* s) {
-  print_string_n(s, 0);
-}
-
-void print_integer(int d) {
-  char number_buffer[11];
-  itoa(d, number_buffer, 10);
-  print_string(number_buffer);
-}
-
-void print_hex(int d) {
-  char number_buffer[11];
-  itoa(d, number_buffer, 16);
-  print_string(number_buffer);
-}
-
-// memset with vectorized implementation can be faster
-void cls() {
-  int i = 0;
-  for (i = 0; i < 80 * 25 * 2; ++i) {
-    videoram[i] = 0;
-  }
-  xpos = 0;
-  ypos = 0;
-}
-
-void cll(int line) {
-  for (int i = 0; i < 80 * 2; i++) {
-    videoram[line * 80 * 2 + i] = 0;
-  }
-}
-
-void print_warning(char* s) {
-  print_string("Warning: ");
-  print_string(s);
-}
-
-void print_error(char* s) {
-  print_string("Error: ");
-  print_string(s);
-}
-
-int printf(const char* format, ...) {
-  va_list args;
-  int d;
-  char* s;
-  va_start(args, format);
-  while (*format != 0) {
-    char c = *format;
-    if (c == '%') {
-      c = *++format;
-      // hacky ad hoc modifier parsing.
-      int length = 0;
-      switch (c) {
-	case '.':
-	  c = *++format;
-	  switch (c) {
-	    case '*':
-	      length = va_arg(args, int);
-	      break;
-	    default:
-	      // panic()
-	      break;
-	  }
-	  c = *++format;
-	  break;
-      }
-      switch (c) {
-	case 'd':
-	  d = va_arg(args, int);
-	  print_integer(d);
-	  break;
-	case 'c':
-	  c = va_arg(args, int);
-	  print_character(c);
-	  break;
-	case 's':
-	  s = va_arg(args, char*);
-	  print_string_n(s, length);
-	  break;
-	case 'x':
-	  d = va_arg(args, int);
-	  print_hex(d);
-	  break;
-      }
-    } else {
-      print_character(c);
-    }
-    ++format;
-  }
-  va_end(args);
-  display();
-}
-
-/* available colors
-
-   0:black, 1:blue, 2:green, 3:cyan, 4:red,
-   5:magenta, 6:brown, 7:light grey, 8:dark grey,
-   9:light blue, 10:light green, 11:light cyan,
-   12:light red, 13:light magneta, 14: light brown, 15: white
- */
+#include "memory.h"
+#include "print.h"
+#include "types.h"
 
 /* task-state segment */
 struct tss_struct {
@@ -586,14 +263,14 @@ int min(int x, int y) {
 }
 
 // TODO: optimize by copying bigger blocks at once.
-void memcpy(void* src, void* dst, size_t len) {
+void memcpy(void* src, void* dst, usize len) {
   for (int i = 0; i < len; i++) {
     ((u8*)dst)[i] = ((u8*)src)[i];
   }
 }
 
-void memset(void* dst, u8 byte, size_t len) {
-  for (size_t i = 0; i < len; i++) {
+void memset(void* dst, u8 byte, usize len) {
+  for (usize i = 0; i < len; i++) {
     ((u8*)dst)[i] = byte;
   }
 }
@@ -826,8 +503,8 @@ bool strncmp(char* s1, char* s2, int n) {
   return true;
 }
 
-bool memcmp(void* s1, void* s2, size_t n) {
-  for (size_t i = 0; i < n; i++) {
+bool memcmp(void* s1, void* s2, usize n) {
+  for (usize i = 0; i < n; i++) {
     if (((u8*)s1)[i] != ((u8*)s2)[i]) {
       printf("i: %d s1: %d s2: %d\n", i, ((u8*)s1)[i], ((u8*)s2)[i]);
       return false;
@@ -931,364 +608,6 @@ struct mouse_data {
   u8 y;
 };
 typedef struct mouse_data mouse_data_t;
-
-// Memory start
-// Defined in linker script.
-// Need to take the address, because the address is the value in this case.
-// ref: https://sourceware.org/binutils/docs/ld/Source-Code-Reference.html
-extern u64 _kernel_start;
-extern u64 _kernel_end;
-
-const u32 page_size = 0x200000;  // 2mb
-
-typedef struct memory memory;
-struct memory {
-  u64 address;
-  u64 size;  // 4kb, 2mb, etc.
-  memory* next;
-  memory* prev;
-};
-
-// Current thought, keep two lists. Free and used memory.
-// When we malloc we take from the free list and put it into the used list.
-// When we free we search the address in the used list and move it back.
-// What other way is there to implement free?
-memory* memory_free_first = NULL;
-memory* memory_used_first = NULL;
-
-// memory_init creates the first memorys in physical memory, because we cannot
-// call malloc.
-void memory_init(u64 base_address, u64 length) {
-  // We don't want to touch the memory block from 0 - 1mb.
-  // All BIOS things live there.
-  if (base_address == 0) {
-    return;
-  }
-  // This will make our math below go awry.
-  if (length == 0) {
-    return;
-  }
-
-  // Kernel size was off because it was doing address arithmetic. Casting to
-  // u64 fixed it. This caused the memorys to be allocated on kernel
-  // memory which caused memory corruption.
-  u64 base_address_after_kernel =
-      base_address + ((u64)&_kernel_end - (u64)&_kernel_start);
-
-  printf("memory_init: available memory with base %x and length %x\n",
-	 base_address, length);
-
-  printf("memory_init: kernel located between %x - %x\n", &_kernel_start,
-	 &_kernel_end);
-
-  // TODO: I think this overcounts. I.e. the last page is too big for the
-  // available physical memory.
-  // Maybe for now we don't track the memorys themselves.
-  // How many do we need?
-  u64 page_count = length / page_size;
-  u64 memory_size = page_count * sizeof(memory);
-
-  // After our memorys
-  // Aligned on page_size.
-  u64 usable_memory =
-      ((base_address_after_kernel + memory_size + (page_size - 1)) &
-       ~(page_size - 1));
-
-  printf("memory_init: %d 2mb pages available\n", page_count);
-  printf("memory_init: usable memory starts from %x\n", usable_memory);
-
-  memory* current = (memory*)base_address_after_kernel;
-  memory* prev = NULL;
-
-  memory_free_first = current;
-
-  for (u64 i = 0; i < page_count; i++) {
-    current->address = usable_memory;
-    current->next = NULL;
-    current->prev = prev;
-    current->size = page_size;
-
-    if (prev != NULL) {
-      prev->next = current;
-    }
-
-    // Nice in Bochs because we only have 30mb there.
-    // printf("memory_init: assigned %x\n", m->address);
-
-    usable_memory += page_size;
-    prev = current;
-    current++;
-  }
-  for (memory* m = memory_free_first; m != NULL; m = m->next) {
-    printf("memory_init: %x %x %x\n", m->address, m->next, m->prev);
-  }
-}
-
-void memory_add(u64 address) {
-  if (memory_free_first == NULL) {
-    memory_used_first = NULL;
-    // Ouch! We want a new memory. Now do we malloc one? Haha.. Maybe the
-    // kernel needs to reserve some memory beforehand for some kind of
-    // bootstrap?
-    // So when we read available memory, we remove the kernel area.
-    // Then we know the real start of the memory.
-    // Then we can just do memory * m = start of memory;
-    // And so on.
-  }
-}
-
-memory* memory_remove() {
-  if (memory_free_first == NULL) {
-    return NULL;
-  }
-  memory* memory = memory_free_first;
-  memory_free_first = memory->next;
-  memory_free_first->prev = memory->prev;
-  return memory;
-}
-
-// Note about memory management.
-// There is physical memory in the system. We get its address ranges from Grub.
-// Then there is virtual memory (enforced in 64bit mode).
-// Page tables describe a mapping from physical to virtual memory.
-// A page can be 1Gb, 2mb, 4kb, ...
-// A task has it's own virtual memory. There doesn't exist enough physical
-// memory to fill this. Just some parts are mapped in via the page table.
-// If a task needs memory it needs to request pages to be mapped to its virtual
-// address space. Afterwards it can use this memory for all the objects it
-// creates. We see that task memory can only grow by page size increments
-// although they may be bigger or smaller than what the task needs. So there
-// needs to be some kind of memory management to efficiently utilize the memory
-// the task received. This is what malloc does.
-//
-// What will we do here? Currently we just allocate complete pages which is why
-// we immediately run out of memory. Now we want malloc to request and manage
-// only as much memory as necessary.
-//
-// Currently we only have the kernel page table.
-//
-// If there is no memory allocated to the task, ask the kernel for some memory
-// however much is necessary to fullfill the request, in page size increments.
-// Malloc then will only utilize the part that the task really needs. I.e. the
-// task requests 1 byte but the page size is 2mb. So malloc will reserve 1 byte
-// of memory. Malloc could keep a list of memory it gave out with the address as
-// key. When we want to free memory we look into this list. This list also needs
-// to live somewhere so we need to account for the size of this list when we
-// request memory.
-//
-// Where should this structure live? It can be a list of free / used memory.
-// Searching the list seems slow. O(n). Could be a hash map for O(1) lookup.
-// Could be a tree for binary search. (What's the O? something log).
-//
-// When the task requests memory that memory needs to be contiguous.
-//
-// Interesting thought: Do pages need to be contiguous? I don't think so as long
-// as they are mapped contiguously into the virtual address space. This is why
-// alignment is so important. TODO: flesh this out.
-//
-// All too complicated. I will go with a free list again. On free we add blocks
-// back and try to merge if possible. Fixed size 2mb heap.
-//
-// In the beginning we don't have memory again, so similarly to the free pages
-// list we create a free list for malloc. The free pages I pre-allocated but
-// with malloc that won't be possible.
-//
-// We can't know how big the list would be up front. We can do a worst case
-// analysis. If the task requests 1 byte increments we create the biggest
-// overhead because there is one structure allocated for 1 byte. Of course we
-// could use as much as we have physical memory.
-//
-// I'll reuse the headers of the allocated memory that are used for freeing as
-// free list structures.
-
-typedef struct memory_header memory_header;
-struct memory_header {
-  u64 size;
-  memory_header* next;
-};
-
-memory_header* malloc_free_list = nullptr;
-
-void* malloc(u64 size) {
-  if (malloc_free_list == nullptr) {
-    // Reserve a 2mb page.
-    memory* m = memory_remove();
-    // TODO: all these printfs should be converted to a debug logger.
-    // printf("malloc: received %d bytes from kernel\n", m->size);
-    memory_header* h = (memory_header*)(m->address);
-    h->size = m->size;
-    h->next = NULL;
-    malloc_free_list = h;
-  }
-
-  u64 actual_size = size + sizeof(memory_header) + sizeof(memory_header);
-  // memory_header is 16 bytes. Times 2 is 32 bytes. If we allocate 1 byte we
-  // have 32 bytes overhead.
-  // printf("malloc: allocating %d bytes for the requested %d bytes\n",
-  //	 actual_size, size);
-
-  // First fit
-  memory_header* m = malloc_free_list;
-  memory_header* prev = nullptr;
-  while (m != nullptr) {
-    // Not big enough
-    if (m->size < actual_size) {
-      prev = m;
-      m = m->next;
-      continue;
-    }
-
-    // Positive cases. Perfect match or too big. In case it's too big we need to
-    // chop it up. Maybe we can merge the cases by passing the perfect size to
-    // the chop function which results in a no-op.
-    if (m->size == actual_size) {
-      u64 address = (u64)m;
-      // printf("malloc2 perfect: %x\n", (void*)(address));
-
-      // TODO: we don't need to do this anymore. It's the same type.
-      memory_header* h = (memory_header*)address;
-      h->size = actual_size;
-
-      // TODO: I am not removing this from the free list so I expect it to be
-      // used twice. I.e. log will show perfect twice.
-      // Yes this happened.
-      // Remove it from the free list.
-      if (m == malloc_free_list) {
-	malloc_free_list = m->next;
-      } else {
-	// We should have prev
-	prev->next = m->next;
-      }
-
-      // printf("malloc: current free list\n");
-      // for (memory_header* m = malloc_free_list; m != nullptr; m = m->next)
-      // {	printf("malloc: %x %d\n", m, m->size);
-      // }
-
-      return (void*)(address + sizeof(memory_header));
-    } else {
-      // We need to chop it up. Because the address is the address of the
-      // struct, it needs to move.
-
-      // Naively we would:
-      // Move the current header after the memory we allocate.
-      // Reduce the size in the header by the size of the allocation
-      // (actual_size).
-      // Update the free list's previous items next pointer to
-      // the new header. Allocate the space with header.
-
-      // IMPORTANT: It was bigger than actual_size, but we don't know if it was
-      // big enough to fit another memory_header into it. We can check, if
-      // it's not big enough we could merge with the next slot if it's free, but
-      // there is no guarantee for that. If it's not free we are out of luck.
-      // Maybe best is to check if it's big enough. Worst case we write a header
-      // for a 0 byte block. At least we can use it when merging. Alternatively
-      // we overallocate and set the size of the actual allocation to the max
-      // possible. This way we save one hop when iterating over the free list.
-
-      // For now I went with the 0 size element by changing the continue
-      // condition above.
-
-      u64 address = (u64)m;
-
-      // printf("malloc: found %d bytes slot to chop at %x\n", m->size,
-      // address);
-
-      memory_header* moved_m = (memory_header*)(address + actual_size);
-      moved_m->size = m->size - actual_size;
-      moved_m->next = m->next;
-
-      // If we are moving the actual first element, update it.
-      if (m == malloc_free_list) {
-	malloc_free_list = moved_m;
-      } else {
-	// We should have prev
-	prev->next = moved_m;
-      }
-
-      // Allocate the space with a header and return the address after the
-      // header.
-      memory_header* h = (memory_header*)address;
-      h->size = actual_size;
-
-      // printf("malloc: current free list\n");
-      // for (memory_header* m = malloc_free_list; m != nullptr; m = m->next)
-      // {	printf("malloc: %x %d\n", m, m->size);
-      // }
-
-      return (void*)(address + sizeof(memory_header));
-    }
-  }
-
-  // If we came this far we didn't find free memory.
-  // printf("malloc2: OOM\n");
-  return nullptr;
-}
-
-void free(void* memory) {
-  // All we know currently is the address. We stored a struct that contains the
-  // size before the address.
-  memory_header* h = (memory_header*)memory - 1;
-  // printf("free: %d\n", h->size);
-
-  // Put it back into the free list.
-  // Sort it by address so that merging is easier.
-  // Hunch: I only have to check prev and next to see if they are mergable.
-
-  u64 address = (u64)h;
-
-  memory_header* current = malloc_free_list;
-  memory_header* prev = nullptr;
-  while (current != nullptr) {
-    // TODO: having the address in here is waste because we already know it.
-    if ((u64)current < (u64)address) {
-      prev = current;
-      current = current->next;
-      continue;
-    }
-    break;
-  }
-
-  // What is this state?
-  if (current == nullptr) {
-  } else {
-    // Where do I get that object from? The memory. Do I create this again
-    // inside the free memory? I could call malloc now, but then I would have
-    // some overhead from the header. Can I reuse the header somehow?
-    // First thought: but then I can't free the header.
-    // Second thought: doesn't matter because it will just become a header again
-    // anyway.
-    // It will be cheaper if I re-use the headers because otherwise I write down
-    // the size of the thing again.
-
-    // I don't even need a pointer in them because I can calculate it. I how how
-    // far the next item is away. But I cannot decide between free and used
-    // memory this way. I could certainly find the next header but wouldn't know
-    // what to do with it.
-
-    // I am unhappy that I skimmed the book because it robbed me of the
-    // opportunity to think.
-
-    // Let's do without merging for now.
-
-    // Now current is larger than address.
-    // Convert the header to a free list element.
-    prev->next = h;
-    h->next = current;
-
-    // Set head of list to smallest address. I assume the big free block is
-    // always at the end because we cut it from the front.
-    if (h < malloc_free_list) {
-      malloc_free_list = h;
-    }
-  }
-
-  // printf("free: current free list\n");
-  // for (memory_header* m = malloc_free_list; m != nullptr; m = m->next) {
-  //   printf("free: %x %d\n", m, m->size);
-  // }
-}
-// Memory end
 
 // Task start
 
@@ -1777,7 +1096,7 @@ const u32 buffer_header_offset = 138;
 // individual write_header functions?
 // ipv4 header size depends on how many options there are, we can precompute
 // given we know the options.
-void buffer_write_body(buffer* buffer, void* bytes, size_t len) {
+void buffer_write_body(buffer* buffer, void* bytes, usize len) {
   memcpy(bytes,
 	 buffer->packet + buffer_header_offset + buffer->bytes_written_body,
 	 len);
@@ -1788,7 +1107,7 @@ void buffer_write_byte_body(buffer* buffer, u8 byte) {
   buffer_write_body(buffer, &byte, sizeof(byte));
 }
 
-void buffer_write_header(buffer* buffer, void* bytes, size_t len) {
+void buffer_write_header(buffer* buffer, void* bytes, usize len) {
   buffer->bytes_written_header += len;
   memcpy(bytes,
 	 buffer->packet + buffer_header_offset - buffer->bytes_written_header,
@@ -1858,7 +1177,7 @@ void net_write_ipv4_header(net_request* req, buffer* buffer) {
 // ref: https://datatracker.ietf.org/doc/html/rfc768
 // ref: http://www.faqs.org/rfcs/rfc768.html
 
-u16 udp_checksum(net_request* req, udp_header* udph, u16* addr, size_t length) {
+u16 udp_checksum(net_request* req, udp_header* udph, u16* addr, usize length) {
   udp_pseudo_ip_header ps = {0};
   ps.source_address = htonl_bytes(req->source_address);
   ps.destination_address = htonl_bytes(req->destination_address);
@@ -2037,7 +1356,7 @@ void send_dhcp_request() {
 #define DNS_NULL_LABEL 0
 
 // Inject hostname
-size_t net_write_dns_query(u16 id, buffer* buffer) {
+usize net_write_dns_query(u16 id, buffer* buffer) {
   dns_header header = {0};
 
   // transaction id
@@ -2838,6 +2157,11 @@ void keyboard_service() {
 // use a pool.
 //
 // Let's go with 1 for simplicity.
+
+// TODO: just to make it compile. what to do about this?
+extern int mouse_x;
+extern int mouse_y;
+
 void mouse_service() {
   while (1) {
     // Currently the mouse interrupt handler knows this tasks queue and sends it
@@ -4011,11 +3335,14 @@ void ioapic_setup() {
   ps2_wait_ready();
   outb(PS2_DATA_REGISTER, config | 0x3);  // enable interrupts. bits 1,2
 
-  // Bug: here the problems start. After enabling interrupts we somehow receive
-  // the response to PS2_COMMAND_READ_CONFIG_BYTE via keyboard interrupt.
+  // Bug: here the problems start. After enabling interrupts we somehow
+  // receive the response to PS2_COMMAND_READ_CONFIG_BYTE via keyboard
+  // interrupt.
+  //
   // Output:
   // scancode: 0x3
   // config byte 6: 0x3
+  //
   // This also means reading from the buffer does not clear it.
   //
   // The answer is on the wiki already...

@@ -58,5 +58,5 @@ $(KERNEL): $(OBJECTS)
 %.o: %.s
 	$(AS) $(ASFLAGS) $< -o $@
 
-%.o: %.c
+%.o: %.c %.h
 	$(CC) -c $(CFLAGS) $(CPPFLAGS) $< -o $@
