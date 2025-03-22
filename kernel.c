@@ -925,658 +925,6 @@ void setup_hpet() {
   printf("hpet: counter: %d\n", *counter_value);
 }
 
-// TODO: can this be async?
-// We probably get an interrupt that tells us TX was done.
-void net_transmit(void* data, u32 length) {
-  // set address to descriptor
-  // set size
-  // set 0 to own
-  // printf("network: tx: using descriptor %d\n",
-  // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, (u32)data);
-  // u32 a = inl(base + 0x20);
-  // printf("TX addr: %x\n", a);
-  // bit 0-12 = size, bit 13 = own
-  outl(base + 0x10 + network_current_tx_descriptor * 4, length);
-  // wait for TOK
-  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
-	 (1 << 15) == 0) {
-  }
-
-  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
-}
-
-// Merge
-#define NET_ETHERTYPE_IPV4 0x0800
-#define NET_ETHERTYPE_ARP 0x0806
-
-#define NET_ARP_OP_REQUEST 1
-#define NET_ARP_OP_REPLY 2
-
-#define NET_PORT_DNS 53
-#define NET_PORT_DHCP_SERVER 67
-#define NET_PORT_DHCP_CLIENT 68
-
-// From ipv4 header
-#define NET_PROTOCOL_ICMP 0x1
-#define NET_PROTOCOL_UDP 0x11
-
-#define DHCP_OP_DISCOVER 1
-#define DHCP_OP_OFFER 2
-#define DHCP_OP_REQUEST 3
-#define DHCP_OP_DECLINE 4
-#define DHCP_OP_ACK 5
-#define DHCP_OP_NACK 6
-
-#define DHCP_HARDWARE_TYPE_ETHERNET 1
-#define DHCP_HARDWARE_LENGTH_ETHERNET 6
-
-#define DHCP_OPTION_PAD 0
-#define DHCP_OPTION_END 255
-#define DHCP_OPTION_MESSAGE_TYPE 53
-#define DHCP_OPTION_MESSAGE_TYPE_LENGTH 1
-#define DHCP_OPTION_IP_REQUEST 50
-#define DHCP_OPTION_IP_REQUEST_LENGTH 4
-#define DHCP_OPTION_SERVER 54
-#define DHCP_OPTION_SERVER_LENGTH 4
-
-struct net_device {
-  u8 mac[6];
-  u8 ip[4];
-};
-
-// needs source and dest port
-// needs src dest address and protocol ipv4
-// all of this is probably on the connection? is there a connection in udp?
-// is it on the 'socket'? Is it a request? Request is from to and what kind of
-// protocol to use? from / to also decided if it's ipv4 or ipv6?
-// I like connection better but udp has no connections.
-struct net_request {
-  // ipv6 would be longer.
-  u8 source_mac[6];
-  u8 source_address[4];
-  u32 source_port;
-  u8 destination_mac[6];
-  u8 destination_address[4];
-  u32 destination_port;
-  u32 ether_type;
-  u8 protocol;
-};
-typedef struct net_request net_request;
-
-struct buffer {
-  u8 packet[1518];
-  u32 bytes_written_body;
-  u32 bytes_written_header;
-};
-typedef struct buffer buffer;
-
-// Ethernet header 18 bytes + 1500 bytes content.
-// ref: https://en.wikipedia.org/wiki/Ethernet_frame
-// Ethernet header 18 bytes.
-// IP header is min 20 bytes and max 60 bytes.
-// UDP header is 8 bytes.
-// TCP header is min 20 bytes and max 60 bytes.
-// We can reserve 138 bytes.
-const u32 buffer_header_offset = 138;
-
-// need to write content
-// then need to write all headers backwards
-// difficult to know size of ip header
-// individual write_header functions?
-// ipv4 header size depends on how many options there are, we can precompute
-// given we know the options.
-void buffer_write_body(buffer* buffer, void* bytes, size_t len) {
-  memcpy(bytes,
-	 buffer->packet + buffer_header_offset + buffer->bytes_written_body,
-	 len);
-  buffer->bytes_written_body += len;
-}
-
-void buffer_write_byte_body(buffer* buffer, u8 byte) {
-  buffer_write_body(buffer, &byte, sizeof(byte));
-}
-
-void buffer_write_header(buffer* buffer, void* bytes, size_t len) {
-  buffer->bytes_written_header += len;
-  memcpy(bytes,
-	 buffer->packet + buffer_header_offset - buffer->bytes_written_header,
-	 len);
-}
-
-void* buffer_packet(buffer* buffer) {
-  return buffer->packet + buffer_header_offset - buffer->bytes_written_header;
-}
-
-void* buffer_body(buffer* buffer) {
-  return buffer->packet + buffer_header_offset;
-}
-
-u32 buffer_length(buffer* buffer) {
-  return buffer->bytes_written_body + buffer->bytes_written_header;
-}
-
-void net_write_ethernet_frame(net_request* req, buffer* buffer) {
-  ethernet_frame frame = {0};
-  memcpy(req->source_mac, frame.source_mac, 6);
-  memcpy(req->destination_mac, frame.destination_mac, 6);
-  if (req->ether_type != 0) {
-    frame.ethertype = htons(req->ether_type);
-  } else {
-    frame.ethertype = htons(NET_ETHERTYPE_IPV4);
-  }
-  buffer_write_header(buffer, &frame, sizeof(frame));
-}
-
-void net_write_broadcast_ethernet_frame(
-    /*sender address _t*/ buffer* buffer) {
-  ethernet_frame frame = {0};
-  memcpy(mac, frame.source_mac, 6);
-  memcpy(broadcast_mac, frame.destination_mac, 6);
-  frame.ethertype = htons(NET_ETHERTYPE_IPV4);
-  buffer_write_header(buffer, &frame, sizeof(frame));
-}
-
-void net_write_ipv4_header(net_request* req, buffer* buffer) {
-  ipv4_header header = {0};
-  header.version = 4;
-  header.ihl = 5;  // no options
-  header.ttl = 100;
-  if (req->protocol != 0) {
-    header.protocol = req->protocol;
-  } else {
-    header.protocol = NET_PROTOCOL_UDP;
-  }
-  header.source_address = htonl_bytes(req->source_address);
-  header.destination_address = htonl_bytes(req->destination_address);
-
-  // For one moment I thought we could just access the udp header here and get
-  // the length, but it's not feasible for this code to know about other
-  // headers.
-  header.length = htons(header.ihl * 4 + buffer->bytes_written_header +
-			buffer->bytes_written_body);
-
-  header.checksum = ipv4_checksum((u16*)&header, header.ihl * 4);
-  buffer_write_header(buffer, &header, sizeof(header));
-}
-
-// Checksum is the 16-bit one's complement of the one's complement sum of a
-// pseudo header of information from the IP header, the UDP header, and the
-// data, padded with zero octets at the end (if necessary) to make a multiple of
-// two octets.
-// ref: https://datatracker.ietf.org/doc/html/rfc768
-// ref: http://www.faqs.org/rfcs/rfc768.html
-
-u16 udp_checksum(net_request* req, udp_header* udph, u16* addr, size_t length) {
-  udp_pseudo_ip_header ps = {0};
-  ps.source_address = htonl_bytes(req->source_address);
-  ps.destination_address = htonl_bytes(req->destination_address);
-  ps.protocol = NET_PROTOCOL_UDP;
-  ps.udp_length = length;
-
-  /* Compute Internet Checksum for "count" bytes
-   *         beginning at location "addr".
-   */
-  u32 sum = 0;
-
-  u16* first = (u16*)(&ps);
-  for (u32 i = 0; i < sizeof(ps) / 2; i++) {
-    sum += *first++;
-  }
-
-  first = (u16*)(udph);
-
-  for (u32 i = 0; i < sizeof(*udph) / 2; i++) {
-    sum += *first++;
-  }
-
-  u16 count = ntohs(length);
-
-  while (count > 1) {
-    /*  This is the inner loop */
-    sum += *addr++;
-    count -= 2;
-  }
-
-  /*  Add left-over byte, if any */
-  if (count > 0) {
-    sum += *(u8*)addr;
-  }
-
-  /*  Fold 32-bit sum to 16 bits */
-  while (sum >> 16) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-
-  return ~sum;
-}
-
-void net_write_udp_header(struct net_request* req, buffer* buffer) {
-  udp_header header = {0};
-  header.source_port = htons(req->source_port);            // htons(68);
-  header.destination_port = htons(req->destination_port);  // htons(67);
-  header.length = htons(sizeof(header) + buffer->bytes_written_body);
-
-  // Tricky. We need the header.
-  // Accessor for content would be good.
-  header.checksum =
-      udp_checksum(req, &header, (u16*)(buffer->packet + buffer_header_offset),
-		   header.length);
-
-  buffer_write_header(buffer, &header, sizeof(header));
-}
-
-// TODO: take a net_device as first parameter for access to mac and ip
-// Should this move the FP or return how many bytes written?
-void net_write_dhcp_discover_message(u32 xid, buffer* buffer) {
-  dhcp_message msg = {0};
-
-  msg.op = DHCP_OP_DISCOVER;
-  msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
-  msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
-  msg.hops = 0x00;
-  // Used to match return messages
-  msg.xid = xid;
-  msg.secs = 0;
-  msg.flags = 0;  // Set broadcast bit?
-  // MAC
-  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  msg.chaddr[1] = (mac[5] << 8) | mac[4];
-  // TODO: make this a constant? It's the options header.
-  // ref: https://datatracker.ietf.org/doc/html/rfc2131#section-3
-  msg.magic[0] = 0x63;
-  msg.magic[1] = 0x82;
-  msg.magic[2] = 0x53;
-  msg.magic[3] = 0x63;
-
-  buffer_write_body(buffer, &msg, sizeof(msg));
-
-  // net_write_dhcp_option(option, buffer)
-  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE);
-  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_LENGTH);
-  buffer_write_byte_body(buffer, DHCP_OP_DISCOVER);
-  buffer_write_byte_body(buffer, DHCP_OPTION_END);
-}
-
-void send_dhcp_discover() {
-  u32 xid = (u32)get_global_timer_value();
-
-  net_request req = {
-      .source_address = {0},
-      .source_port = NET_PORT_DHCP_CLIENT,
-      .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
-			      broadcast_ip[3]},
-      .destination_port = NET_PORT_DHCP_SERVER,
-  };
-
-  buffer buffer = {0};
-  net_write_dhcp_discover_message(xid, &buffer);
-  net_write_udp_header(&req, &buffer);
-  net_write_ipv4_header(&req, &buffer);
-  net_write_broadcast_ethernet_frame(&buffer);
-
-  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
-}
-
-void net_write_dhcp_request_message(u32 xid, void* buffer) {
-  dhcp_message msg = {0};
-  msg.op = DHCP_OP_REQUEST;
-  msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
-  msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
-  msg.hops = 0x00;
-  // TODO: there is some state per request.
-  msg.xid = xid;
-  msg.secs = 0;
-  msg.flags = 0;
-  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  msg.chaddr[1] = (mac[5] << 8) | mac[4];
-  msg.siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
-	       (dhcp_router[1] << 8) |
-	       dhcp_router[0];  // htonl_bytes(dhcp_router);
-  msg.magic[0] = 0x63;
-  msg.magic[1] = 0x82;
-  msg.magic[2] = 0x53;
-  msg.magic[3] = 0x63;
-
-  buffer_write_body(buffer, &msg, sizeof(msg));
-
-  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE);
-  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_LENGTH);
-  buffer_write_byte_body(buffer, DHCP_OP_REQUEST);
-  buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST);
-  buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST_LENGTH);
-  buffer_write_byte_body(buffer, ip[0]);
-  buffer_write_byte_body(buffer, ip[1]);
-  buffer_write_byte_body(buffer, ip[2]);
-  buffer_write_byte_body(buffer, ip[3]);
-  buffer_write_byte_body(buffer, DHCP_OPTION_SERVER);
-  buffer_write_byte_body(buffer, DHCP_OPTION_SERVER_LENGTH);
-  buffer_write_byte_body(buffer, dhcp_router[0]);
-  buffer_write_byte_body(buffer, dhcp_router[1]);
-  buffer_write_byte_body(buffer, dhcp_router[2]);
-  buffer_write_byte_body(buffer, dhcp_router[3]);
-  buffer_write_byte_body(buffer, 0xff);
-}
-
-void send_dhcp_request() {
-  // we have the DHCPOFFER reply parameters in the global variables
-  u32 xid = dhcp_offer_xid;
-  net_request req = {
-      //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
-      .source_address = {0},
-      .source_port = NET_PORT_DHCP_CLIENT,
-      .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
-			      broadcast_ip[3]},
-      .destination_port = NET_PORT_DHCP_SERVER,
-  };
-
-  buffer buffer = {0};
-  net_write_dhcp_request_message(xid, &buffer);
-  net_write_udp_header(&req, &buffer);
-  net_write_ipv4_header(&req, &buffer);
-  net_write_broadcast_ethernet_frame(&buffer);
-
-  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
-}
-
-#define DNS_FLAG_QUERY 0
-#define DNS_FLAG_RESPONSE 1
-#define DNS_NULL_LABEL 0
-
-// Inject hostname
-size_t net_write_dns_query_b(buffer* buffer) {
-  dns_header header = {0};
-
-  // transaction id
-  header.id = htons(5);
-  // number of questions
-  header.qdcount = htons(1);
-  header.qr = DNS_FLAG_QUERY;
-  // recursion desired
-  header.rd = 1;
-
-  buffer_write_body(buffer, &header, sizeof(header));
-
-  buffer_write_byte_body(buffer, 6);
-  buffer_write_byte_body(buffer, 'g');
-  buffer_write_byte_body(buffer, 'o');
-  buffer_write_byte_body(buffer, 'o');
-  buffer_write_byte_body(buffer, 'g');
-  buffer_write_byte_body(buffer, 'l');
-  buffer_write_byte_body(buffer, 'e');
-  buffer_write_byte_body(buffer, 3);
-  buffer_write_byte_body(buffer, 'c');
-  buffer_write_byte_body(buffer, 'o');
-  buffer_write_byte_body(buffer, 'm');
-  buffer_write_byte_body(buffer, DNS_NULL_LABEL);
-  // Type A
-  buffer_write_byte_body(buffer, 0);  // type byte
-  buffer_write_byte_body(buffer, 1);  // type byte
-  // Class Internet
-  buffer_write_byte_body(buffer, 0);  // class byte
-  buffer_write_byte_body(buffer, 1);  // class byte
-}
-
-#define NET_PORT_DNS 53
-
-void send_dns_request() {
-  // How do we usually know the mac address?
-  // Is the mac address the one from the router always?
-  net_request req = {
-      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
-      .source_address = {ip[0], ip[1], ip[2], ip[3]},
-      .source_port = NET_PORT_DNS,
-      .destination_mac = {dhcp_router_mac[0], dhcp_router_mac[1],
-			  dhcp_router_mac[2], dhcp_router_mac[3],
-			  dhcp_router_mac[4], dhcp_router_mac[5]},
-      .destination_address = {dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
-			      dhcp_dns[3]},
-      .destination_port = NET_PORT_DNS,
-  };
-
-  buffer buffer = {0};
-  net_write_dns_query_b(&buffer);
-  net_write_udp_header(&req, &buffer);
-  net_write_ipv4_header(&req, &buffer);
-  net_write_ethernet_frame(&req, &buffer);
-
-  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
-}
-
-void net_write_arp_response(net_request* req, buffer* buffer) {
-  arp_message msg = {0};
-  msg.htype = htons(1);  // ethernet
-  msg.hlen = 6;
-  msg.ptype = htons(NET_ETHERTYPE_IPV4);
-  msg.plen = 4;
-  msg.oper = htons(2);  // reply
-  memcpy(req->source_mac, &msg.sender_mac_1, 6);
-  memcpy(req->source_address, &msg.sender_protocol_address_1, 4);
-  memcpy(req->destination_mac, &msg.target_mac_1, 6);
-  memcpy(req->destination_address, &msg.target_protocol_address_1, 4);
-  buffer_write_body(buffer, &msg, sizeof(msg));
-}
-
-void send_arp_response(u8* sender_mac, u8* sender_ip) {
-  net_request req = {
-      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
-      .source_address = {ip[0], ip[1], ip[2], ip[3]},
-      .source_port = NET_PORT_DHCP_CLIENT,
-      .destination_mac = {sender_mac[0], sender_mac[1], sender_mac[2],
-			  sender_mac[3], sender_mac[4], sender_mac[5]},
-      .destination_address = {sender_ip[0], sender_ip[1], sender_ip[2],
-			      sender_ip[3]},
-      .destination_port = NET_PORT_DHCP_SERVER,
-      .ether_type = NET_ETHERTYPE_ARP,
-  };
-  buffer buffer = {0};
-  net_write_arp_response(&req, &buffer);
-  net_write_ethernet_frame(&req, &buffer);
-
-  //  Can this be async?
-  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
-
-  //  TODO: free packet because it's on the network card buffer now.
-}
-
-// TODO: split into header and message
-void net_write_icmp_echo(buffer* buffer) {
-  u16 packet[4] = {0};
-  icmp_header* h = (icmp_header*)packet;
-  h->type = 8;
-  h->code = 0;
-
-  icmp_echo_message* m = (icmp_echo_message*)(h + 1);
-  m->identifier = 0x1;
-  m->sequence_number = 0;
-
-  h->checksum =
-      ipv4_checksum(packet, sizeof(icmp_header) + sizeof(icmp_echo_message));
-  buffer_write_body(buffer, packet,
-		    sizeof(icmp_header) + sizeof(icmp_echo_message));
-}
-
-void send_echo() {
-  // TODO: resolve via dns query first.
-  // so we need to block until it's resolved. Interesting.
-  u8 google_ip[4] = {142, 250, 207, 46};
-  net_request req = {
-      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
-      .source_address = {ip[0], ip[1], ip[2], ip[3]},
-
-      .destination_mac = {dhcp_router_mac[0], dhcp_router_mac[1],
-			  dhcp_router_mac[2], dhcp_router_mac[3],
-			  dhcp_router_mac[4], dhcp_router_mac[5]},
-      .destination_address = {google_ip[0], google_ip[1], google_ip[2],
-			      google_ip[3]},
-      .protocol = NET_PROTOCOL_ICMP,
-  };
-
-  buffer buffer = {0};
-  net_write_icmp_echo(&buffer);
-  net_write_ipv4_header(&req, &buffer);
-  net_write_ethernet_frame(&req, &buffer);
-
-  // if (memcmp(ef, buffer_packet(&buffer), buffer_length(&buffer)) == false) {
-  //   printf("[net_write] did not match\n");
-  //   __asm__("cli");
-  //   __asm__("hlt");
-  // }
-
-  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
-}
-
-// net_handle_arp handles the address resolution protocol.
-// ARP is used to find a MAC address that corresponds to an IP address.
-// ARP can be used to test if an IP address is free to use by sending a probing
-// packet.
-// ref: https://datatracker.ietf.org/doc/html/rfc826
-void net_handle_arp(arp_message* msg) {
-  printf("arp: htype: %x, ptype: %x, hlen: %x, plen: %x, oper: %x\n",
-	 ntohs(msg->htype), ntohs(msg->ptype), msg->hlen, msg->plen,
-	 ntohs(msg->oper));
-
-  // TODO: memcmp so I don't have to copy?
-  if (ntohs(msg->oper) == NET_ARP_OP_REQUEST) {
-    // check if our IP matches
-    u8* target_ip = (u8*)&msg->target_protocol_address_1;
-    printf("arp: target IP: %d.%d.%d.%d\n", target_ip[0], target_ip[1],
-	   target_ip[2], target_ip[3]);
-
-    if (memcmp(target_ip, ip, 4)) {
-      // Can this be typed somehow?
-      u8* sender_mac = (u8*)&msg->sender_mac_1;
-      u8* sender_ip = (u8*)&msg->sender_protocol_address_1;
-      send_arp_response(sender_mac, sender_ip);
-    }
-  }
-}
-
-void net_handle_dns(dns_header* h) {
-  printf("dns: id: %x, opcode: %x, qr: %x acount: %x\n", ntohs(h->id),
-	 h->opcode, h->qr, ntohs(h->ancount));
-
-  // read questions (are repeated in response messages)
-  for (int i = 0; i < ntohs(h->qdcount); i++) {
-  }
-  // read answers
-  for (int i = 0; i < ntohs(h->ancount); i++) {
-  }
-  send_echo();
-}
-
-void net_handle_dhcp(ethernet_frame* ef, dhcp_message* m) {
-  printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op, m->htype,
-	 m->hlen, m->hops, m->xid);
-
-  if (m->op != DHCP_OP_OFFER) {
-    return;
-  }
-
-  u8* o = (u8*)(m + 1);  // end of dhcp message for options
-
-  // TODO: double check that we don't go over length of message.
-
-  u8 dhcp_type = 0;
-
-  bool done = false;
-  while (!done) {
-    switch (*o++) {
-      case 1:  // subnet mask
-	if (*o++ != 4) {
-	  // panic
-	}
-	memcpy(o, dhcp_subnet_mask, 4);
-	o += 4;
-	break;
-      case 3:  // router
-	if (*o++ != 4) {
-	  // panic
-	}
-	memcpy(o, dhcp_router, 4);
-	o += 4;
-	break;
-      case 6:  // dns
-	if (*o++ != 4) {
-	  // panic
-	}
-	memcpy(o, dhcp_dns, 4);
-	o += 4;
-	break;
-      case 53:  // type
-	if (*o++ != 1) {
-	  // panic
-	}
-	dhcp_type = *o++;
-	break;
-      case 54:            // server identifier (dhcp server ip)
-	if (*o++ != 4) {  // what about ipv6?
-			  // panic
-	}
-	memcpy(o, dhcp_identifier, 4);
-	o += 4;
-	break;
-      case 51:  // lease time (2 days, so low priority to implement)
-	break;
-      case 0xff:
-	done = true;
-	break;
-    }
-  }
-
-  if (dhcp_type == DHCP_OP_OFFER) {
-    memcpy(m->yiaddr, ip, 4);
-    /* for (int i = 0; i < 4; i++) { */
-    /*   ip[i] = m->yiaddr[i]; */
-    /* } */
-    printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
-    printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0], dhcp_router[1],
-	   dhcp_router[2], dhcp_router[3]);
-    printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
-	   dhcp_dns[3]);
-    printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
-	   dhcp_subnet_mask[1], dhcp_subnet_mask[2], dhcp_subnet_mask[3]);
-
-    printf("dhcp: sending DHCPREQUEST\n");
-    dhcp_offer_xid = m->xid;
-    send_dhcp_request();
-  } else if (dhcp_type == DHCP_OP_ACK) {
-    printf("dhcp: received DHCPACK\n");
-    printf("dhcp: target_mac: %x:%x:%x:%x:%x:%x\n", ef->destination_mac[0],
-	   ef->destination_mac[1], ef->destination_mac[2],
-	   ef->destination_mac[3], ef->destination_mac[4],
-	   ef->destination_mac[5]);
-    printf("dhcp: source_mac: %x:%x:%x:%x:%x:%x\n", ef->source_mac[0],
-	   ef->source_mac[1], ef->source_mac[2], ef->source_mac[3],
-	   ef->source_mac[4], ef->source_mac[5]);
-    memcpy(ef->source_mac, dhcp_router_mac, 6);
-    send_dns_request();
-  }
-}
-
-void net_handle_udp(ethernet_frame* frame, udp_header* header) {
-  printf("udp: src port: %d dst port: %d\n", ntohs(header->source_port),
-	 ntohs(header->destination_port));
-
-  if (ntohs(header->destination_port) == NET_PORT_DNS) {  // DNS
-    net_handle_dns((dns_header*)(header + 1));
-  } else if (ntohs(header->source_port) == 67 &&
-	     ntohs(header->destination_port) == 68) {  // DHCP
-    net_handle_dhcp(frame, (dhcp_message*)(header + 1));
-  }
-}
-
-void net_handle_ipv4(ethernet_frame* frame, ipv4_header* header) {
-  printf("ipv4: version: %x ihl: %x\n", header->version, header->ihl);
-
-  // printf("ipv4: protocol: %x\n", iph->protocol);
-
-  if (header->protocol == NET_PROTOCOL_ICMP) {
-  } else if (header->protocol == NET_PROTOCOL_UDP) {
-    net_handle_udp(frame, (udp_header*)(header + 1));
-  }
-}
-
 struct mouse_data {
   u8 data;
   u8 x;
@@ -1584,58 +932,7 @@ struct mouse_data {
 };
 typedef struct mouse_data mouse_data_t;
 
-// This probably cannot be an enum for long. Message types are probably pretty
-// dynamic.
-enum message_type { message_type_ps2_byte, mouse_byte, network_data };
-typedef enum message_type message_type_t;
-const u8 message_type_count = 2;
-
-typedef struct message message;
-struct message {
-  message_type_t type;
-  void* data;
-  message* next;
-};
-
-enum task_state { running, blocked, finished };
-typedef enum task_state task_state;
-
-typedef struct task task;
-struct task {
-  u8 id;  // TODO: remove
-  u64 rsp;
-  u64 eip;
-  u64 rax;
-  u64 rbx;
-  u64 rcx;
-  u64 rdx;
-  u64 rsi;
-  u64 rdi;
-  u64 rbp;
-  u64 r8;
-  u64 r9;
-  u64 r10;
-  u64 r11;
-  u64 r12;
-  u64 r13;
-  u64 r14;
-  u64 r15;
-  u64 rflags;
-  // Don't change the order above. It will impact assembly code in switch_task.s
-  task* next;
-  task_state state;
-  u64 sleep_until;
-  message* queue;
-};
-
-task* task_first = NULL;
-task* task_current = NULL;
-
-void trampoline();
-
-extern void switch_task(task* current, task* next);
-extern void task_replace(task* task);
-
+// Memory start
 // Defined in linker script.
 // Need to take the address, because the address is the value in this case.
 // ref: https://sourceware.org/binutils/docs/ld/Source-Code-Reference.html
@@ -1955,7 +1252,7 @@ void free(void* memory) {
   // What is this state?
   if (current == nullptr) {
   } else {
-    // Where do I get that object from? The memory_t. Do I create this again
+    // Where do I get that object from? The memory. Do I create this again
     // inside the free memory? I could call malloc now, but then I would have
     // some overhead from the header. Can I reuse the header somehow?
     // First thought: but then I can't free the header.
@@ -1991,6 +1288,51 @@ void free(void* memory) {
   //   printf("free: %x %d\n", m, m->size);
   // }
 }
+// Memory end
+
+// Task start
+
+// forward declaration
+typedef struct message message;
+
+enum task_state { running, blocked, finished };
+typedef enum task_state task_state;
+
+typedef struct task task;
+struct task {
+  u8 id;  // TODO: remove
+  u64 rsp;
+  u64 eip;
+  u64 rax;
+  u64 rbx;
+  u64 rcx;
+  u64 rdx;
+  u64 rsi;
+  u64 rdi;
+  u64 rbp;
+  u64 r8;
+  u64 r9;
+  u64 r10;
+  u64 r11;
+  u64 r12;
+  u64 r13;
+  u64 r14;
+  u64 r15;
+  u64 rflags;
+  // Don't change the order above. It will impact assembly code in switch_task.s
+  task* next;
+  task_state state;
+  u64 sleep_until;
+  message* queue;
+};
+
+task* task_first = NULL;
+task* task_current = NULL;
+
+void trampoline();
+
+extern void switch_task(task* current, task* next);
+extern void task_replace(task* task);
 
 // My guess is that we probably want to 'lose' the initial kernel loader task.
 // Which means we create a new stack and switch to a new task that we define
@@ -2169,35 +1511,36 @@ void idle_task() {
     // printf("idle_task: woke up\n");
   }
 }
+// Task end
 
-void task1(u8 id) {
-  while (1) {
-    printf("running task 1 %d\n", id);
-    sleep(2000);
-  }
-}
-
-void task2(u8 id) {
-  printf("running task 2 %d\n", id);
-}
-
-void dns_resolve(char* host, u8 addr[4]) {}
-
-void task_network() {
-  // what do I want to do here?
-  // I want to improve memory management and task management.
-  // Using the network stack can help.
-
-  u8 addr[4];
-  // This will cause a bunch of network requests. We cannot do this before we
-  // got a network address ourselves so I need to run a dhcp task.
-  dns_resolve("google.com", addr);
-  printf("google.com IP=%d.%d.%d.%d\n");
-}
+// Task declarations
 
 task* service_mouse = nullptr;
 task* service_keyboard = nullptr;
 task* service_network = nullptr;
+task* service_dhcp = nullptr;
+task* service_dns = nullptr;
+
+// Message start
+
+// This probably cannot be an enum for long. Message types are probably pretty
+// dynamic.
+enum message_type {
+  message_type_ps2_byte,
+  mouse_byte,
+  network_data,
+  dns_request,
+  dns_response,
+};
+typedef enum message_type message_type_t;
+const u8 message_type_count = 2;
+
+typedef struct message message;
+struct message {
+  message_type_t type;
+  void* data;
+  message* next;
+};
 
 // The interrupt handler should either start this task with high priority OR
 // this task already exists and waits for the interrupt blocking. If this is
@@ -2305,6 +1648,892 @@ void message_receive(message** head, message* dst) {
 message* message_type_registry[2];
 
 void message_register(message_type_t type, message* queue) {}
+
+// Message end
+
+// Network start
+
+// TODO: can this be async?
+// We probably get an interrupt that tells us TX was done.
+// BUG:
+// race:
+// task 1 calls net_transmit, and calls the first outl,
+// network_current_tx_descriptor is 1 task 1 gets pre-empted task 2 calls
+// net_transmit, and calls the first outl for a different packet
+//
+// And many more possibilities.
+// Packets need to be queued up and one process puts them onto the network card,
+// or we need a lock.
+// While I can solve it with the message queue maybe now I can implement a lock?
+//
+// acquire
+// blocks until acquired
+// so what is a lock actually that we can wake on it changing?
+// simplest we could just sleep 100ms or and try again.
+//
+// release
+//
+// most brute force solution is to disable interrupts
+void net_transmit(void* data, u32 length) {
+  //__asm__("cli");
+  // set address to descriptor
+  // set size
+  // set 0 to own
+  // printf("network: tx: using descriptor %d\n",
+  // network_current_tx_descriptor);
+  outl(base + 0x20 + network_current_tx_descriptor * 4, (u32)data);
+  // u32 a = inl(base + 0x20);
+  // printf("TX addr: %x\n", a);
+  // bit 0-12 = size, bit 13 = own
+  outl(base + 0x10 + network_current_tx_descriptor * 4, length);
+  // wait for TOK
+  while (inl(base + 0x10 + network_current_tx_descriptor * 4) &
+	 (1 << 15) == 0) {
+  }
+
+  network_current_tx_descriptor = ++network_current_tx_descriptor % 4;
+  //__asm__("sti");
+}
+
+// Merge
+#define NET_ETHERTYPE_IPV4 0x0800
+#define NET_ETHERTYPE_ARP 0x0806
+
+#define NET_ARP_OP_REQUEST 1
+#define NET_ARP_OP_REPLY 2
+
+#define NET_PORT_DNS 53
+#define NET_PORT_DHCP_SERVER 67
+#define NET_PORT_DHCP_CLIENT 68
+
+// From ipv4 header
+#define NET_PROTOCOL_ICMP 0x1
+#define NET_PROTOCOL_UDP 0x11
+
+#define DHCP_OP_REQUEST 1
+#define DHCP_OP_REPLY 2
+
+#define DHCP_HARDWARE_TYPE_ETHERNET 1
+#define DHCP_HARDWARE_LENGTH_ETHERNET 6
+
+#define DHCP_OPTION_PAD 0
+#define DHCP_OPTION_END 255
+#define DHCP_OPTION_MESSAGE_TYPE 53
+#define DHCP_OPTION_LENGTH_MESSAGE_TYPE 1
+#define DHCP_OPTION_MESSAGE_TYPE_DISCOVER 1
+#define DHCP_OPTION_MESSAGE_TYPE_OFFER 2
+#define DHCP_OPTION_MESSAGE_TYPE_REQUEST 3
+#define DHCP_OPTION_MESSAGE_TYPE_DECLINE 4
+#define DHCP_OPTION_MESSAGE_TYPE_ACK 5
+#define DHCP_OPTION_MESSAGE_TYPE_NACK 6
+#define DHCP_OPTION_IP_REQUEST 50
+#define DHCP_OPTION_IP_REQUEST_LENGTH 4
+#define DHCP_OPTION_SERVER 54
+#define DHCP_OPTION_LENGTH_SERVER 4
+
+struct net_device {
+  u8 mac[6];
+  u8 ip[4];
+};
+
+// needs source and dest port
+// needs src dest address and protocol ipv4
+// all of this is probably on the connection? is there a connection in udp?
+// is it on the 'socket'? Is it a request? Request is from to and what kind of
+// protocol to use? from / to also decided if it's ipv4 or ipv6?
+// I like connection better but udp has no connections.
+struct net_request {
+  // ipv6 would be longer.
+  u8 source_mac[6];
+  u8 source_address[4];
+  u32 source_port;
+  u8 destination_mac[6];
+  u8 destination_address[4];
+  u32 destination_port;
+  u32 ether_type;
+  u8 protocol;
+};
+typedef struct net_request net_request;
+
+struct buffer {
+  u8 packet[1518];
+  u32 bytes_written_body;
+  u32 bytes_written_header;
+};
+typedef struct buffer buffer;
+
+// Ethernet header 18 bytes + 1500 bytes content.
+// ref: https://en.wikipedia.org/wiki/Ethernet_frame
+// Ethernet header 18 bytes.
+// IP header is min 20 bytes and max 60 bytes.
+// UDP header is 8 bytes.
+// TCP header is min 20 bytes and max 60 bytes.
+// We can reserve 138 bytes.
+const u32 buffer_header_offset = 138;
+
+// need to write content
+// then need to write all headers backwards
+// difficult to know size of ip header
+// individual write_header functions?
+// ipv4 header size depends on how many options there are, we can precompute
+// given we know the options.
+void buffer_write_body(buffer* buffer, void* bytes, size_t len) {
+  memcpy(bytes,
+	 buffer->packet + buffer_header_offset + buffer->bytes_written_body,
+	 len);
+  buffer->bytes_written_body += len;
+}
+
+void buffer_write_byte_body(buffer* buffer, u8 byte) {
+  buffer_write_body(buffer, &byte, sizeof(byte));
+}
+
+void buffer_write_header(buffer* buffer, void* bytes, size_t len) {
+  buffer->bytes_written_header += len;
+  memcpy(bytes,
+	 buffer->packet + buffer_header_offset - buffer->bytes_written_header,
+	 len);
+}
+
+void* buffer_packet(buffer* buffer) {
+  return buffer->packet + buffer_header_offset - buffer->bytes_written_header;
+}
+
+void* buffer_body(buffer* buffer) {
+  return buffer->packet + buffer_header_offset;
+}
+
+u32 buffer_length(buffer* buffer) {
+  return buffer->bytes_written_body + buffer->bytes_written_header;
+}
+
+void net_write_ethernet_frame(net_request* req, buffer* buffer) {
+  ethernet_frame frame = {0};
+  memcpy(req->source_mac, frame.source_mac, 6);
+  memcpy(req->destination_mac, frame.destination_mac, 6);
+  if (req->ether_type != 0) {
+    frame.ethertype = htons(req->ether_type);
+  } else {
+    frame.ethertype = htons(NET_ETHERTYPE_IPV4);
+  }
+  buffer_write_header(buffer, &frame, sizeof(frame));
+}
+
+void net_write_broadcast_ethernet_frame(
+    /*sender address _t*/ buffer* buffer) {
+  ethernet_frame frame = {0};
+  memcpy(mac, frame.source_mac, 6);
+  memcpy(broadcast_mac, frame.destination_mac, 6);
+  frame.ethertype = htons(NET_ETHERTYPE_IPV4);
+  buffer_write_header(buffer, &frame, sizeof(frame));
+}
+
+void net_write_ipv4_header(net_request* req, buffer* buffer) {
+  ipv4_header header = {0};
+  header.version = 4;
+  header.ihl = 5;  // no options
+  header.ttl = 100;
+  if (req->protocol != 0) {
+    header.protocol = req->protocol;
+  } else {
+    header.protocol = NET_PROTOCOL_UDP;
+  }
+  header.source_address = htonl_bytes(req->source_address);
+  header.destination_address = htonl_bytes(req->destination_address);
+
+  // For one moment I thought we could just access the udp header here and get
+  // the length, but it's not feasible for this code to know about other
+  // headers.
+  header.length = htons(header.ihl * 4 + buffer->bytes_written_header +
+			buffer->bytes_written_body);
+
+  header.checksum = ipv4_checksum((u16*)&header, header.ihl * 4);
+  buffer_write_header(buffer, &header, sizeof(header));
+}
+
+// Checksum is the 16-bit one's complement of the one's complement sum of a
+// pseudo header of information from the IP header, the UDP header, and the
+// data, padded with zero octets at the end (if necessary) to make a multiple of
+// two octets.
+// ref: https://datatracker.ietf.org/doc/html/rfc768
+// ref: http://www.faqs.org/rfcs/rfc768.html
+
+u16 udp_checksum(net_request* req, udp_header* udph, u16* addr, size_t length) {
+  udp_pseudo_ip_header ps = {0};
+  ps.source_address = htonl_bytes(req->source_address);
+  ps.destination_address = htonl_bytes(req->destination_address);
+  ps.protocol = NET_PROTOCOL_UDP;
+  ps.udp_length = length;
+
+  /* Compute Internet Checksum for "count" bytes
+   *         beginning at location "addr".
+   */
+  u32 sum = 0;
+
+  u16* first = (u16*)(&ps);
+  for (u32 i = 0; i < sizeof(ps) / 2; i++) {
+    sum += *first++;
+  }
+
+  first = (u16*)(udph);
+
+  for (u32 i = 0; i < sizeof(*udph) / 2; i++) {
+    sum += *first++;
+  }
+
+  u16 count = ntohs(length);
+
+  while (count > 1) {
+    /*  This is the inner loop */
+    sum += *addr++;
+    count -= 2;
+  }
+
+  /*  Add left-over byte, if any */
+  if (count > 0) {
+    sum += *(u8*)addr;
+  }
+
+  /*  Fold 32-bit sum to 16 bits */
+  while (sum >> 16) {
+    sum = (sum & 0xffff) + (sum >> 16);
+  }
+
+  return ~sum;
+}
+
+void net_write_udp_header(struct net_request* req, buffer* buffer) {
+  udp_header header = {0};
+  header.source_port = htons(req->source_port);            // htons(68);
+  header.destination_port = htons(req->destination_port);  // htons(67);
+  header.length = htons(sizeof(header) + buffer->bytes_written_body);
+
+  // Tricky. We need the header.
+  // Accessor for content would be good.
+  header.checksum =
+      udp_checksum(req, &header, (u16*)(buffer->packet + buffer_header_offset),
+		   header.length);
+
+  buffer_write_header(buffer, &header, sizeof(header));
+}
+
+// TODO: take a net_device as first parameter for access to mac and ip
+// Should this move the FP or return how many bytes written?
+void net_write_dhcp_discover_message(u32 xid, buffer* buffer) {
+  dhcp_message msg = {0};
+
+  msg.op = DHCP_OP_REQUEST;
+  msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
+  msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
+  msg.hops = 0x00;
+  // Used to match return messages
+  msg.xid = xid;
+  msg.secs = 0;
+  msg.flags = 0;  // Set broadcast bit?
+  // MAC
+  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  msg.chaddr[1] = (mac[5] << 8) | mac[4];
+  // TODO: make this a constant? It's the options header.
+  // ref: https://datatracker.ietf.org/doc/html/rfc2131#section-3
+  msg.magic[0] = 0x63;
+  msg.magic[1] = 0x82;
+  msg.magic[2] = 0x53;
+  msg.magic[3] = 0x63;
+
+  buffer_write_body(buffer, &msg, sizeof(msg));
+
+  // net_write_dhcp_option(option, buffer)
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE);
+  buffer_write_byte_body(buffer, DHCP_OPTION_LENGTH_MESSAGE_TYPE);
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_DISCOVER);
+  buffer_write_byte_body(buffer, DHCP_OPTION_END);
+}
+
+void send_dhcp_discover() {
+  printf("dhcp: sending DHCPDISCOVER\n");
+  u32 xid = (u32)get_global_timer_value();
+
+  net_request req = {
+      .source_address = {0},
+      .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
+			      broadcast_ip[3]},
+      .destination_port = NET_PORT_DHCP_SERVER,
+  };
+
+  buffer buffer = {0};
+  net_write_dhcp_discover_message(xid, &buffer);
+  net_write_udp_header(&req, &buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_broadcast_ethernet_frame(&buffer);
+
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
+}
+
+void net_write_dhcp_request_message(u32 xid, void* buffer) {
+  dhcp_message msg = {0};
+  msg.op = DHCP_OP_REQUEST;
+  msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
+  msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
+  msg.hops = 0x00;
+  // TODO: there is some state per request.
+  msg.xid = xid;
+  msg.secs = 0;
+  msg.flags = 0;
+  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  msg.chaddr[1] = (mac[5] << 8) | mac[4];
+  msg.siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
+	       (dhcp_router[1] << 8) |
+	       dhcp_router[0];  // htonl_bytes(dhcp_router);
+  msg.magic[0] = 0x63;
+  msg.magic[1] = 0x82;
+  msg.magic[2] = 0x53;
+  msg.magic[3] = 0x63;
+
+  buffer_write_body(buffer, &msg, sizeof(msg));
+
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE);
+  buffer_write_byte_body(buffer, DHCP_OPTION_LENGTH_MESSAGE_TYPE);
+  buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_REQUEST);
+  buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST);
+  buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST_LENGTH);
+  buffer_write_byte_body(buffer, ip[0]);
+  buffer_write_byte_body(buffer, ip[1]);
+  buffer_write_byte_body(buffer, ip[2]);
+  buffer_write_byte_body(buffer, ip[3]);
+  buffer_write_byte_body(buffer, DHCP_OPTION_SERVER);
+  buffer_write_byte_body(buffer, DHCP_OPTION_LENGTH_SERVER);
+  buffer_write_byte_body(buffer, dhcp_router[0]);
+  buffer_write_byte_body(buffer, dhcp_router[1]);
+  buffer_write_byte_body(buffer, dhcp_router[2]);
+  buffer_write_byte_body(buffer, dhcp_router[3]);
+  buffer_write_byte_body(buffer, 0xff);
+}
+
+void send_dhcp_request() {
+  printf("dhcp: sending DHCPREQUEST\n");
+  // we have the DHCPOFFER reply parameters in the global variables
+  u32 xid = dhcp_offer_xid;
+  net_request req = {
+      //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
+      .source_address = {0},
+      .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
+			      broadcast_ip[3]},
+      .destination_port = NET_PORT_DHCP_SERVER,
+  };
+
+  buffer buffer = {0};
+  net_write_dhcp_request_message(xid, &buffer);
+  net_write_udp_header(&req, &buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_broadcast_ethernet_frame(&buffer);
+
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
+}
+
+#define DNS_FLAG_QUERY 0
+#define DNS_FLAG_RESPONSE 1
+#define DNS_NULL_LABEL 0
+
+// Inject hostname
+size_t net_write_dns_query(u16 id, buffer* buffer) {
+  dns_header header = {0};
+
+  // transaction id
+  header.id = htons(id);
+  // number of questions
+  header.qdcount = htons(1);
+  header.qr = DNS_FLAG_QUERY;
+  // recursion desired
+  header.rd = 1;
+
+  buffer_write_body(buffer, &header, sizeof(header));
+
+  buffer_write_byte_body(buffer, 6);
+  buffer_write_byte_body(buffer, 'g');
+  buffer_write_byte_body(buffer, 'o');
+  buffer_write_byte_body(buffer, 'o');
+  buffer_write_byte_body(buffer, 'g');
+  buffer_write_byte_body(buffer, 'l');
+  buffer_write_byte_body(buffer, 'e');
+  buffer_write_byte_body(buffer, 3);
+  buffer_write_byte_body(buffer, 'c');
+  buffer_write_byte_body(buffer, 'o');
+  buffer_write_byte_body(buffer, 'm');
+  buffer_write_byte_body(buffer, DNS_NULL_LABEL);
+  // Type A
+  buffer_write_byte_body(buffer, 0);  // type byte
+  buffer_write_byte_body(buffer, 1);  // type byte
+  // Class Internet
+  buffer_write_byte_body(buffer, 0);  // class byte
+  buffer_write_byte_body(buffer, 1);  // class byte
+}
+
+#define NET_PORT_DNS 53
+
+void send_dns_request(u16 id) {
+  // How do we usually know the mac address?
+  // Is the mac address the one from the router always?
+  net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+      .source_address = {ip[0], ip[1], ip[2], ip[3]},
+      .source_port = NET_PORT_DNS,
+      .destination_mac = {dhcp_router_mac[0], dhcp_router_mac[1],
+			  dhcp_router_mac[2], dhcp_router_mac[3],
+			  dhcp_router_mac[4], dhcp_router_mac[5]},
+      .destination_address = {dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
+			      dhcp_dns[3]},
+      .destination_port = NET_PORT_DNS,
+  };
+
+  buffer buffer = {0};
+  net_write_dns_query(id, &buffer);
+  net_write_udp_header(&req, &buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_ethernet_frame(&req, &buffer);
+
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
+}
+
+void net_write_arp_response(net_request* req, buffer* buffer) {
+  arp_message msg = {0};
+  msg.htype = htons(1);  // ethernet
+  msg.hlen = 6;
+  msg.ptype = htons(NET_ETHERTYPE_IPV4);
+  msg.plen = 4;
+  msg.oper = htons(2);  // reply
+  memcpy(req->source_mac, &msg.sender_mac_1, 6);
+  memcpy(req->source_address, &msg.sender_protocol_address_1, 4);
+  memcpy(req->destination_mac, &msg.target_mac_1, 6);
+  memcpy(req->destination_address, &msg.target_protocol_address_1, 4);
+  buffer_write_body(buffer, &msg, sizeof(msg));
+}
+
+void send_arp_response(u8* sender_mac, u8* sender_ip) {
+  net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+      .source_address = {ip[0], ip[1], ip[2], ip[3]},
+      .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_mac = {sender_mac[0], sender_mac[1], sender_mac[2],
+			  sender_mac[3], sender_mac[4], sender_mac[5]},
+      .destination_address = {sender_ip[0], sender_ip[1], sender_ip[2],
+			      sender_ip[3]},
+      .destination_port = NET_PORT_DHCP_SERVER,
+      .ether_type = NET_ETHERTYPE_ARP,
+  };
+  buffer buffer = {0};
+  net_write_arp_response(&req, &buffer);
+  net_write_ethernet_frame(&req, &buffer);
+
+  //  Can this be async?
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
+
+  //  TODO: free packet because it's on the network card buffer now.
+}
+
+// TODO: split into header and message
+void net_write_icmp_echo(buffer* buffer) {
+  u16 packet[4] = {0};
+  icmp_header* h = (icmp_header*)packet;
+  h->type = 8;
+  h->code = 0;
+
+  icmp_echo_message* m = (icmp_echo_message*)(h + 1);
+  m->identifier = 0x1;
+  m->sequence_number = 0;
+
+  h->checksum =
+      ipv4_checksum(packet, sizeof(icmp_header) + sizeof(icmp_echo_message));
+  buffer_write_body(buffer, packet,
+		    sizeof(icmp_header) + sizeof(icmp_echo_message));
+}
+
+struct dns_request {
+  u8 name[63];
+  message** sender;
+};
+
+// TODO: add ttl
+struct dns_response {
+  u16 id;
+  u8 name[63];
+  u8 address[4];
+};
+
+struct net_address {
+  u8 address[4];
+};
+
+// TODO: make this work async by doing the dns query.
+// Imagine:
+// send_echo()
+// - build package with hostname
+// - send
+// -- do we know this hostname?
+// --- no: resolve and block
+// --- yes: fetch from cache
+// -- fill IP
+// Question: how to do timeouts? The blocking command needs a timeout.
+struct net_address net_resolve_hostname(u8 hostname[63]) {
+  // What to do here?
+  // Let's assume there is no cache. We always have to resolve the addresses.
+  //
+
+  // how do we wait for it's response?
+  // we want to block here until the response is here.
+  message msg = {0};
+
+  message_send(&service_dns->queue, dns_request, nullptr);
+
+  printf("resolve_hostname: waiting for response\n");
+  message_receive(&service_dhcp->queue, &msg);
+
+  struct dns_response* resp = msg.data;
+  printf("resolve_hostname: %d.%d.%d.%d\n", resp->address[0], resp->address[1],
+	 resp->address[2], resp->address[3]);
+
+  struct net_address addr = {.address[0] = resp->address[0],
+			     .address[1] = resp->address[1],
+			     .address[2] = resp->address[2],
+			     .address[3] = resp->address[3]};
+
+  return addr;
+
+  // alloc object that holds address.
+  // put into data
+  //  msg.data =
+  //  message_send(message **head, message_type_t type, void *data);
+
+  // what's the difference between asking synchronously vs asynchronously?
+  // synchronous implies no task change?
+
+  // Let's assume there is a dns server and it's listening for messages.
+}
+
+void send_echo() {
+  // TODO: resolve via dns query first.
+  // so we need to block until it's resolved. Interesting.
+  struct net_address google_address = net_resolve_hostname(nullptr);
+  net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+      .source_address = {ip[0], ip[1], ip[2], ip[3]},
+
+      .destination_mac = {dhcp_router_mac[0], dhcp_router_mac[1],
+			  dhcp_router_mac[2], dhcp_router_mac[3],
+			  dhcp_router_mac[4], dhcp_router_mac[5]},
+      .destination_address = {google_address.address[0],
+			      google_address.address[1],
+			      google_address.address[2],
+			      google_address.address[3]},
+      .protocol = NET_PROTOCOL_ICMP,
+  };
+
+  buffer buffer = {0};
+  net_write_icmp_echo(&buffer);
+  net_write_ipv4_header(&req, &buffer);
+  net_write_ethernet_frame(&req, &buffer);
+
+  // if (memcmp(ef, buffer_packet(&buffer), buffer_length(&buffer)) == false) {
+  //   printf("[net_write] did not match\n");
+  //   __asm__("cli");
+  //   __asm__("hlt");
+  // }
+
+  net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
+}
+
+// net_handle_arp handles the address resolution protocol.
+// ARP is used to find a MAC address that corresponds to an IP address.
+// ARP can be used to test if an IP address is free to use by sending a probing
+// packet.
+// ref: https://datatracker.ietf.org/doc/html/rfc826
+void net_handle_arp(arp_message* msg) {
+  // printf("arp: htype: %x, ptype: %x, hlen: %x, plen: %x, oper: %x\n",
+  //	 ntohs(msg->htype), ntohs(msg->ptype), msg->hlen, msg->plen,
+  //	 ntohs(msg->oper));
+
+  // TODO: memcmp so I don't have to copy?
+  if (ntohs(msg->oper) == NET_ARP_OP_REQUEST) {
+    // check if our IP matches
+    u8* target_ip = (u8*)&msg->target_protocol_address_1;
+    // printf("arp: target IP: %d.%d.%d.%d\n", target_ip[0], target_ip[1],
+    //	   target_ip[2], target_ip[3]);
+
+    if (memcmp(target_ip, ip, 4)) {
+      // Can this be typed somehow?
+      u8* sender_mac = (u8*)&msg->sender_mac_1;
+      u8* sender_ip = (u8*)&msg->sender_protocol_address_1;
+      send_arp_response(sender_mac, sender_ip);
+    }
+  }
+}
+
+// I want to save the domain -> ip mapping.
+// Maybe I need a map after all.
+void* net_dns_parse_question(void* buffer) {
+  u8* p = buffer;
+  u8 domain[5][63] = {0};
+  u8 label = 0;
+  while (*p != 0) {
+    u8 length = *p;
+    p++;
+    for (u8 i = 0; i < length; i++) {
+      domain[label][i] = *p;
+      p++;
+    }
+
+    printf("label: %s\n", domain[label]);
+    label++;
+  }
+  // skip 0-TERMINATOR QTYPE QCLASS
+  return p + 1 + 2 + 2;
+}
+
+// This gets trickier beacause of message compression. Need access to the whole
+// message.
+// TODO: this is super brittle, refactor out the label reading etc.
+// TODO: return answer structs. domain name is limited to 63.
+// Also, it would probably be good to have some kind of reader.
+// ReadyByte, ReadyByte, ReadInt and it converts to LE
+void* net_dns_parse_answer(void* message,
+			   void* answers,
+			   struct dns_response* response) {
+  u8* p = answers;
+  u8 domain[5][63] = {0};
+  u8 label = 0;
+  while (*p != 0) {
+    // first 2 bits signal offset
+    if ((*p & 0b11000000) == 0b11000000) {
+      u16 offset = ((*p & ~0b11000000) >> 8) | *(p + 1);
+      p += 2;
+
+      u8* offsetptr = message + offset;
+      while (*offsetptr != 0) {
+	u8 length = *offsetptr;
+	offsetptr++;
+	for (u8 i = 0; i < length; i++) {
+	  domain[label][i] = *offsetptr;
+	  offsetptr++;
+	}
+	printf("answer offset label: %s\n", domain[label]);
+	label++;
+      }
+    } else {
+      u8 length = *p;
+      p++;
+      for (u8 i = 0; i < length; i++) {
+	domain[label][i] = *p;
+	p++;
+      }
+      printf("answer label: %s\n", domain[label]);
+      label++;
+    }
+  }
+
+  // skip type, class, ttl
+  p += 2 + 2 + 4;
+
+  //  u16* rdlength = p;
+  p += 2;
+
+  u8 address[4] = {0};
+  for (u8 i = 0; i < 4; i++) {
+    address[i] = *p;
+    response->address[i] = *p;
+    p++;
+  }
+
+  printf("address: %d.%d.%d.%d\n", address[0], address[1], address[2],
+	 address[3]);
+
+  return p;
+}
+
+void net_handle_dns(dns_header* h) {
+  printf("dns: id: %x, opcode: %x, qr: %x acount: %x\n", ntohs(h->id),
+	 h->opcode, h->qr, ntohs(h->ancount));
+
+  if (h->qr != DNS_FLAG_RESPONSE) {
+    return;
+  }
+
+  // read questions (are repeated in response messages)
+  void* p = h + 1;
+  for (int i = 0; i < ntohs(h->qdcount); i++) {
+    p = net_dns_parse_question(p);
+  }
+  // read answers
+  struct dns_response* resp = malloc(sizeof(*resp));
+  resp->id = ntohs(h->id);
+  for (int i = 0; i < ntohs(h->ancount); i++) {
+    p = net_dns_parse_answer(h, p, resp);
+  }
+  message_send(&service_dns->queue, dns_response, resp);
+}
+
+enum dhcp_state {
+  dhcp_discover,
+  dhcp_offer,
+  dhcp_request,
+  dhcp_ack,
+  dhcp_done
+};
+
+enum dhcp_state dhcp_state_current = dhcp_discover;
+
+void net_handle_dhcp(ethernet_frame* ef, dhcp_message* m) {
+  printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op, m->htype,
+	 m->hlen, m->hops, m->xid);
+
+  if (m->op != DHCP_OP_REPLY) {
+    printf("dhcp: received a dhcp request\n");
+    return;
+  }
+
+  u8* o = (u8*)(m + 1);  // end of dhcp message for options
+
+  // TODO: double check that we don't go over length of message.
+
+  u8 dhcp_type = 0;
+
+  bool done = false;
+  while (!done) {
+    switch (*o++) {
+      case 1:  // subnet mask
+	if (*o++ != 4) {
+	  // panic
+	}
+	memcpy(o, dhcp_subnet_mask, 4);
+	o += 4;
+	break;
+      case 3:  // router
+	if (*o++ != 4) {
+	  // panic
+	}
+	memcpy(o, dhcp_router, 4);
+	o += 4;
+	break;
+      case 6:  // dns
+	if (*o++ != 4) {
+	  // panic
+	}
+	memcpy(o, dhcp_dns, 4);
+	o += 4;
+	break;
+      case 53:  // type
+	if (*o++ != 1) {
+	  // panic
+	}
+	dhcp_type = *o++;
+	break;
+      case 54:            // server identifier (dhcp server ip)
+	if (*o++ != 4) {  // what about ipv6?
+			  // panic
+	}
+	memcpy(o, dhcp_identifier, 4);
+	o += 4;
+	break;
+      case 51:  // lease time (2 days, so low priority to implement)
+	break;
+      case 0xff:
+	done = true;
+	break;
+    }
+  }
+
+  if (dhcp_state_current == dhcp_offer &&
+      dhcp_type != DHCP_OPTION_MESSAGE_TYPE_OFFER) {
+    printf("dhcp: we are waiting for an offer, but was %x\n", dhcp_type);
+    return;
+  }
+
+  if (dhcp_state_current == dhcp_ack &&
+      dhcp_type != DHCP_OPTION_MESSAGE_TYPE_ACK) {
+    printf("dhcp: we are waiting for an ack, but was %x\n", dhcp_type);
+    return;
+  }
+
+  if (dhcp_type == DHCP_OPTION_MESSAGE_TYPE_OFFER) {
+    printf("dhcp: received DHCPOFFER\n");
+    printf("dhcp: new state: request\n");
+    dhcp_state_current = dhcp_request;
+
+    memcpy(m->yiaddr, ip, 4);
+    /* for (int i = 0; i < 4; i++) { */
+    /*   ip[i] = m->yiaddr[i]; */
+    /* } */
+    printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
+    printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0], dhcp_router[1],
+	   dhcp_router[2], dhcp_router[3]);
+    printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
+	   dhcp_dns[3]);
+    printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
+	   dhcp_subnet_mask[1], dhcp_subnet_mask[2], dhcp_subnet_mask[3]);
+
+    dhcp_offer_xid = m->xid;
+
+  } else if (dhcp_type == DHCP_OPTION_MESSAGE_TYPE_ACK) {
+    printf("dhcp: received DHCPACK\n");
+    dhcp_state_current = dhcp_done;
+    printf("dhcp: new state: done %d\n", dhcp_state_current);
+
+    printf("dhcp: target_mac: %x:%x:%x:%x:%x:%x\n", ef->destination_mac[0],
+	   ef->destination_mac[1], ef->destination_mac[2],
+	   ef->destination_mac[3], ef->destination_mac[4],
+	   ef->destination_mac[5]);
+    printf("dhcp: source_mac: %x:%x:%x:%x:%x:%x\n", ef->source_mac[0],
+	   ef->source_mac[1], ef->source_mac[2], ef->source_mac[3],
+	   ef->source_mac[4], ef->source_mac[5]);
+    memcpy(ef->source_mac, dhcp_router_mac, 6);
+  }
+}
+
+void net_handle_udp(ethernet_frame* frame, udp_header* header) {
+  printf("udp: src port: %d dst port: %d\n", ntohs(header->source_port),
+	 ntohs(header->destination_port));
+
+  if (ntohs(header->destination_port) == NET_PORT_DNS) {  // DNS
+    net_handle_dns((dns_header*)(header + 1));
+  } else if (ntohs(header->source_port) == 67 &&
+	     ntohs(header->destination_port) == 68) {  // DHCP
+    net_handle_dhcp(frame, (dhcp_message*)(header + 1));
+  }
+}
+
+void net_handle_ipv4(ethernet_frame* frame, ipv4_header* header) {
+  printf("ipv4: version: %x ihl: %x\n", header->version, header->ihl);
+
+  // printf("ipv4: protocol: %x\n", iph->protocol);
+
+  if (header->protocol == NET_PROTOCOL_ICMP) {
+  } else if (header->protocol == NET_PROTOCOL_UDP) {
+    net_handle_udp(frame, (udp_header*)(header + 1));
+  }
+}
+
+void task1(u8 id) {
+  while (1) {
+    printf("running task 1 %d\n", id);
+    sleep(2000);
+  }
+}
+
+void task2(u8 id) {
+  printf("running task 2 %d\n", id);
+}
+
+void task_network() {
+  // what do I want to do here?
+  // I want to improve memory management and task management.
+  // Using the network stack can help.
+
+  u8 naddr[4];
+  // This will cause a bunch of network requests. We cannot do this before we
+  // got a network address ourselves so I need to run a dhcp task.
+  //  dns_resolve("google.com", addr);
+  // printf("google.com IP=%d.%d.%d.%d\n");
+}
 
 int mouse_bytes_received = 0;
 u8 mouse_data[3] = {0};
@@ -2831,7 +3060,6 @@ eth_return:
 }
 
 void network_service() {
-  send_dhcp_discover();
   // Why do I call this service? I imagine the OS always keeps the network stack
   // in shape. Does DHCP stuff, etc. Can the kernel do this directly? Well it
   // needs to do many network calls so it blocks.. Hence modeling it as a task
@@ -2857,6 +3085,134 @@ void network_service() {
     }
 
     free(msg.data);
+  }
+}
+
+// I want to model DHCP in case I miss a package or something I should retry.
+// But now we suddenly need timers and a better msg queue.
+// I imagine I have another service, a dhcp service that is a state machine.
+// could I do this here in the network_service directly?
+// We could do it super primitive. On every network message check how long we
+// waited.
+
+u64 dhcp_last_request_ts = {0};
+// RACE: dhcp_state_current
+// The receiver task changes it because it handles dhcp respondes.
+// This task handles it.
+// Maybe this task should be the only handler and the other task just parses
+// messages and puts them on a queue for the state machine.
+// For now we can simplify once more and make the dhcp_service global and put
+// onto its queue.
+//
+// How to handle race conditions?
+// Easiest, only access in the same task/thread.
+// Lock.
+//
+// Thought: wouldn't it be easier to code this in a req/response style?
+// Send discover and wait for response or timeout, then proceed or retry.
+// Interestingly this is similar to having to block until dns resolution.
+enum dhcp_state dhcp_state_last = dhcp_discover;
+void dhcp_service() {
+  while (true) {
+    printf("dhcp: loop state %d\n", dhcp_state_current);
+    if (dhcp_state_current == dhcp_done) {
+      printf("sending echo\n");
+      send_echo();
+      goto sleep;
+    }
+
+    // handle dhcp state machine if last request was a long time ago.
+    u64 now = get_global_timer_value();
+    if (now <= dhcp_last_request_ts + _1s) {
+      goto sleep;
+    }
+
+    // // If nothing changed for one second let's go back one state.
+    // // E.g. we did not get an offer then resend discovery.
+    // if (dhcp_state_last == dhcp_state_current) {
+    //   dhcp_state_current = max(0, dhcp_state_current - 1);
+    // }
+
+    // What do we have to do?
+    // Send some request to get to the next state.
+    // Then we wait for the response to come for some time.
+    // If it doesn't come we repeat the last message.
+    switch (dhcp_state_current) {
+      case dhcp_discover:
+	dhcp_last_request_ts = now;
+	dhcp_state_current = dhcp_offer;
+
+	printf("dhcp: new state: offer\n");
+	send_dhcp_discover();
+	break;
+      case dhcp_request:
+	dhcp_last_request_ts = now;
+	dhcp_state_current = dhcp_ack;
+
+	printf("dhcp: new state: ack\n");
+	// Possible race here.
+	send_dhcp_request();
+	break;
+    }
+  sleep:
+    // dhcp_state_last = dhcp_state_current;
+    sleep(1000);
+  }
+}
+
+// we can have an array of tx ids circular. max N requests.
+// we can attach the receiver pointer
+
+message** dns_requests[10];
+u8 dns_request_idx = 0;
+// -1 because we count from 0
+u8 dns_request_count = 10 - 1;
+
+void dns_service() {
+  while (true) {
+    message msg;
+    message_receive(&service_dns->queue, &msg);
+
+    switch (msg.type) {
+      case dns_request:
+	// dns_request could have the hostname on it
+	// it should also carry something so we can send the answer back.
+	// what is that?
+	// is it a pointer to a queue?
+	// if I use the tasks queue then other tasks than dns_service may send
+	// something there. how do I differentiate?
+	// For now let's assume the sender only waits for one reply.
+
+	// inject hostname
+	u8 id = dns_request_idx;
+	dns_request_idx = (dns_request_idx + 1) % dns_request_count;
+
+	// This should be pulled out of the message
+	dns_requests[id] = &service_dhcp->queue;
+
+	// note that we are waiting for a response.
+	// printf("dns_service: sending dns request with id %d\n", id);
+	send_dns_request(id);
+	break;
+      case dns_response:
+	// We got a response from the network stack.
+	struct dns_response* resp = msg.data;
+	// printf("dns_service: response for id %d address %d.%d.%d.%d\n",
+	//        resp->id, resp->address[0], resp->address[1],
+	//        resp->address[2], resp->address[3]);
+	message** queue = dns_requests[resp->id];
+	if (queue != nullptr) {
+	  message_send(queue, dns_response, resp);
+	}
+
+	// Check tx id if we waited for it. There will always be something
+	// in the tx array, so we don't know if it was the same question, we
+	// may reply with the wrong IP. Important: if the array is full we
+	// forget requests and the caller is waiting for a reply. Needs a
+	// timeout, or we have an unlimited queue, or both. Find if someone
+	// asked for it and answer.
+	break;
+    }
   }
 }
 
@@ -4480,6 +4836,8 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   service_mouse = task_new_malloc((u64)mouse_service);
   service_keyboard = task_new_malloc((u64)keyboard_service);
   service_network = task_new_malloc((u64)network_service);
+  service_dhcp = task_new_malloc((u64)dhcp_service);
+  service_dns = task_new_malloc((u64)dns_service);
   task_new_malloc((u64)task1);
   task_new_malloc((u64)task2);
 
