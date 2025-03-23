@@ -1,11 +1,10 @@
 #include "message.h"
 
-#include "types.h"
 #include "memory.h"
+#include "print.h"
 #include "task.h"
-
-
-
+#include "time.h"
+#include "types.h"
 
 const u8 message_type_count = 2;
 
@@ -109,7 +108,22 @@ void message_receive(message** head, message* dst) {
     }
     task_current->state = blocked;
     switch_task(task_current, task_scheduler);
+    // We resume here
+    // Check if we got woken up because of a timeout.
+    // TODO: is there a better way?
+    // printf("message_receive: waking up\n");
+    if (task_current->timed_out == true) {
+      // printf("message_receive: timed out\n");
+      task_current->timed_out = false;
+      dst = nullptr;
+      return;
+    }
   }
+}
+
+void message_receive_timeout(message** head, message* dst, u64 timeout) {
+  task_current->timeout = get_global_timer_value() + timeout * _1ms;
+  message_receive(head, dst);
 }
 
 message* message_type_registry[2];

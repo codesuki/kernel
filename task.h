@@ -34,6 +34,8 @@ struct task {
   task_state state;
   u64 sleep_until;
   message* queue;
+  u64 timeout;
+  bool timed_out;
 };
 
 extern void switch_task(task* current, task* next);

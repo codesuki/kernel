@@ -58,7 +58,7 @@ struct udp_pseudo_ip_header {
 } __attribute__((packed));
 typedef struct udp_pseudo_ip_header udp_pseudo_ip_header;
 
-struct dhcp_message {
+struct dhcp_header {
   u8 op;
   u8 htype;
   u8 hlen;
@@ -74,7 +74,7 @@ struct dhcp_message {
   u8 reserved[192];
   u8 magic[4];
 } __attribute__((packed));
-typedef struct dhcp_message dhcp_message;
+typedef struct dhcp_header dhcp_header;
 
 struct dns_header {
   u16 id;
@@ -147,6 +147,29 @@ struct icmp_echo_message {
 };
 typedef struct icmp_echo_message icmp_echo_message;
 
+enum dhcp_state {
+  dhcp_discover,
+  dhcp_offer,
+  dhcp_request,
+  dhcp_ack,
+  dhcp_done
+};
+struct dhcp_message {
+  u32 xid;
+  u8 type;
+  u32 lease_seconds;
+  u8 address[4];
+  u8 subnet_mask[4];
+  u8 dns[4];
+  u8 router[4];
+  u8 dhcp[4];
+  // this should come from some ARP cache. Then I can remove it from here.
+  u8 router_mac[6];
+};
+typedef struct dhcp_message dhcp_message;
+
 void network_service();
 void dhcp_service();
 void dns_service();
+
+void send_echo();

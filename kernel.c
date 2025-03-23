@@ -230,15 +230,12 @@ void task2(u8 id) {
 }
 
 void task_network() {
-  // what do I want to do here?
-  // I want to improve memory management and task management.
-  // Using the network stack can help.
-
-  u8 naddr[4];
-  // This will cause a bunch of network requests. We cannot do this before we
-  // got a network address ourselves so I need to run a dhcp task.
-  //  dns_resolve("google.com", addr);
-  // printf("google.com IP=%d.%d.%d.%d\n");
+  // This will try to resolve the host to the ip and send the echo, but it
+  // relies on the network stack being up, e.g. dhcp passed. dhcp is brittle
+  // currently because it does not retry. Maybe that's the first thing that
+  // needs fixing.
+  printf("task_network: sending echo\n");
+  send_echo();
 }
 
 int mouse_bytes_received = 0;
@@ -630,7 +627,7 @@ void schedule() {
     // If we would return to this task we would segfault because we jump after
     // the halt to a RET and the stack is empty.
     if (task_current->state == finished) {
-      printf("schedule: cleaning up finished task\n");
+      // printf("schedule: cleaning up finished task\n");
       // task_current is the last task that ran.
       task_current = task_remove(task_current);
     }
@@ -671,7 +668,13 @@ void schedule() {
 
       if (t->state == blocked) {
 	// Check if it can be unblocked
-	if (message_peek(t->queue) == true) {
+	// Sleep has priority. Even if there is a message waiting, we sleep.
+	if (t->sleep_until != 0 && now > t->sleep_until) {
+	  t->sleep_until = 0;
+	  t->state = running;
+	  next_task = t;
+	  break;
+	} else if (message_peek(t->queue) == true) {
 	  // BUG: having any of those print statements results in the mouse
 	  // not moving. Found it. Random guess. The schedule timer was 1ms
 	  // and printing took too much time so tasks had no time and we were
@@ -687,17 +690,24 @@ void schedule() {
 	  t->state = running;
 	  next_task = t;
 	  break;
+	} else if (t->timeout != 0 && now > t->timeout) {
+	  t->timeout = 0;
+	  t->timed_out = true;
+	  t->state = running;
+	  next_task = t;
+	  break;
 	}
 	continue;
       }
 
-      // This task is sleeping
-      // TODO: integrate this somehow with state blocked.
-      if (t->sleep_until > now) {
-	//	printf("scheduler: task is sleeping until: %d now: %d\n",
-	//	       t->sleep_until, now);
-	continue;
-      }
+      // // This task is sleeping
+      // // TODO: integrate this somehow with state blocked.
+      // if (t->sleep_until > now) {
+      //	//	printf("scheduler: task is sleeping until: %d now:
+      // %d\n",
+      //	//	       t->sleep_until, now);
+      //	continue;
+      // }
 
       // If we get here we found a ready task. Why don't we use t? Because
       // with this end condition we may always choose T1 even if T1 is
@@ -1810,6 +1820,9 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // Issues:
   //
   // Next:
+  // Encapsulate queues in a struct.
+  // Make message_receive time out.
+  // Somehow register for specific messages.
   //
   // 3. extract more to separate files
   // 4. tasks/processes that have their own address space
@@ -1930,6 +1943,7 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   service_network = task_new_malloc((u64)network_service);
   service_dhcp = task_new_malloc((u64)dhcp_service);
   service_dns = task_new_malloc((u64)dns_service);
+  task_new_malloc((u64)task_network);
   task_new_malloc((u64)task1);
   task_new_malloc((u64)task2);
 

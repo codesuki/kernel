@@ -106,6 +106,9 @@ u16 ipv4_checksum(u16* addr, u8 count) {
 
 #define DHCP_OPTION_PAD 0
 #define DHCP_OPTION_END 255
+#define DHCP_OPTION_SUBNET_MASK 1
+#define DHCP_OPTION_ROUTER 3
+#define DHCP_OPTION_DNS 6
 #define DHCP_OPTION_MESSAGE_TYPE 53
 #define DHCP_OPTION_LENGTH_MESSAGE_TYPE 1
 #define DHCP_OPTION_MESSAGE_TYPE_DISCOVER 1
@@ -116,6 +119,7 @@ u16 ipv4_checksum(u16* addr, u8 count) {
 #define DHCP_OPTION_MESSAGE_TYPE_NACK 6
 #define DHCP_OPTION_IP_REQUEST 50
 #define DHCP_OPTION_IP_REQUEST_LENGTH 4
+#define DHCP_OPTION_LEASE_SECONDS 51
 #define DHCP_OPTION_SERVER 54
 #define DHCP_OPTION_LENGTH_SERVER 4
 
@@ -307,8 +311,10 @@ void net_write_udp_header(struct net_request* req, buffer* buffer) {
 
 // TODO: take a net_device as first parameter for access to mac and ip
 // Should this move the FP or return how many bytes written?
-void net_write_dhcp_discover_message(u32 xid, buffer* buffer) {
-  dhcp_message msg = {0};
+void net_write_dhcp_discover_message(net_request* req,
+				     u32 xid,
+				     buffer* buffer) {
+  dhcp_header msg = {0};
 
   msg.op = DHCP_OP_REQUEST;
   msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
@@ -319,10 +325,16 @@ void net_write_dhcp_discover_message(u32 xid, buffer* buffer) {
   msg.secs = 0;
   msg.flags = 0;  // Set broadcast bit?
   // MAC
-  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  msg.chaddr[1] = (mac[5] << 8) | mac[4];
-  // TODO: make this a constant? It's the options header.
-  // ref: https://datatracker.ietf.org/doc/html/rfc2131#section-3
+  // From the commented out code, this is what wireshark shows.
+  // 52:54:00:12:34:56
+  // I assume a byte by byte copy will result in the same.
+  // Yes, worked. Confirmed via wireshark.
+  memcpy(req->source_mac, msg.chaddr, 6);
+  // msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+  // msg.chaddr[1] = (mac[5] << 8) | mac[4];
+
+  //  TODO: make this a constant? It's the options header.
+  //  ref: https://datatracker.ietf.org/doc/html/rfc2131#section-3
   msg.magic[0] = 0x63;
   msg.magic[1] = 0x82;
   msg.magic[2] = 0x53;
@@ -342,15 +354,18 @@ void send_dhcp_discover() {
   u32 xid = (u32)get_global_timer_value();
 
   net_request req = {
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
       .source_address = {0},
       .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_mac = {broadcast_mac[0], broadcast_mac[1], broadcast_mac[2],
+			  broadcast_mac[3], broadcast_mac[4], broadcast_mac[5]},
       .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
 			      broadcast_ip[3]},
       .destination_port = NET_PORT_DHCP_SERVER,
   };
 
   buffer buffer = {0};
-  net_write_dhcp_discover_message(xid, &buffer);
+  net_write_dhcp_discover_message(&req, xid, &buffer);
   net_write_udp_header(&req, &buffer);
   net_write_ipv4_header(&req, &buffer);
   net_write_broadcast_ethernet_frame(&buffer);
@@ -358,21 +373,26 @@ void send_dhcp_discover() {
   net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
 
-void net_write_dhcp_request_message(u32 xid, void* buffer) {
-  dhcp_message msg = {0};
+void net_write_dhcp_request_message(net_request* req,
+				    dhcp_message* dhcp_req,
+				    void* buffer) {
+  // TODO: duplication started again because now we are just building these
+  // packets from the dhcp_request.
+  dhcp_header msg = {0};
   msg.op = DHCP_OP_REQUEST;
   msg.htype = DHCP_HARDWARE_TYPE_ETHERNET;
   msg.hlen = DHCP_HARDWARE_LENGTH_ETHERNET;
   msg.hops = 0x00;
   // TODO: there is some state per request.
-  msg.xid = xid;
+  msg.xid = dhcp_req->xid;
   msg.secs = 0;
   msg.flags = 0;
-  msg.chaddr[0] = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-  msg.chaddr[1] = (mac[5] << 8) | mac[4];
-  msg.siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
-	       (dhcp_router[1] << 8) |
-	       dhcp_router[0];  // htonl_bytes(dhcp_router);
+  memcpy(req->source_mac, msg.chaddr, 6);
+
+  memcpy(dhcp_req->router, &msg.siaddr, 4);
+  // msg.siaddr = (dhcp_router[3] << 24) | (dhcp_router[2] << 16) |
+  //	       (dhcp_router[1] << 8) |
+  //	       dhcp_router[0];  // htonl_bytes(dhcp_router);
   msg.magic[0] = 0x63;
   msg.magic[1] = 0x82;
   msg.magic[2] = 0x53;
@@ -385,34 +405,37 @@ void net_write_dhcp_request_message(u32 xid, void* buffer) {
   buffer_write_byte_body(buffer, DHCP_OPTION_MESSAGE_TYPE_REQUEST);
   buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST);
   buffer_write_byte_body(buffer, DHCP_OPTION_IP_REQUEST_LENGTH);
-  buffer_write_byte_body(buffer, ip[0]);
-  buffer_write_byte_body(buffer, ip[1]);
-  buffer_write_byte_body(buffer, ip[2]);
-  buffer_write_byte_body(buffer, ip[3]);
+  buffer_write_body(buffer, dhcp_req->address, 4);
+  //  buffer_write_byte_body(buffer, ip[0]);
+  //  buffer_write_byte_body(buffer, ip[1]);
+  //  buffer_write_byte_body(buffer, ip[2]);
+  //  buffer_write_byte_body(buffer, ip[3]);
   buffer_write_byte_body(buffer, DHCP_OPTION_SERVER);
   buffer_write_byte_body(buffer, DHCP_OPTION_LENGTH_SERVER);
-  buffer_write_byte_body(buffer, dhcp_router[0]);
-  buffer_write_byte_body(buffer, dhcp_router[1]);
-  buffer_write_byte_body(buffer, dhcp_router[2]);
-  buffer_write_byte_body(buffer, dhcp_router[3]);
+  buffer_write_body(buffer, dhcp_req->dhcp, 4);
+  // buffer_write_byte_body(buffer, dhcp_router[0]);
+  // buffer_write_byte_body(buffer, dhcp_router[1]);
+  // buffer_write_byte_body(buffer, dhcp_router[2]);
+  // buffer_write_byte_body(buffer, dhcp_router[3]);
   buffer_write_byte_body(buffer, 0xff);
 }
 
-void send_dhcp_request() {
+void send_dhcp_request(dhcp_message* dhcp_req) {
   printf("dhcp: sending DHCPREQUEST\n");
-  // we have the DHCPOFFER reply parameters in the global variables
-  u32 xid = dhcp_offer_xid;
   net_request req = {
-      //    .source_address = {ip[0], ip[1], ip[2], ip[4]},
+      // TODO: adding this gets tiring, I need the device, it's always the same.
+      .source_mac = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
       .source_address = {0},
       .source_port = NET_PORT_DHCP_CLIENT,
+      .destination_mac = {broadcast_mac[0], broadcast_mac[1], broadcast_mac[2],
+			  broadcast_mac[3], broadcast_mac[4], broadcast_mac[5]},
       .destination_address = {broadcast_ip[0], broadcast_ip[1], broadcast_ip[2],
 			      broadcast_ip[3]},
       .destination_port = NET_PORT_DHCP_SERVER,
   };
 
   buffer buffer = {0};
-  net_write_dhcp_request_message(xid, &buffer);
+  net_write_dhcp_request_message(&req, dhcp_req, &buffer);
   net_write_udp_header(&req, &buffer);
   net_write_ipv4_header(&req, &buffer);
   net_write_broadcast_ethernet_frame(&buffer);
@@ -599,7 +622,15 @@ struct net_address net_resolve_hostname(u8 hostname[63]) {
   // Let's assume there is a dns server and it's listening for messages.
 }
 
+// TODO: where to? take hostname
+// wait for answer.
+// This is almost user level code. I bet ping is implemented like this.
+// This could be my first program.
 void send_echo() {
+  if (ip[0] == 0) {
+    printf("send_echo: network stack down\n");
+    return;
+  }
   // TODO: resolve via dns query first.
   // so we need to block until it's resolved. Interesting.
   struct net_address google_address = net_resolve_hostname(nullptr);
@@ -760,121 +791,144 @@ void net_handle_dns(dns_header* h) {
   message_send(&service_dns->queue, dns_response, resp);
 }
 
-enum dhcp_state {
-  dhcp_discover,
-  dhcp_offer,
-  dhcp_request,
-  dhcp_ack,
-  dhcp_done
-};
-
 enum dhcp_state dhcp_state_current = dhcp_discover;
 
-void net_handle_dhcp(ethernet_frame* ef, dhcp_message* m) {
-  printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", m->op, m->htype,
-	 m->hlen, m->hops, m->xid);
+void net_handle_dhcp(ethernet_frame* ef, dhcp_header* h) {
+  printf("dhcp: op: %x htype: %x hlen: %x hops: %x xid: %x\n", h->op, h->htype,
+	 h->hlen, h->hops, h->xid);
 
-  if (m->op != DHCP_OP_REPLY) {
+  if (h->op != DHCP_OP_REPLY) {
+    // This actually happens because other clients broadcast this.
     printf("dhcp: received a dhcp request\n");
     return;
   }
 
-  u8* o = (u8*)(m + 1);  // end of dhcp message for options
+  dhcp_message* msg = malloc(sizeof(*msg));
+  msg->xid = h->xid;
+  // TODO: should this only be copied in case of OFFER?
+  memcpy(h->yiaddr, msg->address, 4);
+  memcpy(ef->source_mac, msg->router_mac, 6);
+
+  u8* o = (u8*)(h + 1);  // end of dhcp message for options
 
   // TODO: double check that we don't go over length of message.
 
-  u8 dhcp_type = 0;
+  //  u8 dhcp_type = 0;
 
-  bool done = false;
-  while (!done) {
+  // TODO: what about having a reader? I thought about this before for DNS.
+  //  bool done = false;
+  while (*o != 0xff) {
     switch (*o++) {
-      case 1:  // subnet mask
+      case DHCP_OPTION_SUBNET_MASK:  // subnet mask
 	if (*o++ != 4) {
 	  // panic
 	}
-	memcpy(o, dhcp_subnet_mask, 4);
+	memcpy(o, msg->subnet_mask, 4);
+	//	memcpy(o, dhcp_subnet_mask, 4);
 	o += 4;
 	break;
-      case 3:  // router
+      case DHCP_OPTION_ROUTER:  // TODO: can be multiples. how to parse?
 	if (*o++ != 4) {
 	  // panic
 	}
-	memcpy(o, dhcp_router, 4);
+	memcpy(o, msg->router, 4);
+	//	memcpy(o, dhcp_router, 4);
 	o += 4;
 	break;
-      case 6:  // dns
+      case DHCP_OPTION_DNS:
 	if (*o++ != 4) {
 	  // panic
 	}
-	memcpy(o, dhcp_dns, 4);
+	memcpy(o, msg->dns, 4);
+	//	memcpy(o, dhcp_dns, 4);
 	o += 4;
 	break;
-      case 53:  // type
+      case DHCP_OPTION_MESSAGE_TYPE:
 	if (*o++ != 1) {
 	  // panic
 	}
-	dhcp_type = *o++;
+	memcpy(o, &msg->type, 1);
+	o++;
+	//	dhcp_type = *o++;
 	break;
-      case 54:            // server identifier (dhcp server ip)
-	if (*o++ != 4) {  // what about ipv6?
-			  // panic
+      case DHCP_OPTION_SERVER:
+	// what about ipv6? seems it's a slightly different protocol
+	if (*o++ != DHCP_OPTION_LENGTH_SERVER) {
+	  // panic
 	}
-	memcpy(o, dhcp_identifier, 4);
+	// I am on the fence about using DHCP_OPTION_LENGTH_SERVER. On one hand
+	// it's nice not to have a magic number, on the other we also have to
+	// define the types in the struct so we know the size here.
+	memcpy(o, msg->dhcp, DHCP_OPTION_LENGTH_SERVER);
+	//	memcpy(o, dhcp_identifier, 4);
+	o += DHCP_OPTION_LENGTH_SERVER;
+	break;
+      case DHCP_OPTION_LEASE_SECONDS:  // lease time (2 days, so low priority to
+				       // implement)
+	if (*o++ != 4) {
+	  // panic
+	}
+	// TODO: convert?
+	memcpy(o, &msg->lease_seconds, 4);
 	o += 4;
 	break;
-      case 51:  // lease time (2 days, so low priority to implement)
+      case 0x0:
+	// padding
 	break;
       case 0xff:
-	done = true;
+	//	done = true;
 	break;
     }
   }
 
-  if (dhcp_state_current == dhcp_offer &&
-      dhcp_type != DHCP_OPTION_MESSAGE_TYPE_OFFER) {
-    printf("dhcp: we are waiting for an offer, but was %x\n", dhcp_type);
-    return;
-  }
+  message_send(&service_dhcp->queue, message_type_dhcp_response, msg);
 
-  if (dhcp_state_current == dhcp_ack &&
-      dhcp_type != DHCP_OPTION_MESSAGE_TYPE_ACK) {
-    printf("dhcp: we are waiting for an ack, but was %x\n", dhcp_type);
-    return;
-  }
+  // if (dhcp_state_current == dhcp_offer &&
+  //     dhcp_type != DHCP_OPTION_MESSAGE_TYPE_OFFER) {
+  //   printf("dhcp: we are waiting for an offer, but was %x\n", dhcp_type);
+  //   return;
+  // }
 
-  if (dhcp_type == DHCP_OPTION_MESSAGE_TYPE_OFFER) {
-    printf("dhcp: received DHCPOFFER\n");
-    printf("dhcp: new state: request\n");
-    dhcp_state_current = dhcp_request;
+  // if (dhcp_state_current == dhcp_ack &&
+  //     dhcp_type != DHCP_OPTION_MESSAGE_TYPE_ACK) {
+  //   printf("dhcp: we are waiting for an ack, but was %x\n", dhcp_type);
+  //   return;
+  // }
 
-    memcpy(m->yiaddr, ip, 4);
-    /* for (int i = 0; i < 4; i++) { */
-    /*   ip[i] = m->yiaddr[i]; */
-    /* } */
-    printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
-    printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0], dhcp_router[1],
-	   dhcp_router[2], dhcp_router[3]);
-    printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1], dhcp_dns[2],
-	   dhcp_dns[3]);
-    printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
-	   dhcp_subnet_mask[1], dhcp_subnet_mask[2], dhcp_subnet_mask[3]);
+  // if (dhcp_type == DHCP_OPTION_MESSAGE_TYPE_OFFER) {
+  //   printf("dhcp: received DHCPOFFER\n");
+  //   printf("dhcp: new state: request\n");
+  //   dhcp_state_current = dhcp_request;
 
-    dhcp_offer_xid = m->xid;
+  //   memcpy(m->yiaddr, ip, 4);
+  //   /* for (int i = 0; i < 4; i++) { */
+  //   /*   ip[i] = m->yiaddr[i]; */
+  //   /* } */
+  //   printf("dhcp: assigned IP %d.%d.%d.%d\n", ip[0], ip[1], ip[2], ip[3]);
+  //   printf("dhcp: router IP %d.%d.%d.%d\n", dhcp_router[0], dhcp_router[1],
+  //	   dhcp_router[2], dhcp_router[3]);
+  //   printf("dhcp: dns IP %d.%d.%d.%d\n", dhcp_dns[0], dhcp_dns[1],
+  //   dhcp_dns[2],
+  //	   dhcp_dns[3]);
+  //   printf("dhcp: subnet mask %d.%d.%d.%d\n", dhcp_subnet_mask[0],
+  //	   dhcp_subnet_mask[1], dhcp_subnet_mask[2], dhcp_subnet_mask[3]);
 
-  } else if (dhcp_type == DHCP_OPTION_MESSAGE_TYPE_ACK) {
-    printf("dhcp: received DHCPACK\n");
-    dhcp_state_current = dhcp_done;
-    printf("dhcp: new state: done %d\n", dhcp_state_current);
+  //   dhcp_offer_xid = m->xid;
 
-    printf("dhcp: target_mac: %x:%x:%x:%x:%x:%x\n", ef->destination_mac[0],
-	   ef->destination_mac[1], ef->destination_mac[2],
-	   ef->destination_mac[3], ef->destination_mac[4],
-	   ef->destination_mac[5]);
-    printf("dhcp: source_mac: %x:%x:%x:%x:%x:%x\n", ef->source_mac[0],
-	   ef->source_mac[1], ef->source_mac[2], ef->source_mac[3],
-	   ef->source_mac[4], ef->source_mac[5]);
-    memcpy(ef->source_mac, dhcp_router_mac, 6);
-  }
+  // } else if (dhcp_type == DHCP_OPTION_MESSAGE_TYPE_ACK) {
+  //   printf("dhcp: received DHCPACK\n");
+  //   dhcp_state_current = dhcp_done;
+  //   printf("dhcp: new state: done %d\n", dhcp_state_current);
+
+  //   printf("dhcp: target_mac: %x:%x:%x:%x:%x:%x\n", ef->destination_mac[0],
+  //	   ef->destination_mac[1], ef->destination_mac[2],
+  //	   ef->destination_mac[3], ef->destination_mac[4],
+  //	   ef->destination_mac[5]);
+  //   printf("dhcp: source_mac: %x:%x:%x:%x:%x:%x\n", ef->source_mac[0],
+  //	   ef->source_mac[1], ef->source_mac[2], ef->source_mac[3],
+  //	   ef->source_mac[4], ef->source_mac[5]);
+  //   memcpy(ef->source_mac, dhcp_router_mac, 6);
+  // }
 }
 
 void net_handle_udp(ethernet_frame* frame, udp_header* header) {
@@ -885,7 +939,7 @@ void net_handle_udp(ethernet_frame* frame, udp_header* header) {
     net_handle_dns((dns_header*)(header + 1));
   } else if (ntohs(header->source_port) == 67 &&
 	     ntohs(header->destination_port) == 68) {  // DHCP
-    net_handle_dhcp(frame, (dhcp_message*)(header + 1));
+    net_handle_dhcp(frame, (dhcp_header*)(header + 1));
   }
 }
 
@@ -954,50 +1008,88 @@ u64 dhcp_last_request_ts = {0};
 // Interestingly this is similar to having to block until dns resolution.
 enum dhcp_state dhcp_state_last = dhcp_discover;
 void dhcp_service() {
+  // we can do it similar to the dns service.
+  // instead of doing state changes in the network packet decoding step we can
+  // just decode them and send messages that arrive here. this will process the
+  // state machine and we get rid of the globals. YES!
+  dhcp_message* resp = nullptr;
   while (true) {
-    printf("dhcp: loop state %d\n", dhcp_state_current);
-    if (dhcp_state_current == dhcp_done) {
-      printf("sending echo\n");
-      send_echo();
-      goto sleep;
-    }
-
-    // handle dhcp state machine if last request was a long time ago.
-    u64 now = get_global_timer_value();
-    if (now <= dhcp_last_request_ts + _1s) {
-      goto sleep;
-    }
-
-    // // If nothing changed for one second let's go back one state.
-    // // E.g. we did not get an offer then resend discovery.
-    // if (dhcp_state_last == dhcp_state_current) {
-    //   dhcp_state_current = max(0, dhcp_state_current - 1);
-    // }
-
-    // What do we have to do?
-    // Send some request to get to the next state.
-    // Then we wait for the response to come for some time.
-    // If it doesn't come we repeat the last message.
     switch (dhcp_state_current) {
       case dhcp_discover:
-	dhcp_last_request_ts = now;
-	dhcp_state_current = dhcp_offer;
-
 	printf("dhcp: new state: offer\n");
+	dhcp_state_current = dhcp_offer;
 	send_dhcp_discover();
 	break;
+      case dhcp_offer:
+	// timeout while waiting for an answer, let's retry
+	if (resp == nullptr) {
+	  printf("dhcp: retrying discover\n");
+	  dhcp_state_current = dhcp_discover;
+	  continue;
+	}
+	// compare xid, are we even waiting for this?
+	if (resp->type != DHCP_OPTION_MESSAGE_TYPE_OFFER) {
+	  printf("dhcp: received %d while waiting for offer\n", resp->type);
+	  break;
+	}
+
+	printf("dhcp: new state: request\n");
+	dhcp_state_current = dhcp_request;
+
+	// Inject parameters from offer
+	send_dhcp_request(resp);
+
+	break;
       case dhcp_request:
-	dhcp_last_request_ts = now;
+	// timeout while waiting for an answer, let's retry
+	// TODO: to retry request we would need to hold on to the offer message.
+	if (resp == nullptr) {
+	  printf("dhcp: retrying discover\n");
+	  dhcp_state_current = dhcp_discover;
+	  continue;
+	}
+
+	// compare xid, are we even waiting for this?
+	if (resp->type != DHCP_OPTION_MESSAGE_TYPE_ACK) {
+	  break;
+	}
+
+	// TODO: should this be done?
+	printf("dhcp: new state: ack\n");
 	dhcp_state_current = dhcp_ack;
 
-	printf("dhcp: new state: ack\n");
-	// Possible race here.
-	send_dhcp_request();
+	memcpy(resp->address, ip, 4);
+	memcpy(resp->dns, dhcp_dns, 4);
+	memcpy(resp->router_mac, dhcp_router_mac, 6);
+
+	//	printf("send echo\n");
+	//	send_echo();
+	break;
+      case dhcp_ack:
+	dhcp_state_current = dhcp_done;
+	// Should trigger after timeout below.
+	printf("dhcp_service: new state: done\n");
+	// Anything to do here?
+	break;
+      case dhcp_done:
 	break;
     }
-  sleep:
-    // dhcp_state_last = dhcp_state_current;
-    sleep(1000);
+
+    // resp was allocated by the dhcp parser and put on the message queue. Let's
+    // clean it up before we receive another message. Warning: in case we
+    // somehow exit this function before this line we will leak memory.
+    if (resp != nullptr) {
+      free(resp);
+      resp = nullptr;
+    }
+
+    message msg = {0};
+    // TODO: when we set the timeout too low we stagger discovery requests
+    // because of the simple logic above.
+    message_receive_timeout(&service_dhcp->queue, &msg, 1000);
+    resp = msg.data;
+
+    //    printf("dhcp_service: received %d %d\n", resp->xid, resp->type);
   }
 }
 

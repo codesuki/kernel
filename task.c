@@ -102,6 +102,7 @@ task* task_remove(task* task) {
 void sleep(u64 ms) {
   // how do I find the task that this should apply
   // let's assume it's current
+  task_current->state = blocked;
   task_current->sleep_until = get_global_timer_value() + ms * _1ms;
   // We want to reschedule after the sleep because the current task becomes
   // blocking.
