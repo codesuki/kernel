@@ -211,15 +211,6 @@ void net_write_ethernet_frame(net_request* req, buffer* buffer) {
   buffer_write_header(buffer, &frame, sizeof(frame));
 }
 
-void net_write_broadcast_ethernet_frame(
-    /*sender address _t*/ buffer* buffer) {
-  ethernet_frame frame = {0};
-  memcpy(mac, frame.source_mac, 6);
-  memcpy(broadcast_mac, frame.destination_mac, 6);
-  frame.ethertype = htons(NET_ETHERTYPE_IPV4);
-  buffer_write_header(buffer, &frame, sizeof(frame));
-}
-
 void net_write_ipv4_header(net_request* req, buffer* buffer) {
   ipv4_header header = {0};
   header.version = 4;
@@ -368,7 +359,7 @@ void send_dhcp_discover() {
   net_write_dhcp_discover_message(&req, xid, &buffer);
   net_write_udp_header(&req, &buffer);
   net_write_ipv4_header(&req, &buffer);
-  net_write_broadcast_ethernet_frame(&buffer);
+  net_write_ethernet_frame(&req, &buffer);
 
   net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
@@ -438,7 +429,7 @@ void send_dhcp_request(dhcp_message* dhcp_req) {
   net_write_dhcp_request_message(&req, dhcp_req, &buffer);
   net_write_udp_header(&req, &buffer);
   net_write_ipv4_header(&req, &buffer);
-  net_write_broadcast_ethernet_frame(&buffer);
+  net_write_ethernet_frame(&req, &buffer);
 
   net_transmit(buffer_packet(&buffer), buffer_length(&buffer));
 }
