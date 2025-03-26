@@ -24,7 +24,12 @@ struct message {
   message* next;
 };
 
-bool message_peek(message* head);
-void message_send(message** head, message_type_t type, void* data);
-void message_receive(message** head, message* dst);
-void message_receive_timeout(message** head, message* dst, u64 timeout);
+struct message_queue {
+  message** head;
+};
+typedef struct message_queue message_queue;
+
+bool message_peek(message_queue* queue);
+void message_send(message_queue* queue, message_type_t type, void* data);
+void message_receive(message_queue* queue, message* dst);
+void message_receive_timeout(message_queue* queue, message* dst, u64 timeout);

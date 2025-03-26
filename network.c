@@ -221,8 +221,8 @@ void net_write_ipv4_header(net_request* req, buffer* buffer) {
   } else {
     header.protocol = NET_PROTOCOL_UDP;
   }
-  header.source_address = htonl_bytes(req->source_address);
-  header.destination_address = htonl_bytes(req->destination_address);
+  memcpy(req->source_address, &header.source_address, 4);
+  memcpy(req->destination_address, &header.destination_address, 4);
 
   // For one moment I thought we could just access the udp header here and get
   // the length, but it's not feasible for this code to know about other
@@ -1087,11 +1087,13 @@ void dhcp_service() {
 // we can have an array of tx ids circular. max N requests.
 // we can attach the receiver pointer
 
-message** dns_requests[10];
+message_queue* dns_requests[10];
 u8 dns_request_idx = 0;
 // -1 because we count from 0
 u8 dns_request_count = 10 - 1;
 
+// TODO: since everything is request response, arp, dns, dhcp.. can this be
+// abstracted and just the state machines modeled?
 void dns_service() {
   while (true) {
     message msg;
@@ -1124,7 +1126,7 @@ void dns_service() {
 	// printf("dns_service: response for id %d address %d.%d.%d.%d\n",
 	//        resp->id, resp->address[0], resp->address[1],
 	//        resp->address[2], resp->address[3]);
-	message** queue = dns_requests[resp->id];
+	message_queue* queue = dns_requests[resp->id];
 	if (queue != nullptr) {
 	  message_send(queue, dns_response, resp);
 	}

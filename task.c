@@ -44,7 +44,7 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   printf("New task %x\n", entry_point);
   // memset to 0
   task->state = running;
-  task->queue = nullptr;
+  task->queue.head = malloc(sizeof(task->queue.head));
 
   task->eip = entry_point;
 
@@ -79,13 +79,17 @@ task* task_new_malloc(u64 entry_point) {
   return task;
 }
 
+// TODO: free memory
 task* task_remove(task* task) {
   printf("Removing task %d\n", task->id);
+
+  free(task->queue.head);
 
   // Case 1: It's the first task
   // Assumption: Never happens because it's the scheduler.
   if (task_first == task) {
     task_first = task->next;
+    return task_first;
   }
 
   // Case 2: It's in the middle or the last task. Behavior is the same.
@@ -96,6 +100,8 @@ task* task_remove(task* task) {
       return t;
     }
   }
+  //
+  // return ?
 }
 
 
@@ -192,4 +198,6 @@ void idle_task() {
     // printf("idle_task: woke up\n");
   }
 }
+
+
 // Task end

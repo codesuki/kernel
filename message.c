@@ -58,9 +58,9 @@ const u8 message_type_count = 2;
 
 // message_peek returns true if there are messages waiting.
 // TODO: what's the naming here? queue, head, first?
-bool message_peek(message* head) {
+bool message_peek(message_queue* queue) {
   // if length of queue > 0 return true
-  if (head != nullptr) {
+  if (*queue->head != nullptr) {
     return true;
   } else {
     return false;
@@ -69,7 +69,7 @@ bool message_peek(message* head) {
 
 // Let's do point to point first.
 // Let's replace 'wait_for_mouse_data'.
-void message_send(message** head, message_type_t type, void* data) {
+void message_send(message_queue* queue, message_type_t type, void* data) {
   // printf("message_send\n");
   // printf("message_send %d\n", message_peek(*head));
   //  alloc message or get from pool.
@@ -79,14 +79,14 @@ void message_send(message** head, message_type_t type, void* data) {
   msg->type = type;
   msg->data = data;
 
-  if (*head == nullptr) {
+  if (*queue->head == nullptr) {
     // TODO: here we probably need pointer to pointer.
-    *head = msg;
+    *queue->head = msg;
     return;
   }
 
   // TODO: keep a pointer to tail for faster append.
-  message* m = *head;
+  message* m = *queue->head;
   for (; m->next != nullptr; m = m->next) {
   }
   m->next = msg;
@@ -95,12 +95,12 @@ void message_send(message** head, message_type_t type, void* data) {
 // mssage_receive checks if there is a message and if not sets the task to a
 // waiting state and calls the scheduler. The scheduler wakes it up in case
 // there is data waiting, which will restart the loop.
-void message_receive(message** head, message* dst) {
+void message_receive(message_queue* queue, message* dst) {
   while (true) {
     // TODO: there is a risk to dereference a null pointer here.
-    if (*head != nullptr) {
-      message* m = *head;
-      *head = m->next;
+    if (*queue->head != nullptr) {
+      message* m = *queue->head;
+      *queue->head = m->next;
       dst->type = m->type;
       dst->data = m->data;
       free(m);
@@ -121,9 +121,9 @@ void message_receive(message** head, message* dst) {
   }
 }
 
-void message_receive_timeout(message** head, message* dst, u64 timeout) {
+void message_receive_timeout(message_queue* queue, message* dst, u64 timeout) {
   task_current->timeout = get_global_timer_value() + timeout * _1ms;
-  message_receive(head, dst);
+  message_receive(queue, dst);
 }
 
 message* message_type_registry[2];

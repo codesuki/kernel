@@ -2,11 +2,10 @@
 
 #include "types.h"
 #include "interrupt.h"
+#include "message.h"
 
 enum task_state { running, blocked, finished };
 typedef enum task_state task_state;
-
-typedef struct message message;
 
 typedef struct task task;
 struct task {
@@ -33,7 +32,9 @@ struct task {
   task* next;
   task_state state;
   u64 sleep_until;
-  message* queue;
+  // Using a non pointer here means we need to import the header because we need
+  // to know the size.
+  message_queue queue;
   u64 timeout;
   bool timed_out;
 };

@@ -120,19 +120,7 @@ void gdt_set_entry(u32, u32, u32, u8, u8);
 void gdt_set_gate(u32 entry, u32 base, u32 limit, u8 access, u8 flags);
 
 void idt_setup();
-// void idt_set_entry(uint32, uint32, uint16, uint8);
 void idt_set_gate(u32 interrupt, u64 offset, u16 selector, u8 type_attr);
-
-/*
-  struct interrupt_registers_struct {
-  uint32 ds;                                      // Data segment selector
-  uint32 edi, esi, ebp, esp, ebx, edx, ecx, eax;  // Pushed by pusha.
-  uint32 int_no, err_code;  // Interrupt number and error code (if applicable)
-  uint32 eip, cs, eflags, useresp,
-  ss;  // Pushed by the processor automatically.
-  } __attribute__((packed));
-  typedef struct interrupt_registers_struct interrupt_registers_t;
- */
 
 extern int isr0;         // divide error, no error code, fault
 extern void isr3(void);  // breakpoint, no error code, trap
@@ -231,9 +219,8 @@ void task2(u8 id) {
 
 void task_network() {
   // This will try to resolve the host to the ip and send the echo, but it
-  // relies on the network stack being up, e.g. dhcp passed. dhcp is brittle
-  // currently because it does not retry. Maybe that's the first thing that
-  // needs fixing.
+  // relies on the network stack being up. We need to wait for that.
+  // Could just be a global for now, but that's boring to continue.
   printf("task_network: sending echo\n");
   send_echo();
 }
@@ -674,7 +661,7 @@ void schedule() {
 	  t->state = running;
 	  next_task = t;
 	  break;
-	} else if (message_peek(t->queue) == true) {
+	} else if (message_peek(&t->queue) == true) {
 	  // BUG: having any of those print statements results in the mouse
 	  // not moving. Found it. Random guess. The schedule timer was 1ms
 	  // and printing took too much time so tasks had no time and we were
@@ -1817,11 +1804,13 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // 2. DONE extract ps2/keyboard driver
   // 2.1. DONE we will need some way to communicate new data to the driver task
   //
+  // DONE
+  // Make message_receive time out.
+  //
   // Issues:
   //
   // Next:
   // Encapsulate queues in a struct.
-  // Make message_receive time out.
   // Somehow register for specific messages.
   //
   // 3. extract more to separate files
@@ -1830,12 +1819,6 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // 6. two displays? kernel log and keyboard command console?
   // 7. window system?
   // 8. enable more cpus
-  //
-  // What's the bigger goal?
-  // Network stack is extremely brittle and works with 1 packet.
-  // Want to refactor it by passing packets through layers.
-  // Also want to handle it outside of the interrupt handler.
-  // This implies there is a task that waits for data.
 
   // What kind of drivers are there?
   // Timer driver?
@@ -1907,27 +1890,29 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // something.
 
   // Testing the message_ functions
-  message* test_head = nullptr;
+  message_queue test_queue = {};
+  test_queue.head = malloc(sizeof(test_queue.head));
   u8* c6 = malloc(1);
   *c6 = 234;
-  message_send(&test_head, message_type_ps2_byte, c6);
-  if (test_head == nullptr) {
+  message_send(&test_queue, message_type_ps2_byte, c6);
+  if (*test_queue.head == nullptr) {
     return -1;
   }
-  if (message_peek(test_head) == false) {
+  if (message_peek(&test_queue) == false) {
     return -1;
   }
   message test_message;
-  message_receive(&test_head, &test_message);
+  message_receive(&test_queue, &test_message);
   u8* c7 = test_message.data;
   if (*c7 != 234) {
     return -1;
   }
 
-  if (test_head != nullptr) {
+  if (*test_queue.head != nullptr) {
     return -1;
   }
   free(c6);
+  free(test_queue.head);
 
   // task_scheduler = 0x2
   // task_idle = 0x6
