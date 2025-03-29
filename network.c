@@ -617,6 +617,50 @@ struct net_address net_resolve_hostname(u8 hostname[63]) {
 // wait for answer.
 // This is almost user level code. I bet ping is implemented like this.
 // This could be my first program.
+// Following this thought I found several issues.
+//
+// If this were a program and I'd give it a separate address space then it would
+// need to be identity mapped again because it lives in the kernel. It also
+// needs access to all these kernel functions. What is kernel and what isn't? I
+// would need to compile some small program that lives at address 0, similar to
+// the kernel s.t. I can load it there. That's probably doable. Next, how can it
+// access all these kernel functions? For example, when it ends it would need to
+// call the trampoline, but the trampoline lives in kernel space. My best guess
+// is that there is some 'kernel library' that provides the needed
+// functionality. A function ends with RET, so I cannot do a system call
+// directly from it, SYSENTER, etc. So I wouldn't be able to call a function in
+// kernel space. Is it possible to map kernel code make it executable, but don't
+// give permissions to kernel data? Anyhow, simpler would be a library that has
+// a trampoline that does a system call to get to ring 0 and call 'task_remove'.
+// I wrote a note that the reason the kernel is in ring 0 is that we don't want
+// user programs to randomly edit kernel data. Of course that makes sense. How
+// would that library function know where the kernel task_remove function lives
+// though? Can the kernel have a library and core part at the same time? Given
+// the library needs to call the kernel function they need to be linked
+// together. How does runtime linking work? If we do static linking..... that
+// means the kernel will be included in the program? I was thinking more about
+// this. So I can of course map the kernel to any location in a virtual address
+// space, but because the code is absolute (is it actually? Yes. Checked.) it
+// will not run anymore, it will try to jump to 1mb, etc. I found there is
+// something called an position independent executable, that could be a way.
+// Alternatively, I also found that I can link individual object files to
+// different positions, so I could link the loader / 64bit setup to 1mb and then
+// link the rest of the kernel to something higher. To manually relocate things
+// I think I need to write something like a dynamic linker. Another thought.. I
+// could compile the kernel once as executable and once as dll maybe, with the
+// same settings. Then when I want to compile a program, I can link it against
+// the dll version?
+// The strategy will be to
+// - Load everything at 1mb
+// - Have the boostrap assembler that creates the first page table have VMA 1mb.
+// - It creates a page table splitting the address range in two. Rest of kernel
+// VMA is in the upper half.
+// Problems:
+// What about global variables, etc? Maybe I can duplicate them.
+// While the above should work for the kernel code...
+// Once I load a user program at 0mb VMA... how can it access the kernel? How do
+// I link?
+
 void send_echo() {
   if (ip[0] == 0) {
     printf("send_echo: network stack down\n");

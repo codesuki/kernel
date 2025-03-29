@@ -18,7 +18,7 @@ CC = x86_64-elf-gcc
 # -mgeneral-regs-only disables usage of sse registers, etc.
 # We would have to restore them on every context switch. For now I delay this.
 # ref: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=70738
-CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone -std=c23 -mgeneral-regs-only
+CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone -std=c23 -mgeneral-regs-only -m64 -mcmodel=kernel
 
 AS = nasm
 ASFLAGS = -f elf64 -g -F dwarf
@@ -29,7 +29,7 @@ all: $(ISO)
 
 clean:
 	@rm -f $(OBJECTS) $(KERNEL) $(ISO)
-	@rm -r dist/
+	@rm -rf dist/
 
 run: $(ISO)
 #	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet

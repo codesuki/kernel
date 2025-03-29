@@ -4,7 +4,7 @@ section .text
 	; reserve 16k initial kernel stack space
 	STACKSIZE equ 0x4000
 
-extern asm_main
+extern asm_trampoline
 global loader
 loader:
 	; set up the stack. Could use label after stack instead of addition
@@ -24,7 +24,7 @@ loader:
 	pop edi
 	pop esi
 
-	jmp gdt64.code:asm_main ; long jump to set cs register
+	jmp gdt64.code:asm_trampoline ; long jump to set cs register
 
 hang:
 	hlt                                ; halt machine should kernel return
@@ -69,6 +69,8 @@ setup_paging:
 	mov [pdpt], eax
 
 ;; now we need to fill pd with 512 pages of 2mb
+;; we identity map
+;; if we don't want to identity map we need to choose where we put a specific page.
 	mov ecx, 0
 .loop:                          ; . means local label. nested under previous label.
 	mov eax, 0x200000       ; 2mib
@@ -82,6 +84,7 @@ setup_paging:
 
 ;; START ioapic hack
 ;; only register the needed page of the ioapic
+;; 0xFEC00000 is around 4273mb. so around 4gb.
 	mov eax, pd_ioapic
 	or eax, 0b11
 	mov [pdpt+8*3], eax
@@ -93,6 +96,20 @@ setup_paging:
 	mov eax, 0xfee00000       ; apic addr 0xFEE00000
 	or eax, 0b10000011      ; present = 1, rw = 1, 2mb page = 1
 	mov [pd_ioapic+503*8], eax     ; every entry is 8 byte = 1 uint on 64 bit arch.
+;; END
+
+;; add kernel pages
+	mov eax, pdpt_kernel           ; take the address of pdpt
+	or eax, 0b11            ; flip the first two bytes as described above
+	mov [pml4+511*8], eax         ; write this to pml4
+
+	mov eax, pd_kernel
+	or eax, 0b11
+	mov [pdpt_kernel+510*8], eax
+
+	mov eax, 0x200000
+	or eax, 0b10000011
+	mov [pd_kernel], eax
 ;; END
 
 ;; enable paging
@@ -137,7 +154,10 @@ setup_paging:
 	ret
 
 section .bss
-align 4096                      ; according to the intel docs page tables need to be aligned.
+;; according to the intel docs page tables need to be aligned.
+;; otherwise the whole offset indexing will fail to work.
+;; each table has 512 entries.
+align 4096
 pml4:
 	resb 4096
 pdpt:
@@ -146,12 +166,17 @@ pd:
 	resb 4096
 pd_ioapic:
 	resb 4096
+pdpt_kernel:
+	resb 4096
+pd_kernel:
+	resb 4096
 stack:
 	resb STACKSIZE                     ; reserve 16k stack on a doubleword boundary
 
 ;; the gdt setup could probably also be moved to bss and configured in code.
 ;; this is from the Rust OSdev site.
 section .rodata
+global gdt64
 gdt64:
 	dq 0 ; zero entry
 ;; ; 43 = executable, 44 = code segment, 47 = present, 53 = 64bit

@@ -1,3 +1,6 @@
+VMA = 0xFFFFFFFF80000000;
+LMA = 0x200000;
+
 ENTRY(loader)
 SECTIONS {
     . = 1M;
@@ -8,7 +11,14 @@ SECTIONS {
 	*(.multiboot)
     }
 
-    .text : {
+    .loader : {
+       loader.o(.*)
+       trampoline_64.o(.*)
+    }
+
+    _loader_end = .;
+
+    .text VMA : AT(LMA) {
 	*(.text)
     }
 

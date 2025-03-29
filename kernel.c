@@ -1832,6 +1832,8 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // Sound driver
   // Disk
 
+  u64 memory_size = 0;
+  u64 first = 0;
   // We need to store all available memory somewhere. the below gives usable
   // memory, we have to subtract the kernel size from it. The kernel currently
   // is identity mapped with 2mb pages.
@@ -1853,6 +1855,10 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
       for (u8 i = 0; i < num_entries; i++) {
 	e += i;
 
+	if (i == 0) {
+	  first = e->base_addr;
+	}
+
 	// type
 	// 1: available RAM
 	// 3: usable memory containing ACPI information
@@ -1863,6 +1869,7 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
 	if (e->type == 1) {
 	  printf("base = %x length = %x\n", e->base_addr, e->length);
 	  memory_init(e->base_addr, e->length);
+	  memory_size += e->length;
 	}
       }
     }
@@ -1871,6 +1878,8 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
     // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
     h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
   }
+
+  printf("total memory: %x start addr %x\n", memory_size, first);
 
   // Should give chopped log
   u8* c = malloc(1);
@@ -2084,3 +2093,30 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
 // Linus on typedefs
 // https://yarchive.net/comp/linux/typedefs.html
 // https://yarchive.net/comp/linux/bitfields.html
+
+// When I tried to change the linker script to move part of the kernel further
+// up (VMA) I got "relocation truncated to fit: R_X86_64_32S against symbol".
+// See relocations:
+// x86_64-elf-readelf --relocs kernel.o
+//
+// This solves it GCC option
+// -mcmodel=large
+// Generate code for the large model. This model makes no assumptions about
+// addresses and sizes of sections.
+//
+// Turns out mdmodel=large can be really slow because jump instructions are all
+// indirect and so they turn into two instructions. One to load the address and
+// one to jump. Because the compiler cannot constrain how far we jump. The
+// compiler has a kernel mode which we use -mcmodel=kernel. This is for the
+// linux kernel which sits 2gb from the top of the memory range. Then we know we
+// can reach everything with 32bit RIP relative jumps.
+
+// in qemu console
+// print page table if they work
+// info mem
+// for debugging
+// print page table (exchange address)
+// memory read -s8 -fu -c512 0x000600 --force
+// s1 is 1 byte
+// -f is format
+// -c is count
