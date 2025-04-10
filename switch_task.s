@@ -1,6 +1,6 @@
-	bits 64
+bits 64
 
-	global switch_task
+global switch_task
 switch_task:
 	; Thought on tasks having their own memory. Does this mean I need to
 	; reserve memory and copy all the code there? This would explain why

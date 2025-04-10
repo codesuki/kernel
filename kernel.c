@@ -51,22 +51,6 @@ struct tss_struct {
 } __attribute__((packed));
 typedef struct tss_struct tss_t;
 
-struct gdt_entry_struct {
-  u16 limit_start;
-  u16 base_start;
-  u8 base_middle;
-  u8 access;
-  u8 limit_and_flags;
-  u8 base_end;
-} __attribute__((packed));
-typedef struct gdt_entry_struct gdt_entry_t;
-
-struct gdt_ptr_struct {
-  u16 limit;
-  u32 base;
-} __attribute__((packed));
-typedef struct gdt_ptr_struct gdt_ptr_t;
-
 // #IFDEF __x86_64__
 struct idt_entry {
   u16 offset_start;
@@ -104,15 +88,15 @@ struct idt_ptr_struct {
 } __attribute__((packed));
 typedef struct idt_ptr_struct idt_ptr_t;
 
-gdt_ptr_t gdt;
-gdt_entry_t gdt_entries[6];
+// gdt_ptr_t gdt;
+// gdt_entry_t gdt_entries[6];
 
 idt_ptr_t idt;
 idt_entry_t idt_entries[256] = {0};
 
 tss_t tss;
 
-extern void gdt_update(gdt_ptr_t*);
+// extern void gdt_update(gdt_ptr_t*);
 extern void idt_update(idt_ptr_t*);
 
 void gdt_setup();
@@ -138,19 +122,19 @@ extern void isr0x34(void);
 #define EXCEPTION_PAGE_FAULT 14
 
 char* interrupt_names[22] = {
-    "0",
+    "Divide Error",
     "1",
     "2",
     "3",
-    "4",
+    "Overflow",
     "5",
     "6",
     "7",
     "Double Fault Exception",  // 8
-    "9",
-    "10",
-    "11",
-    "12",
+    "CoProcessor Segment Overrun (reserved)",
+    "Invalid TSS",
+    "Segment Not Present",
+    "Stack Segment Fault",
     "General Protection Exception",  // 13
     "Page Fault Exception",          // 14
     "15",
@@ -921,32 +905,32 @@ void idt_set_gate(u32 interrupt, u64 offset, u16 selector, u8 type_attr) {
 #define CODE_ACCESSED
 #define CODE_CONFORMING
 
-void gdt_setup() {
-  gdt.limit = sizeof(gdt_entry_t) * 5 - 1;
-  gdt.base = (u32)&gdt_entries;
+// void gdt_setup() {
+//   gdt.limit = sizeof(gdt_entry_t) * 5 - 1;
+//   gdt.base = (u32)&gdt_entries;
 
-  gdt_set_gate(0, 0, 0, 0, 0);
-  gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf);  // kernel mode code segment
-  gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf);  // kernel mode data segment
-  gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf);  // user mode code segment
-  gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf);  // user mode data segment
-  gdt_set_gate(5, (u32)&tss, sizeof(tss), 0x89,
-	       0x40);  // cpu1 task switching segment
+//   gdt_set_gate(0, 0, 0, 0, 0);
+//   gdt_set_gate(1, 0, 0xffffffff, 0x9a, 0xcf);  // kernel mode code segment
+//   gdt_set_gate(2, 0, 0xffffffff, 0x92, 0xcf);  // kernel mode data segment
+//   gdt_set_gate(3, 0, 0xffffffff, 0xfa, 0xcf);  // user mode code segment
+//   gdt_set_gate(4, 0, 0xffffffff, 0xf2, 0xcf);  // user mode data segment
+//   gdt_set_gate(5, (u32)&tss, sizeof(tss), 0x89,
+//	       0x40);  // cpu1 task switching segment
 
-  gdt_update(&gdt);
-}
+//   gdt_update(&gdt);
+// }
 
-void gdt_set_gate(u32 entry, u32 base, u32 limit, u8 access, u8 flags) {
-  gdt_entries[entry].base_start = (0xffff & base);
-  gdt_entries[entry].base_middle = (base >> 16) & 0xff;
-  gdt_entries[entry].base_end = (base >> 24) & 0xff;
+// void gdt_set_gate(u32 entry, u32 base, u32 limit, u8 access, u8 flags) {
+//   gdt_entries[entry].base_start = (0xffff & base);
+//   gdt_entries[entry].base_middle = (base >> 16) & 0xff;
+//   gdt_entries[entry].base_end = (base >> 24) & 0xff;
 
-  gdt_entries[entry].limit_start = (0xffff & limit);
-  gdt_entries[entry].limit_and_flags = (limit >> 16) & 0x0f;
-  gdt_entries[entry].limit_and_flags |= (flags & 0xf0);
+//   gdt_entries[entry].limit_start = (0xffff & limit);
+//   gdt_entries[entry].limit_and_flags = (limit >> 16) & 0x0f;
+//   gdt_entries[entry].limit_and_flags |= (flags & 0xf0);
 
-  gdt_entries[entry].access = access;
-}
+//   gdt_entries[entry].access = access;
+// }
 
 // I/O ports
 // ref: https://wiki.osdev.org/I/O_ports
@@ -1091,6 +1075,7 @@ u64 rdmsr(u32 reg) {
   return value;
 }
 
+// ref: Vol 4 Chapter 2 Table 2-2
 #define MSR_APIC_BASE 0x1b
 
 // ref: Vol 4 2.1
@@ -1135,6 +1120,11 @@ typedef struct ioapic_redirection_register ioapic_redirection_register_t;
 // Seems Intel and AMD have this at the same address.
 // Normally it can be found via the Multiple APIC Description Table (MADT).
 // ref: https://wiki.osdev.org/MADT
+// Specification:
+// The APIC default base memory addresses defined by this specification are
+// 0FEC0_0000h and 0FEE0_0000h.
+// ref:
+// https://web.archive.org/web/20070112195752/http://developer.intel.com/design/pentium/datashts/24201606.pdf
 #define IOAPIC_BASE 0xfec00000
 #define IOAPIC_IOREGSEL 0xfec00000
 #define IOAPIC_IOWIN 0xfec00010
@@ -1724,6 +1714,8 @@ typedef struct multiboot2_tag_memory_map_entry
 #define MULTIBOOT2_TAG_END 0
 #define MULTIBOOT2_TAG_MEMORY_MAP 6
 
+extern void pages_init_wrapper();
+
 int kmain(multiboot2_information_t* mbd, u32 magic) {
   printf("kernel start=%x end=%x size=%x\n", &_kernel_start, &_kernel_end,
 	 (u64)&_kernel_end - (u64)&_kernel_start);
@@ -1732,6 +1724,85 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
     printf("multiboot error: %x\n", magic);
     __asm__ volatile("hlt");
   }
+
+  serial_init();
+
+  // These live on the stack
+  //
+  // ffffffff80001efe: mov    QWORD PTR [rbp-0x8],0x0
+  // ffffffff80001f06: mov    QWORD PTR [rbp-0x10],0x0
+  u64 memory_size = 0;
+  u64 first = 0;
+  // We need to store all available memory somewhere. the below gives usable
+  // memory, we have to subtract the kernel size from it. The kernel currently
+  // is identity mapped with 2mb pages.
+  multiboot2_tag_header_t* h =
+      (multiboot2_tag_header_t*)((uintptr_t)mbd +
+				 sizeof(multiboot2_information_t));
+
+  while (h->type != MULTIBOOT2_TAG_END) {
+    //   printf("header type: %x size: %x\n", h->type, h->size);
+    if (h->type == MULTIBOOT2_TAG_MEMORY_MAP) {
+      multiboot2_tag_memory_map_header_t* mh =
+	  (multiboot2_tag_memory_map_header_t*)h;
+      u32 num_entries = mh->size / mh->entry_size;
+      //   printf("memory map: entries = %d\n", num_entries);
+      multiboot2_tag_memory_map_entry_t* e =
+	  (multiboot2_tag_memory_map_entry_t*)((uintptr_t)h +
+					       sizeof(
+						   multiboot2_tag_memory_map_header_t));
+      for (u8 i = 0; i < num_entries; i++) {
+	e += i;
+
+	if (i == 0) {
+	  first = e->base_addr;
+	}
+
+	// type
+	// 1: available RAM
+	// 3: usable memory containing ACPI information
+	// 4: reserved memory (needs to be preserved during hibernation)
+	// 5: bad RAM
+	// others: reserved area
+	printf("entry %d: type = %d\n", i, e->type);
+	printf("base = %x length = %x\n", e->base_addr, e->length);
+	if (e->type == 1) {
+	  memory_init(e->base_addr, e->length);
+	  memory_size += e->length;
+	}
+      }
+    }
+    // Tags are 8-bytes aligned.
+    // ref:
+    // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
+    h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
+  }
+
+  printf("total memory: %x start addr %x\n", memory_size, first);
+
+  // Should give chopped log
+  u8* c = malloc(1);
+  u8* c2 = malloc(1);
+  u8* c3 = malloc(1);
+  free(c);
+  // Should give perfect size log
+  u8* c4 = malloc(1);
+  u8* c5 = malloc(1);
+  free(c2);
+
+  free(c3);
+  free(c4);
+  free(c5);
+
+  // TODO: could add some inline tests here if I know available memory or
+  // something.
+
+  // I created this wrapper to fix up the rbp. This should be solved in a nicer
+  // way but I wanted to get it done and move on for now.
+  // Possible follow ups
+  // - set up paging before calling kmain
+  // - reset stack and tail call kmain
+  pages_init_wrapper();
 
   // set pit 0 to one shot mode
   // bit 4-5 = access mode
@@ -1832,75 +1903,10 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // Sound driver
   // Disk
 
-  u64 memory_size = 0;
-  u64 first = 0;
-  // We need to store all available memory somewhere. the below gives usable
-  // memory, we have to subtract the kernel size from it. The kernel currently
-  // is identity mapped with 2mb pages.
-  multiboot2_tag_header_t* h =
-      (multiboot2_tag_header_t*)((uintptr_t)mbd +
-				 sizeof(multiboot2_information_t));
-
-  while (h->type != MULTIBOOT2_TAG_END) {
-    //   printf("header type: %x size: %x\n", h->type, h->size);
-    if (h->type == MULTIBOOT2_TAG_MEMORY_MAP) {
-      multiboot2_tag_memory_map_header_t* mh =
-	  (multiboot2_tag_memory_map_header_t*)h;
-      u32 num_entries = mh->size / mh->entry_size;
-      //   printf("memory map: entries = %d\n", num_entries);
-      multiboot2_tag_memory_map_entry_t* e =
-	  (multiboot2_tag_memory_map_entry_t*)((uintptr_t)h +
-					       sizeof(
-						   multiboot2_tag_memory_map_header_t));
-      for (u8 i = 0; i < num_entries; i++) {
-	e += i;
-
-	if (i == 0) {
-	  first = e->base_addr;
-	}
-
-	// type
-	// 1: available RAM
-	// 3: usable memory containing ACPI information
-	// 4: reserved memory (needs to be preserved during hibernation)
-	// 5: bad RAM
-	// others: reserved area
-	printf("entry %d: type = %d\n", i, e->type);
-	if (e->type == 1) {
-	  printf("base = %x length = %x\n", e->base_addr, e->length);
-	  memory_init(e->base_addr, e->length);
-	  memory_size += e->length;
-	}
-      }
-    }
-    // Tags are 8-bytes aligned.
-    // ref:
-    // https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html#Boot-information-format-1
-    h = (multiboot2_tag_header_t*)((uintptr_t)h + ((h->size + 7) & ~7));
-  }
-
-  printf("total memory: %x start addr %x\n", memory_size, first);
-
-  // Should give chopped log
-  u8* c = malloc(1);
-  u8* c2 = malloc(1);
-  u8* c3 = malloc(1);
-  free(c);
-  // Should give perfect size log
-  u8* c4 = malloc(1);
-  u8* c5 = malloc(1);
-  free(c2);
-
-  free(c3);
-  free(c4);
-  free(c5);
-
-  // TODO: could add some inline tests here if I know available memory or
-  // something.
-
   // Testing the message_ functions
   message_queue test_queue = {};
   test_queue.head = malloc(sizeof(test_queue.head));
+  *test_queue.head = nullptr;
   u8* c6 = malloc(1);
   *c6 = 234;
   message_send(&test_queue, message_type_ps2_byte, c6);
@@ -1947,112 +1953,11 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // actually use it and stay the 'kernel' task, then we would just call
   // schedule here.
   printf("switching to scheduler task\n");
+  setup_hpet();
   task_replace(task_scheduler);
 
   return 0xDEADBABA;
 }
-
-/* // Note: I found using bitfields strongly discouraged, but I will still try
- * to */
-/* // use them. ref: https://news.ycombinator.com/item?id=17056301 and many
- * more. */
-
-/* // Paging table entry is 64 bits / 8 byte on a 64 bit system. */
-/* struct pml4_entry { */
-/*   unsigned int present : 1; */
-/*   unsigned int rw : 1; */
-/*   unsigned int us : 1; */
-/*   unsigned int pwt : 1; */
-/*   unsigned int pcd : 1; */
-/*   unsigned int a : 1; */
-/*   unsigned int ign : 1; */
-/*   unsigned int reserved: 1; */
-/*   unsigned int ignored : 3; */
-/*   unsigned int r : 1; */
-/*   unsigned int pointer_table_ptr : 40; */
-/*   unsigned int reserved_2 : 12; */
-/* }; */
-/* typedef struct pml4_entry pml4_entry_t; */
-
-/* struct page_directory_pointer_table_entry { */
-/*   unsigned int present : 1; */
-/*   unsigned int rw : 1; */
-/*   unsigned int us : 1; */
-/*   unsigned int pwt : 1; */
-/*   unsigned int pcd : 1; */
-/*   unsigned int a : 1; */
-/*   unsigned int ign : 1; */
-/*   unsigned int always_0 : 1; */
-/*   unsigned int ignored : 3; */
-/*   unsigned int r : 1; */
-/*   unsigned int directory_ptr : 40; */
-/*   unsigned int reserved_2 : 12; */
-/* }; */
-/* typedef page_directory_pointer_table_entry
- * page_directory_pointer_table_entry_t; */
-
-/* struct page_directory_entry { */
-/*   unsigned int present : 1; */
-/*   unsigned int rw : 1; */
-/*   unsigned int us : 1; */
-/*   unsigned int pwt : 1; */
-/*   unsigned int pcd : 1; */
-/*   unsigned int a : 1; */
-/*   unsigned int ign : 1; */
-/*   unsigned int always_0 : 1; */
-/*   unsigned int ignored : 3; */
-/*   unsigned int r : 1; */
-/*   unsigned int page_table_ptr : 40; */
-/*   unsigned int reserved_2 : 12; */
-/* }; */
-/* typedef struct page_directory_entry page_directory_entry_t; */
-
-/* struct page_table_entry { */
-/*   unsigned int present : 1; */
-/*   unsigned int rw : 1; */
-/*   unsigned int us : 1; */
-/*   unsigned int pwt : 1; */
-/*   unsigned int pcd : 1; */
-/*   unsigned int a : 1; */
-/*   unsigned int d : 1; */
-/*   unsigned int pat : 1; */
-/*   unsigned int g : 1; */
-/*   unsigned int ign : 2; */
-/*   unsigned int r : 1; */
-/*   unsigned int page_table_ptr : 40; */
-/*   unsigned int reserved_2 : 12; // actually has prot. key inside. */
-/* }; */
-/* typedef struct page_table_entry page_table_entry_t; */
-
-/* // Each paging table has 512 entries of size 8 bytes on a 64bit
- * architecture.
- */
-/* // Section 4.2 in Intel Developer Manual. */
-/* // Root paging structure needs to be put into CR3. */
-/* // We will do 4 level paging. Section 4.5. */
-/* // To enable we have to set */
-/* // CR0.PG = 1, CR4.PAE = 1, IA32_EFER.LME = 1, and CR4.LA57 = 0. */
-/* // Paging maps linear address space to physical address space. */
-/* // PML4[PML4Entries] -> Page Directory Pointer Table[PDPTEntries] -> 1Gb
- * page | Page Directory */
-/* // Page Directory -> 2Mb page | Page Table */
-/* // Page Table Entry -> 4kb Page */
-/* pml4_entry_t pml4[512]; */
-/* page_directory_pointer_table_entry_t page_directory_pointer_table[512]; */
-/* page_directory_entry_t page_directory[512]; */
-/* page_table_entry_t page_table[512]; */
-
-/* void init_temporary_page_tables() { */
-/*   /\* for (unsigned int i = 0; i < 512; i++) { *\/ */
-/*   /\*   page_table *\/ */
-/*   /\* } *\/ */
-
-/*   /\* pml4_entry_t e0 = { *\/ */
-/*   /\*   .present = 1, *\/ */
-/*   /\* }; *\/ */
-
-/*   /\* pml4[0] = e0; *\/ */
-/* } */
 
 /* // Can we link 32 and 64 bit code into the same binary? */
 /* //

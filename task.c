@@ -1,7 +1,7 @@
 #include "task.h"
 #include "interrupt.h"
-#include "print.h"
 #include "memory.h"
+#include "print.h"
 #include "time.h"
 
 task* task_first = nullptr;
@@ -45,7 +45,7 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   // memset to 0
   task->state = running;
   task->queue.head = malloc(sizeof(task->queue.head));
-
+  *task->queue.head = nullptr;
   task->eip = entry_point;
 
   // Set rsp to end of stack memory because it grows down.
@@ -103,7 +103,6 @@ task* task_remove(task* task) {
   //
   // return ?
 }
-
 
 void sleep(u64 ms) {
   // how do I find the task that this should apply
@@ -189,8 +188,6 @@ void update_regs_from_task(task* task, interrupt_registers* regs) {
   // print_regs(regs);
 }
 
-
-
 void idle_task() {
   while (1) {
     // printf("idle_task: going to idle\n");
@@ -198,6 +195,5 @@ void idle_task() {
     // printf("idle_task: woke up\n");
   }
 }
-
 
 // Task end

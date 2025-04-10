@@ -75,16 +75,15 @@ void message_send(message_queue* queue, message_type_t type, void* data) {
   //  alloc message or get from pool.
   //  add to queue
   message* msg = malloc(sizeof(*msg));
+
   msg->next = nullptr;
   msg->type = type;
   msg->data = data;
-
   if (*queue->head == nullptr) {
     // TODO: here we probably need pointer to pointer.
     *queue->head = msg;
     return;
   }
-
   // TODO: keep a pointer to tail for faster append.
   message* m = *queue->head;
   for (; m->next != nullptr; m = m->next) {
@@ -111,9 +110,9 @@ void message_receive(message_queue* queue, message* dst) {
     // We resume here
     // Check if we got woken up because of a timeout.
     // TODO: is there a better way?
-    // printf("message_receive: waking up\n");
+    printf("message_receive: waking up\n");
     if (task_current->timed_out == true) {
-      // printf("message_receive: timed out\n");
+      printf("message_receive: timed out\n");
       task_current->timed_out = false;
       dst = nullptr;
       return;

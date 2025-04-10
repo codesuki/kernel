@@ -1,22 +1,22 @@
 #include "memory.h"
-#include "print.h"
-
-// // Memory start
-// // Defined in linker script.
-// // Need to take the address, because the address is the value in this case.
-// // ref: https://sourceware.org/binutils/docs/ld/Source-Code-Reference.html
-// extern u64 _kernel_start;
-// extern u64 _kernel_end;
+#include "lib.h"    // IWYU pragma: keep
+#include "print.h"  // IWYU pragma: keep
 
 const u32 page_size = 0x200000;  // 2mb
 
-typedef struct memory memory;
-struct memory {
-  u64 address;
-  u64 size;  // 4kb, 2mb, etc.
-  memory* next;
-  memory* prev;
-};
+const u64 one_gb = 0x400000000;
+const u64 lower_half_start = 0x0;
+const u64 lower_half_end = 0x00007fffffffffff;
+const u64 half_size = lower_half_end;
+const u64 higher_half_start = 0xffff800000000000;
+const u64 higher_half_end = 0xffffffffffffffff;
+const u64 physical_memory_offset = higher_half_start;
+const u64 kernel_heap_start = higher_half_start + 200 * one_gb;
+const u64 kernel_code_start = 0xffffffff80000000;
+// grows down towards kernel_heap_start
+const u64 kernel_stack_start = kernel_code_start;
+const u64 kernel_physical_start = (u64)&_kernel_start;
+const u64 kernel_physical_end = (u64)&_kernel_end;
 
 // Current thought, keep two lists. Free and used memory.
 // When we malloc we take from the free list and put it into the used list.
@@ -25,8 +25,36 @@ struct memory {
 memory* memory_free_first = nullptr;
 memory* memory_used_first = nullptr;
 
+// TODO:
+// now that the kernel is in the higher half we have to rewrite this.
+// what has to change?
+// Not much. We initialize the free list in the first free memory available.
+// Afterwards we can create a new page table in memory using malloc.
+// Set the page table.
+// The page stable should map all of physical memory to some upper half address.
+// Decide start for kernel heap and stack.
+// New discovery: the network card of course needs a physical memory address.
+// Currently it's using a global that's mapped to a high address and hence it
+// fails. The card only supports 32bit addresses which means its memory has to
+// live below 4gb.
+// We also need to block PCI and ACPI addresses. PCI seems below 1mb.
+//
+// memory_init, memory_add, memory_remove
+// those are the physical memory management functions.
+// the paging code should call these.
+//
+// continuation from paper notes.
+// vmm call pmm: give me 1 page worth of phys memory.
+// vmm now needs to configure the page entry
+// there is a chance the table there does not exist yet, then we need to
+// allocate this too and map it recursively. I think this makes sense. Let's try
+// it.
+
 // memory_init creates the first memorys in physical memory, because we cannot
 // call malloc.
+// This code is very naive. It should do a better job of categorizing memory and
+// marking some memory as unusable, e.g. mapped hardware memory, kernel memory,
+// etc.
 void memory_init(u64 base_address, u64 length) {
   // We don't want to touch the memory block from 0 - 1mb.
   // All BIOS things live there.
@@ -43,6 +71,8 @@ void memory_init(u64 base_address, u64 length) {
   // memory which caused memory corruption.
   u64 base_address_after_kernel =
       base_address + ((u64)&_kernel_end - (u64)&_kernel_start);
+  // simpler
+  // if base_address < _kernel_end { base_address = kernel_end }
 
   printf("memory_init: available memory with base %x and length %x\n",
 	 base_address, length);
@@ -50,11 +80,9 @@ void memory_init(u64 base_address, u64 length) {
   printf("memory_init: kernel located between %x - %x\n", &_kernel_start,
 	 &_kernel_end);
 
-  // TODO: I think this overcounts. I.e. the last page is too big for the
-  // available physical memory.
-  // Maybe for now we don't track the memorys themselves.
-  // How many do we need?
-  u64 page_count = length / page_size;
+  // TODO: length is too big because of the loader. Make this more resilient.
+  // For now I subtract 1.
+  u64 page_count = (length / page_size) - 1;
   u64 memory_size = page_count * sizeof(memory);
 
   // After our memorys
@@ -114,6 +142,489 @@ memory* memory_remove() {
   memory_free_first = memory->next;
   memory_free_first->prev = memory->prev;
   return memory;
+}
+
+memory* memory_4kb_free_first = nullptr;
+// memory* memory_used_first = nullptr;
+
+void memory_4kb_pool_init() {
+  const u64 element_size = 0x1000;  // 4kib = 16 * 256 (0x100) bytes
+  // get a 2mb physical memory pool
+  memory* pool = memory_remove();
+
+  u64 count = (0x200000 / element_size) - 1;
+  u64 memory_size = count * sizeof(memory);
+
+  // After our memorys
+  // Aligned on element_size.
+  u64 usable_memory = ((pool->address + memory_size + (element_size - 1)) &
+		       ~(element_size - 1));
+
+  printf("memory_4kb_pool_init: %d 4kb elements available\n", count);
+  printf("memory_4kb_pool_init: usable memory starts from %x\n", usable_memory);
+
+  memory* current = (memory*)pool->address;
+  memory* prev = nullptr;
+
+  memory_4kb_free_first = current;
+
+  for (u64 i = 0; i < count; i++) {
+    current->address = usable_memory;
+    current->next = nullptr;
+    current->prev = prev;
+    current->size = element_size;
+
+    if (prev != nullptr) {
+      prev->next = current;
+    }
+
+    // Nice in Bochs because we only have 30mb there.
+    // printf("memory_init: assigned %x\n", m->address);
+
+    usable_memory += element_size;
+    prev = current;
+    current++;
+  }
+  for (memory* m = memory_4kb_free_first; m != nullptr; m = m->next) {
+    printf("memory_4kb_pool_init: %x %x %x\n", m->address, m->next, m->prev);
+  }
+}
+
+void* memory_4kb_remove() {
+  if (memory_4kb_free_first == nullptr) {
+    return nullptr;
+  }
+
+  memory* memory = memory_4kb_free_first;
+  memory_4kb_free_first = memory->next;
+  memory_4kb_free_first->prev = memory->prev;
+
+  printf("memory_4kb_remote: %x\n", memory->address);
+
+  memset((void*)memory->address, 0, 8 * 512);
+  return (void*)memory->address;
+}
+
+gdt_ptr* gdt_pointer = {0};
+gdt_entry* gdt = {0};
+
+#define SEGMENT_TYPE_CODE 0b1000
+#define SEGMENT_TYPE_CODE_READ 0b1100
+
+void init_gdt() {
+  gdt = memory_4kb_remove();  // waste
+  /// gdt[0] should be empty
+  gdt[1].type = SEGMENT_TYPE_CODE;
+  gdt[1].l = 1;  // long mode
+  gdt[1].p = 1;  // present
+  gdt[1].s = 1;  // code / data segment
+
+  gdt_pointer = memory_4kb_remove();  // waste
+  gdt_pointer->limit = 2 * 8 - 1;     // for two entries
+  gdt_pointer->base = physical_memory_offset + (u64)gdt;
+
+  // f  gdt_pointer = physical2virtual(gdt_pointer);
+
+  // printf("pages_gdt: gdt=%x gdtp=%x\n", gdt, gdt_pointer);
+}
+
+// Each paging table has 512 entries of size 8 bytes on a 64bit architecture.
+// Section 4.2 in Intel Developer Manual.
+// Root paging structure needs to be put into CR3.
+// We will do 4 level paging. Section 4.5.
+// To enable we have to set
+// CR0.PG = 1, CR4.PAE = 1, IA32_EFER.LME = 1, and CR4.LA57 = 0.
+// Paging maps linear address space to physical address space.
+// PML4[PML4Entries] -> Page Directory Pointer Table[PDPTEntries] -> 1Gb page |
+// Page Directory Page Directory -> 2Mb page | Page Table Page Table Entry ->
+// 4kb Page
+pml4_entry* kernel_pml4;
+
+// page_directory_pointer_table_entry page_directory_pointer_table[512];
+// page_directory_entry page_directory[512];
+// page_table_entry page_table[512];
+
+// I can just extract the idx from the address like the
+// CPU.
+// 9 bits index into pml4
+// 9 bits index into
+// 9 bits index into
+// 21 bits offset
+// 48 bit total
+u64 index_pml4(u64 address) {
+  u64 offset = (address >> 39) & 0b111111111;
+  printf("index_pml4: %d\n", offset);
+  return offset;
+}
+
+u64 index_pdpt(u64 address) {
+  u64 offset = (address >> 30) & 0b111111111;
+  printf("index_pdpt: %d\n", offset);
+  return offset;
+}
+
+u64 index_pd(u64 address) {
+  u64 offset = (address >> 21) & 0b111111111;
+  printf("index_pd: %d\n", offset);
+  return offset;
+}
+
+// For 2mb page
+// 21 bits results in offset 0 - 0x1fffff
+// 0x200000 is 2mb.
+u64 index_offset(u64 address) {
+  u64 offset = (address >> 30) & 0b111111111111111111111;  // 21 bits
+  return offset;
+}
+
+// u64 index_pml4(u64 address) {
+//   u64 offset = 0;
+//   if (address >= higher_half_start) {
+//     address -= higher_half_start;
+//     offset = 256;
+//   }
+//   return offset + address / ((u64)512 * 512 * 512 * 4096);
+// }
+
+void pages_test() {
+  u16 idx = index_pml4(0);
+  if (idx != 0) {
+    printf("pages_init: expected index 0 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pml4(lower_half_end);
+  if (idx != 255) {
+    printf("pages_init: expected index 255 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pdpt(lower_half_end);
+  if (idx != 511) {
+    printf("pages_init: index_pdpt: expected index 511 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pd(lower_half_end);
+  if (idx != 511) {
+    printf("pages_init: index_pd: expected index 511 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_offset(lower_half_end);
+  if (idx != 0xffff) {
+    printf("pages_init: expected index 0xffff but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pml4(higher_half_start);
+  if (idx != 256) {
+    printf("pages_init: expected index 256 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pml4(higher_half_start);
+  if (idx != 256) {
+    printf("pages_init: expected index 256 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pdpt(higher_half_start);
+  if (idx != 0) {
+    printf("pages_init: expected index 0 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_pd(higher_half_start);
+  if (idx != 0) {
+    printf("pages_init: expected index 0 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  idx = index_offset(higher_half_start);
+  if (idx != 0) {
+    printf("pages_init: expected index 0 but was %d\n", idx);
+    __asm__("hlt");
+  }
+
+  // 0xffffffff800001cd
+  idx = index_pml4(0xffffffff800001cd);
+  // 511 = last 2gb
+  // one slot is 512gb
+  if (idx != 511) {
+    printf("pages_init: expected index 511 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  // 510 = at the start of the last two gb, i.e. 0xffffffff80000000
+  // one slot is 1gb
+  idx = index_pdpt(0xffffffff800001cd);
+  if (idx != 510) {
+    printf("pages_init: expected index 510 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  // 0 - start of the last 2gb
+  // one slot is 2mb
+  idx = index_pd(0xffffffff800001cd);
+  if (idx != 0) {
+    printf("pages_init: expected index 0 but was %d\n", idx);
+    __asm__("hlt");
+  }
+  //  idx = index_offset(0xffffffff800001cd);
+  //  if (idx != 0x1cd) {
+  //    printf("pages_init: expected index 0x1cd but was %d\n", idx);
+  //    panic("error");
+  //  }
+}
+
+// We cannot call malloc here. We have to get physical memory. We can make this
+// better by creating a pool allocator. I think what I have is already very
+// similar to a pool allocator, just the size is fixed. Let me add this here.
+// The pool allocator takes physical memory in page frame size and splits it up
+// into aligned 4kb chunks. The physical memory manager could just do it. It's a
+// bit tricky because we have to manage memory again in physical space. What do
+// I do? Make 4kb pages or write a small memory allocator? memory add/remove
+// could be rewritten to take a linked list as input, then they are reusable but
+// I don't want to change them now because I might introduce a bug. memory init
+// could then also be abstracted to initialize itself with different block size.
+// That's the best plan.
+
+// When we allocate this we get a physical memory address. We can use it and
+// move it around, but we cannot access it without a page table entry.
+// Interestingly we only need to keep a pointer to the pml4 and we can patch it
+// once we switch page tables.
+pml4_entry* pages_allocate_pml4() {
+  // TODO: check for nullptr
+  pml4_entry* t = memory_4kb_remove();
+  return t;
+}
+
+void pages_free_pml4(pml4_entry* table) {
+  // loop and free
+}
+
+void pages_create_pml4_entry(pml4_entry* e) {
+  printf("pages_create_pml4_entry: entry=%x\n", e);
+  e->p = 1;
+  e->rw = 1;  // kernel code should not be writeable so we need to configure
+  // this.
+
+  // next we need to allocate the next level
+  // ouch we call malloc here?
+  // at this point in time malloc works on the identity mapped memory.
+  page_directory_pointer_table_entry* pdpt = memory_4kb_remove();
+
+  e->pointer_table_ptr = (u64)pdpt >> 12;
+}
+
+void pages_create_pdpt_entry(page_directory_pointer_table_entry* e) {
+  printf("pages_create_pdpt_entry: entry=%x\n", e);
+
+  e->p = 1;
+  e->rw = 1;
+
+  page_table_entry* pd = memory_4kb_remove();
+  e->directory_ptr = (u64)pd >> 12;
+}
+
+void pages_create_pd_entry(page_directory_entry* e, u64 physical) {
+  printf("pages_create_pd_entry: to=%x to=%x entry=%x\n", physical,
+	 physical >> 21, e);
+  e->ptr = physical >> 21;
+  e->p = 1;
+  e->rw = 1;
+  e->ps = 1;
+}
+
+u64 pages_virtual_memory_offset = 0;
+
+void* physical2virtual(void* address) {
+  return (void*)((u64)address + pages_virtual_memory_offset);
+}
+
+pml4_entry* pages_pml4(u64 address) {
+  return physical2virtual(&kernel_pml4[index_pml4(address)]);
+}
+
+page_directory_pointer_table_entry* pages_pdpt(u64 address) {
+  pml4_entry* e = pages_pml4(address);
+  page_directory_pointer_table_entry* pdpt =
+      (page_directory_pointer_table_entry*)((u64)e->pointer_table_ptr << 12);
+  return physical2virtual(&pdpt[index_pdpt(address)]);
+}
+
+page_directory_entry* pages_pd(u64 address) {
+  page_directory_pointer_table_entry* e = pages_pdpt(address);
+  page_directory_entry* pd =
+      (page_directory_entry*)((u64)e->directory_ptr << 12);
+  return physical2virtual(&pd[index_pd(address)]);
+}
+
+void pages_map_one(u64 virtual, u64 physical) {
+  printf("pages_map_one: from=%x to=%x\n", virtual, physical);
+
+  pml4_entry* e = pages_pml4(virtual);
+  if (e->p == 1) {
+    printf("pages_map_one: pml4 entry present\n");
+  } else {
+    printf("pages_map_one: pml4 missing\n");
+    pages_create_pml4_entry(e);
+  }
+
+  page_directory_pointer_table_entry* pdpt_e = pages_pdpt(virtual);
+  if (pdpt_e->p == 1) {
+    printf("pages_map_one: pdpt entry present\n");
+  } else {
+    printf("pages_map_one: pdpt entry missing\n");
+    pages_create_pdpt_entry(pdpt_e);
+  }
+
+  page_directory_entry* pd_e = pages_pd(virtual);
+  if (pd_e->p == 1) {
+    printf("pages_map_one: pd entry present\n");
+  } else {
+    // overwrite or fail? basically a remap
+    printf("pages_map_one: pd entry missing\n");
+    pages_create_pd_entry(pd_e, physical);
+  }
+}
+
+// pages_aligns changes the provided address to the containing page
+u64 pages_align(u64 address) {
+  return address & ~0x1FFFFF;
+}
+
+void pages_align_test() {
+  u64 got = pages_align(0x200000);
+  if (got != 0x200000) {
+    printf("want 0x200000, got %x\n", got);
+    panic("1");
+  }
+  got = pages_align(0x100000);
+  if (got != 0x0) {
+    printf("want 0x0, got %x\n", got);
+    panic("2");
+  }
+  got = pages_align(0x1fffff);
+  if (got != 0x0) {
+    printf("want 0x0, got %x\n", got);
+    panic("2");
+  }
+  got = pages_align(0x300000);
+  if (got != 0x200000) {
+    printf("want 0x200000, got %x\n", got);
+    panic("1");
+  }
+  got = pages_align(0x400000);
+  if (got != 0x400000) {
+    printf("want 0x400000, got %x\n", got);
+    panic("1");
+  }
+}
+// pages_map_contiguous assumes the physical memory is already allocated and
+// only maps it.
+// TODO: specify whether end is inclusive or not.
+void pages_map_contiguous(u64 virtual_address,
+			  u64 physical_start,
+			  u64 physical_end) {
+  pages_align_test();
+  // alignment is wrong. from is 1 mb which is in the middle of a page and 2.5
+  // is in the middle of the next page.
+  // we somehow need to normalize to and length.
+  //
+  // what do I want? If I get 1mb to 2.5 mb I want
+  // page 0, page 1
+  // using pages_align I get 0x0 and 0x200000, doing length is exactly page
+  // size, dividing would return 1, 1 page too small.
+  // what if i were to extend the 'end'. i.e. return 0x0 and 0x400000. Then the
+  // result would be 2.
+
+  u64 physical_start_aligned = pages_align(physical_start);
+  u64 physical_end_aligned = pages_align(physical_end);
+
+  printf("pages_map_contiguous: physical_start=%x physical_start_aligned=%x\n",
+	 physical_start, physical_start_aligned);
+  printf("pages_map_contiguous: physical_end=%x physical_end_aligned=%x\n",
+	 physical_end, physical_end_aligned);
+
+  u64 count = ((physical_end_aligned - physical_start_aligned) / page_size) +
+	      1;  // poor mans ceil
+
+  printf("pages_map_contiguous: mapping %d pages from %x to %x\n", count,
+	 virtual_address, physical_start);
+
+  for (u64 i = 0; i < count; i++) {
+    pages_map_one(virtual_address + i * page_size,
+		  physical_start_aligned + i * page_size);
+  }
+}
+
+// what are pages used for? mapping things to different places. but also
+// creating new physical memory. malloc needs physical memory so it can say 'do
+// we still have some physical memory that we put in a page that i can use?'
+// does the paging system know everything about physical memory?
+
+void pages_init() {
+  printf("pages_init: initializing pages\n");
+  pages_test();
+
+  // allocate our physical memory pool for page table entries.
+  memory_4kb_pool_init();
+
+  // As long as we know that kernel_pml4 is allocated we can check whether pages
+  // exist. It's the entry point.
+  kernel_pml4 = pages_allocate_pml4();
+
+  // map
+  // all memory
+  // u64 size = kernel_physical_end - kernel_physical_start;
+  // pages_map_contiguous(kernel_code_start, kernel_physical_start, size);
+  // Where do we get the memory map from? We need to know which regions to map.
+
+  // TODO: consider alignment. I think inside map_contiguous we can just align
+  // to bigger sizes if necessary.
+  pages_map_contiguous(physical_memory_offset, 0x0, 0x9FC00);
+
+  pages_map_contiguous(physical_memory_offset + 0x100000, 0x100000, 0x7EE0000);
+
+  // kernel
+  // kernel goes from 0x2 to kernel end and we want to map it to max-2gb
+  // compute how many pages it needs
+  // kernel end - 0x2 / page_size and round up
+  // create n pages at max-2b with contiguous physical space from 0x2
+  // decided to map from 1mb to keep the boot structures.
+
+  // does this choose the page size given a size in bytes?
+  u64 size = kernel_physical_end - kernel_physical_start;
+  // BUG:! kernel physical start contains loader so VMA won't be correct for
+  // kernel code.
+  pages_map_contiguous(kernel_code_start, 0x200000, kernel_physical_end);
+
+  // 1mb area (included above?)
+  // 4gb thing (included above?)
+
+  // switch pml4.
+  // any code now needs to use the memory mapped to the upper half
+  // for hardware communication. networking code, ioapic (4gb), is ps2 code with
+  // outb inb affected?
+  //
+  // the stack is also affected. should make a new kernel stack.
+  // plan is to allocate stack in the location I planned to have it and copy the
+  // old stack data there, then set the pointer.
+  printf("pages_init: switch_cr3 to %x\n", kernel_pml4);
+  init_gdt();
+  //  __asm__("cli");
+  switch_cr3(kernel_pml4, (void*)(physical_memory_offset + (u64)gdt_pointer));
+  //  switch_gdt(gdt_pointer);
+  pages_virtual_memory_offset = physical_memory_offset;
+  //__asm__("sti");
+  // gdt should be aligned on 8byte boundary
+  printf("pages_init: new page tables active\n");
+
+  // debugging
+  // last entry of initial page table
+  // 0x0000000000106023
+  // last entry
+  // 0x0000000607000003
+  // last entry after shift fix
+  // 0x0000000000607003
+  // observation
+  // mapping for physical memory seems to be missing because there's only the
+  // 511 entry. There should be one around 256
+  // No, it was there: 0x0000000605000003
+
+  // now I expect we cannot access pml4 anymore
+  return;
 }
 
 // Note about memory management.
@@ -179,6 +690,8 @@ struct memory_header {
 memory_header* malloc_free_list = nullptr;
 
 void* malloc(u64 size) {
+  // TODO: assert size > 0
+  printf("malloc: %d\n", size);
   if (malloc_free_list == nullptr) {
     // Reserve a 2mb page.
     memory* m = memory_remove();
@@ -290,7 +803,9 @@ void* malloc(u64 size) {
   }
 
   // If we came this far we didn't find free memory.
-  // printf("malloc2: OOM\n");
+  // TODO: how can we assert?
+  printf("malloc: OOM\n");
+  __asm__("hlt");
   return nullptr;
 }
 
@@ -298,7 +813,7 @@ void free(void* memory) {
   // All we know currently is the address. We stored a struct that contains the
   // size before the address.
   memory_header* h = (memory_header*)memory - 1;
-  // printf("free: %d\n", h->size);
+  printf("free: %d\n", h->size);
 
   // Put it back into the free list.
   // Sort it by address so that merging is easier.

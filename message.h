@@ -24,6 +24,8 @@ struct message {
   message* next;
 };
 
+// TODO: add a constructor/factory
+// If head is not initialized to nullptr everything crashes.
 struct message_queue {
   message** head;
 };

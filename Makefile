@@ -23,7 +23,7 @@ CFLAGS = -g -Wall -Wextra -ffreestanding -mno-red-zone -std=c23 -mgeneral-regs-o
 AS = nasm
 ASFLAGS = -f elf64 -g -F dwarf
 
-.PHONY: all clean run debug bochs
+.PHONY: all clean run debug bochs lldb
 
 all: $(ISO)
 
@@ -39,16 +39,24 @@ run: $(ISO)
 # shorthand for -gdb tcp::1234
 # -S is
 # freeze CPU at startup (use 'c' to start execution)
+# -monitor stdio \
+# -serial stdio
+
 	sudo qemu-system-x86_64 -d int \
-	-no-reboot -cdrom $(ISO) -s -no-shutdown -monitor stdio \
+	-no-reboot -cdrom $(ISO) -s -no-shutdown -serial stdio \
 	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet -object filter-dump,id=f1,netdev=vmnet,file=dump.dat
 	#-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
 
 debug: $(ISO)
-	qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -monitor stdio # -S
+	# -monitor stdio
+	sudo qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -serial stdio -S \
+	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet -object filter-dump,id=f1,netdev=vmnet,file=dump.dat
 
 run-bochs: $(ISO)
 	bochs -f bochs.rc
+
+lldb:
+	lldb -o "gdb-remote 1234" --file kernel.bin
 
 $(ISO): $(KERNEL)
 	mkdir -p dist/boot/grub

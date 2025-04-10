@@ -1,15 +1,15 @@
 #include "print.h"
 
-#include "types.h"
+#include "io.h"
 #include "lib.h"
+#include "memory.h"
+#include "types.h"
 
 #define va_start(v, l) __builtin_va_start(v, l)
 #define va_arg(v, l) __builtin_va_arg(v, l)
 #define va_end(v) __builtin_va_end(v)
 #define va_copy(d, s) __builtin_va_copy(d, s)
 typedef __builtin_va_list va_list;
-
-
 
 // Do we have a memory problem?
 
@@ -56,6 +56,7 @@ u16 terminal_cursor_index = 0;
 // We need to wrap around and look at the end of the ring buffer if we are on
 // the first screen. This is the adjusted_cursor_index.
 void display() {
+  videoram = physical2virtual((void*)0xb8000);
   for (int y = 0; y < num_rows; y++) {
     for (int x = 0; x < num_cols; x++) {
       if (x == mouse_x && y == mouse_y) {
@@ -153,8 +154,75 @@ void print_character_color(char c, char color) {
 /*   } */
 /* } */
 
+// add serial io here
+// ref:
+// https://web.archive.org/web/20200224102106/http://minuszerodegrees.net/oa/OA%20-%20IBM%20PC%20AT%20Serial_Parallel%20Adapter.pdf
+//
+// address
+//
+// 0x3fb
+// Line Control Register
+// Bit 7 Divisor Latch Access Bit
+//
+// 0x3fd
+// Line Status Register
+// Bit 5 is 1 if the TX register is empty, i.e. we can send data.
+//
+// 0x3f8
+// TX, RX buffer, depending on whether we write or read
+// If the Divisor Latch Access Bit (bit 7 in LCR) in the Line Control Register
+// is set it can access byte 1 of the Baud Rate Generator.
+//
+// 0x3f9
+//
+// Baud rate generator has to 8bit latches to configure a 16bit divisor.
+// 0xf8 0xf9
+// I think I have to divide the mhz by my desired baud rate to get the divisor.
+// I found this to be 192.
+// I wanted 9600 baud rate, but turns out I got it wrong. 192 would result in a
+// baud rate of 600.
+// ref:
+// https://en.wikibooks.org/wiki/Serial_Programming/8250_UART_Programming#Divisor_Latch_Bytes
+//
+// I am probably wrong but I cannot see this just by looking at the spec sheet
+//
+// "Programmable Baud-Rate Generator: The controller has a programmable
+// baud-rate generator that can divide the clock input (1.8432 MHz) by any
+// divisor from 1 to 655,535 or 2^(16-1). The output frequency of the baud-rate
+// generator is the baud rate multiplied by 16. Two 8-bit latches store the
+// divisor in a 16-bit binary format. These divisor latches must be loaded
+// during setup to ensure desired operation of the baud-rate generator. When
+// either of the divisor latches is loaded, a 16-bit baud counter is immediately
+// loaded. This prevents long counts on the first load."
+//
+// Plan
+// Read LCR
+// Set bit 7
+// Maybe set bit 0,1 to 1 1 to enable 8 bit data (1 byte)
+// Write LCR
+// Disable bit 7 in LCR again
+#define SERIAL_IO_1 0x3f8
+#define SERIAL_IO_2 0x3f9
+#define SERIAL_LINE_CONTROL_REGISTER 0x3fb
+#define SERIAL_LINE_STATUS_REGISTER 0x3fd
+void serial_init() {
+  u8 data = inb(SERIAL_LINE_CONTROL_REGISTER);
+  // Enable bit 0,1,7
+  data = data | 0b10000011;
+  outb(SERIAL_LINE_CONTROL_REGISTER, data);
+  outb(SERIAL_IO_1, 192);
+  outb(SERIAL_IO_2, 0);
+  data = inb(SERIAL_LINE_CONTROL_REGISTER);
+  data = data & ~0b10000000;
+  outb(SERIAL_LINE_CONTROL_REGISTER, data);
+}
+
 void print_character(char c) {
   print_character_color(c, 0x07);
+  // Wait for TX buffer to be empty
+  while ((inb(SERIAL_LINE_STATUS_REGISTER) & 0b00100000) != 0b00100000) {
+  }
+  outb(0x3f8, c);
 }
 
 void print_string_n(char* s, int limit) {
@@ -180,6 +248,8 @@ void print_integer(int d) {
 }
 
 void print_hex(int d) {
+  // char number_buffer[19];
+  // ltoa(d, number_buffer, 16);
   char number_buffer[11];
   itoa(d, number_buffer, 16);
   print_string(number_buffer);
@@ -187,6 +257,7 @@ void print_hex(int d) {
 
 // memset with vectorized implementation can be faster
 void cls() {
+  videoram = physical2virtual((void*)0xb8000);
   int i = 0;
   for (i = 0; i < 80 * 25 * 2; ++i) {
     videoram[i] = 0;

@@ -5,8 +5,6 @@ ENTRY(loader)
 SECTIONS {
     . = 1M;
 
-    _kernel_start = .;
-
     .boot : {
 	*(.multiboot)
     }
@@ -15,8 +13,6 @@ SECTIONS {
        loader.o(.*)
        trampoline_64.o(.*)
     }
-
-    _loader_end = .;
 
     .text VMA : AT(LMA) {
 	*(.text)
@@ -33,6 +29,7 @@ SECTIONS {
     .bss : {
 	*(.bss)
     }
-
-    _kernel_end = .;
 }
+
+_kernel_start = LOADADDR(.boot);
+_kernel_end = LOADADDR(.bss) + SIZEOF(.bss);

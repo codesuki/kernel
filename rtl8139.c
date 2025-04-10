@@ -105,6 +105,7 @@ void handle_network_interrupt() {
   while (true) {
     u8 cmd = inb(base + 0x37);
     if (cmd & NET_BIT_BUFFER_EMPTY) {  // Buffer Empty = 1
+      printf("network: buffer empty\n");
       break;
     }
 
@@ -138,15 +139,23 @@ void handle_network_interrupt() {
     // we emulate it's probably empty.
 
     u16* packet_status = (u16*)(network_rx_buffer + network_rx_buffer_index);
-
+    printf("network: packet status = %d\n", *packet_status);
     //  printf("network interrupt: num: %d, status: %x, buffer index: %x\n",
     //	     num_packets++, *packet_status, network_rx_buffer_index);
+    printf("network_rx_buffer: %x networ_rx_buffer_index: %d\n",
+	   network_rx_buffer, network_rx_buffer_index);
 
     // TODO: signal this error to network service.
     // CRC, RUNT, LONG, FAE, BAD SYMBOL errors
     if (*packet_status & (1 << 1) || *packet_status & (1 << 2) ||
 	*packet_status & (1 << 3) || *packet_status & (1 << 4) ||
 	*packet_status & (1 << 5)) {
+      printf("network packet 3.error\n");
+      break;
+    }
+
+    if ((*packet_status & 0b1) != 0b1) {
+      printf("network: ROK not set in packet status\n");
       break;
     }
 

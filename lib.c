@@ -1,7 +1,7 @@
 #include "lib.h"
 
-#include "types.h"
 #include "print.h"
+#include "types.h"
 
 int max(int x, int y) {
   if (x > y) {
@@ -50,11 +50,11 @@ void memset(void* dst, u8 byte, usize len) {
   }
 }
 
-char* reverse(char* buffer, unsigned int length) {
-  char* start = buffer;
-  char* end = buffer + length - 1;
+u8* reverse(u8* buffer, u32 length) {
+  u8* start = buffer;
+  u8* end = buffer + length - 1;
   while (start < end) {
-    char tmp = *start;
+    u8 tmp = *start;
     *start++ = *end;
     *end-- = tmp;
   }
@@ -94,4 +94,36 @@ char* itoa(int value, char* buffer, unsigned int base) {
   *s = 0;
   reverse(buffer, s - buffer);
   return buffer;
+}
+
+u8* ltoa(u64 value, u8* buffer, u32 base) {
+  u8* s = buffer;
+  // This seems too specific to base 10?
+  // Answer from stdlib:
+  // If base is 10 and value is negative, the resulting string is preceded with
+  // a minus sign (-). With any other base, value is always considered unsigned.
+  if (base == 10 && value < 0) {
+    *s++ = '-';
+    ++buffer;
+    value = -value;
+  }
+  while (value >= base) {
+    printf("print: base %d, value %d\n", base, value);
+    u64 remainder = value % base;
+    value /= base;
+    *s++ = digit(remainder);
+  }
+  *s++ = digit(value);
+  if (base == 16) {
+    *s++ = 'x';
+    *s++ = '0';
+  }
+  *s = 0;
+  reverse(buffer, s - buffer);
+  return buffer;
+}
+
+void panic(u8* msg) {
+  printf("panic: %s\n", msg);
+  __asm__("cli; hlt;");
 }
