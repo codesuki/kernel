@@ -247,11 +247,11 @@ void print_integer(int d) {
   print_string(number_buffer);
 }
 
-void print_hex(int d) {
-  // char number_buffer[19];
-  // ltoa(d, number_buffer, 16);
-  char number_buffer[11];
-  itoa(d, number_buffer, 16);
+void print_hex(u64 d) {
+  char number_buffer[19];
+  ltoa(d, number_buffer, 16);
+  // char number_buffer[11];
+  // itoa(d, number_buffer, 16);
   print_string(number_buffer);
 }
 
@@ -284,8 +284,6 @@ void print_error(char* s) {
 
 int printf(const char* format, ...) {
   va_list args;
-  int d;
-  char* s;
   va_start(args, format);
   while (*format != 0) {
     char c = *format;
@@ -309,20 +307,21 @@ int printf(const char* format, ...) {
       }
       switch (c) {
 	case 'd':
-	  d = va_arg(args, int);
+	  s32 d = va_arg(args, int);
 	  print_integer(d);
 	  break;
 	case 'c':
-	  c = va_arg(args, int);
+	  // bug?
+	  char c = va_arg(args, int);
 	  print_character(c);
 	  break;
 	case 's':
-	  s = va_arg(args, char*);
+	  char* s = va_arg(args, char*);
 	  print_string_n(s, length);
 	  break;
 	case 'x':
-	  d = va_arg(args, int);
-	  print_hex(d);
+	  u64 h = va_arg(args, u64);
+	  print_hex(h);
 	  break;
       }
     } else {

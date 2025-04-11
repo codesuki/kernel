@@ -170,8 +170,9 @@ pdpt_kernel:
 	resb 4096
 pd_kernel:
 	resb 4096
+align 16			; 64bit stack needs to be 16byte aligned
 stack:
-	resb STACKSIZE                     ; reserve 16k stack on a doubleword boundary
+	resb STACKSIZE                     ; reserve 16k stack.
 
 ;; the gdt setup could probably also be moved to bss and configured in code.
 ;; this is from the Rust OSdev site.

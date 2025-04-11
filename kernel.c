@@ -1142,14 +1142,16 @@ typedef struct ioapic_redirection_register ioapic_redirection_register_t;
  */
 
 u32 ioapic_read_register(u32 reg) {
-  u32 volatile* ioregsel = (u32 volatile*)IOAPIC_IOREGSEL;
+  u32 volatile* ioregsel =
+      (u32 volatile*)physical2virtual((void*)IOAPIC_IOREGSEL);
   ioregsel[0] = reg;
   return ioregsel[4];  // IOAPIC_IOREGSEL+10h (4*4 byte = 16 byte) =
   // IOAPIC_IOWIN
 }
 
 void ioapic_write_register(u32 reg, ioapic_redirection_register_t* r) {
-  u32 volatile* ioregsel = (u32 volatile*)IOAPIC_IOREGSEL;
+  u32 volatile* ioregsel =
+      (u32 volatile*)physical2virtual((void*)IOAPIC_IOREGSEL);
   ioregsel[0] = reg;
   ioregsel[4] = r->lower;
   ioregsel[0] = reg + 1;
@@ -1166,10 +1168,26 @@ void ioapic_write_register(u32 reg, ioapic_redirection_register_t* r) {
 #define IOAPIC_IRQ12 0x28
 
 void ioapic_setup() {
+  // Quote "APIC registers are memory-mapped to a 4-KByte region of the
+  // processor’s physical address space with an initial starting address of
+  // FEE00000H." ref: vol 3 12.4.1
+
+  // Or
+  // 0FEC0_0000h – 0FECF_FFFFh APIC I/O unit
+  // 0FEE0_0000h - 0FEEF_FFFFh APIC Local Unit
+  // ref:
+  // https://web.archive.org/web/20070112195752/http://developer.intel.com/design/pentium/datashts/24201606.pdf
+
+  // Quote "APIC Base field, bits 12 through 35 ⎯ Specifies the base address of
+  // the APIC registers. This 24-bit value is extended by 12 bits at the low end
+  // to form the base address. This automatically aligns the address on a
+  // 4-KByte boundary. Following a power-up or reset, the field is set to FEE0
+  // 0000H."
+  // ref: vol 3 12.4.4
   msr_apic_base_t apic_base;
   apic_base.raw = rdmsr(MSR_APIC_BASE);
   printf("apic enabled: %d, apic base address: %x\n",
-	 apic_base.bits.apic_global, apic_base.bits.base_address);
+	 apic_base.bits.apic_global, apic_base.bits.base_address << 12);
 
   printf("ioapic id: %d\n", ioapic_read_register(0));
   printf("ioapic version: %d\n", ioapic_read_register(1) & 0xFF);  // version
@@ -1177,7 +1195,8 @@ void ioapic_setup() {
 
   // next steps:
   // find apic id
-  apic_registers_t* regs = (apic_registers_t*)0xFEE00000;
+  apic_registers_t* regs =
+      (apic_registers_t*)physical2virtual((void*)0xFEE00000);
   printf("apic id: %d\n", regs->local_apic_id >> 24);
   // mask irq 2, this is already masked
   /* ioapic_redirection_register_t r0 = {0}; */
@@ -1412,21 +1431,7 @@ void ioapic_setup() {
   // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#interrupt-source-override-structure
 }
 
-// TODO: pull entries out as 'first' into sdt struct.
 // sdt: system description table
-struct acpi_sdt_header2 {
-  u8 signature[4];
-  u32 length;
-  u8 revision;
-  u8 checksum;
-  u8 oem_id[6];
-  u8 oem_table_id[8];
-  u32 oem_revision;
-  u32 creator_id;
-  u32 creator_revision;
-} __attribute__((packed));
-typedef struct acpi_sdt_header2 acpi_sdt_header2_t;
-
 struct acpi_sdt_header {
   u8 signature[4];
   u32 length;
@@ -1437,9 +1442,14 @@ struct acpi_sdt_header {
   u32 oem_revision;
   u32 creator_id;
   u32 creator_revision;
-  u32 entries;  // length - (sizeof(header) - 4 byte)
 } __attribute__((packed));
-typedef struct acpi_sdt_header acpi_sdt_header_t;
+typedef struct acpi_sdt_header acpi_sdt_header;
+
+struct acpi_rsdt {
+  acpi_sdt_header h;
+  u32 entries[];  // h.length - sizeof(h)
+} __attribute__((packed));
+typedef struct acpi_rsdt acpi_rsdt;
 
 struct acpi_rsdp {
   u8 signature[8];
@@ -1454,25 +1464,29 @@ acpi_rsdp_t* locate_rsdp() {
   // ref: https://wiki.osdev.org/RSDP
   // ref:
   // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#finding-the-rsdp-on-ia-pc-systems
-  u64* start = (u64*)0xE0000;
-  u64* end = (u64*)0xFFFFF;
+  u64* start = (u64*)physical2virtual((void*)0xE0000);
+  u64* end = (u64*)physical2virtual((void*)0xFFFFF);
+
+  printf("locate_rsdp: from=%x to=%x\n", start, end);
 
   // "RSD PTR "
   for (; start < end; start += 2) {
     u8* s = (u8*)start;
     if (s[0] == 'R' && s[1] == 'S' && s[2] == 'D' && s[3] == ' ' &&
 	s[4] == 'P' && s[5] == 'T' && s[6] == 'R' && s[7] == ' ') {
+      printf("locate_rsdp: found at %x\n", start);
       return (acpi_rsdp_t*)start;
     }
   }
+  printf("locate_rsdp: not found\n");
   return nullptr;
 }
 
 struct acpi_madt {
-  acpi_sdt_header2_t header;
+  acpi_sdt_header header;
   u32 local_interrupt_controller_address;
   u32 flags;
-  u32 first;
+  u32 interrupt_controller_structure;
 } __attribute__((packed));
 typedef struct acpi_madt acpi_madt_t;
 
@@ -1520,26 +1534,32 @@ struct acpi_hpet_header {
 typedef struct acpi_hpet_header acpi_hpet_header_t;
 
 // note: take care when taking references of a pointer.
-void list_tables(acpi_sdt_header_t* rsdt) {
-  int count =
-      (rsdt->length - sizeof(acpi_sdt_header_t) + sizeof(u32)) / sizeof(u32);
+void list_tables(acpi_rsdt* rsdt) {
+  printf("list_tables: rsdt=%x\n", rsdt);
+  int count = (rsdt->h.length - sizeof(acpi_sdt_header)) / sizeof(u32);
   printf("rsdt: entry count: %d\n", count);
+  //  acpi_sdt_header_t* h = physical2virtual((void*)rsdt->entries);
+  // printf("rsdt: entries physical=%x virtual=%x\n", rsdt->entries, h);
   for (int i = 0; i < count; i++) {
     // &entries to get the first entry.
     // +i uses size of type which is u32.
     // * because it's a pointer to some place.
-    acpi_sdt_header_t* h = (acpi_sdt_header_t*)(*(&rsdt->entries + i));
-    printf("table %d: %.*s\n", i, 4, h->signature);
-    if (strncmp(h->signature, "APIC", 4)) {
-      acpi_madt_t* madt = (acpi_madt_t*)h;
+
+    // acpi_sdt_header_t* h = (acpi_sdt_header_t*)(*(&rsdt->entries + i));
+    printf("rsdt: entry=%x\n", rsdt->entries[i]);
+    acpi_sdt_header* e = physical2virtual((void*)rsdt->entries[i]);
+    printf("table %d: %.*s\n", i, 4, e->signature);
+    if (strncmp(e->signature, "APIC", 4)) {
+      acpi_madt_t* madt = (acpi_madt_t*)e;
       printf("configuring acpi: %x\n",
 	     madt->local_interrupt_controller_address);
       // how many? madt->length?
       // first
       int j = 0;
       // TODO: refactor this pointer arithmetic.
-      for (acpi_ics_header_t* h = (acpi_ics_header_t*)(&(madt->first));;
-	   h = (acpi_ics_header_t*)((char*)h + h->length)) {
+      for (acpi_ics_header_t* h =
+	       (acpi_ics_header_t*)(&(madt->interrupt_controller_structure));
+	   ; h = (acpi_ics_header_t*)((char*)h + h->length)) {
 	printf("type: %d, length: %d\n", h->type, h->length);
 	if (h->type == 1) {
 	  acpi_ics_ioapic_t* ioapic = (acpi_ics_ioapic_t*)h;
@@ -1564,13 +1584,14 @@ void list_tables(acpi_sdt_header_t* rsdt) {
 	  break;
 	}
       }
-    } else if (strncmp(h->signature, "HPET", 4)) {
-      // note: without u8 case here we go too far.
-      acpi_hpet_header_t* hpet =
-	  (acpi_hpet_header_t*)((u8*)h + sizeof(acpi_sdt_header2_t));
-      printf("HPET: hpet number: %d\n", hpet->hpet_number);
-      printf("HPET: address space: %d base: %x\n",
-	     hpet->base_address.address_space_id, hpet->base_address.address);
+    } else if (strncmp(e->signature, "HPET", 4)) {
+      // // note: without u8 case here we go too far.
+      // acpi_hpet_header_t* hpet =
+      //	  (acpi_hpet_header_t*)((u8*)h + sizeof(acpi_sdt_header2_t));
+      // printf("HPET: hpet number: %d\n", hpet->hpet_number);
+      // printf("HPET: address space: %d base: %x\n",
+      //	     hpet->base_address.address_space_id,
+      // hpet->base_address.address);
     }
   }
 }
@@ -1837,22 +1858,30 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // I validated that this prints IP at nop after int3
   __asm__ volatile("int $0x3");
 
-  // apic_setup();
-  ioapic_setup();
   acpi_rsdp_t* rsdp = locate_rsdp();
   //  if (rsdp == nullptr) {
   //    // panic
   //  }
   //  printf("rsdp: revision: %d, rsdt_addr: %x\n", rsdp->revision,
   //  rsdp->rsdt);
-  acpi_sdt_header_t* rsdt = (acpi_sdt_header_t*)rsdp->rsdt;
+  acpi_rsdt* rsdt = (acpi_rsdt*)physical2virtual((void*)rsdp->rsdt);
   //  printf("rsdt: %.*s", 4, rsdt->signature);
-  //  list_tables(rsdt);
+  list_tables(rsdt);
+
+  // TODO:
+  // map FEC address range with info from the tables dynamically.
+  pages_map_contiguous((u64)physical2virtual((void*)0xFEE00000), 0xFEE00000,
+		       0xFEEFFFFF);
+  pages_map_contiguous((u64)physical2virtual((void*)0xFEC00000), 0xFEC00000,
+		       0xFECFFFFF);
+
+  // apic_setup();
+  ioapic_setup();
+
+  printf("configure ethernet device\n");
 
   // Initialize network card
   pci_enumerate();
-
-  setup_hpet();
 
   // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
   // to.

@@ -108,7 +108,7 @@ u8* ltoa(u64 value, u8* buffer, u32 base) {
     value = -value;
   }
   while (value >= base) {
-    printf("print: base %d, value %d\n", base, value);
+    // printf("print: base %d, value %d\n", base, value);
     u64 remainder = value % base;
     value /= base;
     *s++ = digit(remainder);

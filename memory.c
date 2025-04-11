@@ -195,14 +195,15 @@ void* memory_4kb_remove() {
     return nullptr;
   }
 
-  memory* memory = memory_4kb_free_first;
-  memory_4kb_free_first = memory->next;
-  memory_4kb_free_first->prev = memory->prev;
+  memory* m = physical2virtual(memory_4kb_free_first);
+  memory_4kb_free_first = m->next;
+  memory* new_first = physical2virtual(memory_4kb_free_first);
+  new_first->prev = m->prev;
 
-  printf("memory_4kb_remote: %x\n", memory->address);
+  printf("memory_4kb_remote: %x\n", physical2virtual((void*)m->address));
 
-  memset((void*)memory->address, 0, 8 * 512);
-  return (void*)memory->address;
+  memset(physical2virtual((void*)m->address), 0, 8 * 512);
+  return (void*)m->address;
 }
 
 gdt_ptr* gdt_pointer = {0};
@@ -440,6 +441,9 @@ page_directory_pointer_table_entry* pages_pdpt(u64 address) {
   pml4_entry* e = pages_pml4(address);
   page_directory_pointer_table_entry* pdpt =
       (page_directory_pointer_table_entry*)((u64)e->pointer_table_ptr << 12);
+  // In hindsight I think this only works because we take the address and it
+  // does not dereference the pdpt pointer, because it's in unmapped physical
+  // space.
   return physical2virtual(&pdpt[index_pdpt(address)]);
 }
 
@@ -447,6 +451,7 @@ page_directory_entry* pages_pd(u64 address) {
   page_directory_pointer_table_entry* e = pages_pdpt(address);
   page_directory_entry* pd =
       (page_directory_entry*)((u64)e->directory_ptr << 12);
+
   return physical2virtual(&pd[index_pd(address)]);
 }
 
@@ -462,6 +467,7 @@ void pages_map_one(u64 virtual, u64 physical) {
   }
 
   page_directory_pointer_table_entry* pdpt_e = pages_pdpt(virtual);
+  printf("pages_map_one: pdpt_e=%x\n", pdpt_e);
   if (pdpt_e->p == 1) {
     printf("pages_map_one: pdpt entry present\n");
   } else {
@@ -470,6 +476,7 @@ void pages_map_one(u64 virtual, u64 physical) {
   }
 
   page_directory_entry* pd_e = pages_pd(virtual);
+  printf("pages_map_one: pd_e=%x\n", pd_e);
   if (pd_e->p == 1) {
     printf("pages_map_one: pd entry present\n");
   } else {
@@ -498,17 +505,17 @@ void pages_align_test() {
   got = pages_align(0x1fffff);
   if (got != 0x0) {
     printf("want 0x0, got %x\n", got);
-    panic("2");
+    panic("3");
   }
   got = pages_align(0x300000);
   if (got != 0x200000) {
     printf("want 0x200000, got %x\n", got);
-    panic("1");
+    panic("4");
   }
   got = pages_align(0x400000);
   if (got != 0x400000) {
     printf("want 0x400000, got %x\n", got);
-    panic("1");
+    panic("5");
   }
 }
 // pages_map_contiguous assumes the physical memory is already allocated and

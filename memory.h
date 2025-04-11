@@ -26,6 +26,9 @@ extern void switch_gdt(void* gdt);
 void* physical2virtual(void* address);
 
 void pages_init();
+void pages_map_contiguous(u64 virtual_address,
+			  u64 physical_start,
+			  u64 physical_end);
 
 // Note: I found using bitfields strongly discouraged, but I will still try to
 // use them.
