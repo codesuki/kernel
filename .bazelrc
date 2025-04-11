@@ -1,0 +1,2 @@
+common --incompatible_disallow_empty_glob
+common --nolegacy_external_runfiles

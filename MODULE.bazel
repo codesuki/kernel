@@ -1,0 +1,40 @@
+module(
+    name = "kernel",
+)
+
+bazel_dep(name = "platforms", version = "0.0.11")
+bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "nasm")
+local_path_override(
+    module_name = "nasm",
+    path = "/Users/neri/development/nasm",
+)
+
+nasm = use_extension("@nasm//:extensions.bzl", "nasm")
+use_repo(
+    nasm,
+    "nasm_darwin_arm64",
+)
+
+bazel_dep(name = "toolchains_llvm", version = "1.3.0")
+
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+llvm.toolchain(
+    name = "llvm_toolchain",
+    # exec_arch = "aarch64",
+    # exec_os = "darwin",
+    llvm_version = "18.1.8",
+    #    llvm_version = "19.1.7",
+    #    distribution = "LLVM-20.1.2-macOS-ARM64.tar.xz",
+    #   target_arch = "amd64",
+    #    target_os = "linux",
+    stdlib = {"": "none"},
+)
+llvm.sysroot(
+    name = "llvm_toolchain",
+    path = "/",
+    targets = ["linux-x86_64"],
+)
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")

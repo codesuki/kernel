@@ -1,0 +1,107 @@
+load("@nasm//:defs.bzl", "nasm_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+platform(
+    name = "myplatform",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+nasm_library(
+    name = "gdt_asm",
+    src = "gdt.s",
+)
+
+nasm_library(
+    name = "paging_asm",
+    src = "paging.s",
+)
+
+nasm_library(
+    name = "idt_asm",
+    src = "idt.s",
+)
+
+nasm_library(
+    name = "loader_asm",
+    src = "loader.s",
+)
+
+nasm_library(
+    name = "interrupt_wrapper_asm",
+    src = "interrupt_wrapper.s",
+)
+
+nasm_library(
+    name = "switch_task_asm",
+    src = "switch_task.s",
+)
+
+nasm_library(
+    name = "loader_64_asm",
+    src = "loader_64.s",
+)
+
+nasm_library(
+    name = "trampoline_64_asm",
+    src = "trampoline_64.s",
+)
+
+nasm_library(
+    name = "task_replace_asm",
+    src = "task_replace.s",
+)
+
+nasm_library(
+    name = "multiboot_asm",
+    src = "multiboot.s",
+)
+# cc_binary(
+#     name = "test_binary",
+#     srcs = ["test.c"],
+# )
+
+cc_binary(
+    name = "kernel",
+    srcs = glob([
+        "*.c",
+        "*.h",
+    ]),
+    #    hdrs = glob(["*.h"]),
+    copts = [
+        "-fno-stack-protector",  # disable default from llvm toolchain
+        "-ffreestanding",
+        "-mno-red-zone",
+        "-mgeneral-regs-only",
+        "-fno-pic",
+        "-std=c23",
+        "-m64",
+        "-mcmodel=kernel",
+    ],
+    linkopts = [
+        # "-Wl,-T,$(location :linker.ld)",
+        # "-Wl,-nostdlib",
+        # "-Wl,-z,max-page-size=0x1000",
+        "-T $(location :linker-bazel.ld)",
+        "-nostdlib",
+        "-no-pie",
+        "-z norelro",
+        "-Wl,-no-dynamic-linker",  # remove .interp section at the beginning of the binary
+    ],
+    linkstatic = True,
+    deps = [
+        ":gdt_asm",
+        ":idt_asm",
+        ":interrupt_wrapper_asm",
+        ":linker-bazel.ld",
+        ":loader_64_asm",
+        ":loader_asm",
+        ":multiboot_asm",
+        ":paging_asm",
+        ":switch_task_asm",
+        ":task_replace_asm",
+        ":trampoline_64_asm",
+    ],
+)
