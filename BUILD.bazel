@@ -71,6 +71,8 @@ cc_binary(
     ]),
     #    hdrs = glob(["*.h"]),
     copts = [
+        # defaults
+        # https://github.com/bazel-contrib/toolchains_llvm/blob/4c3d6cfc62d4639106d807476aa1702dfc2c884b/toolchain/cc_toolchain_config.bzl#L150
         "-fno-stack-protector",  # disable default from llvm toolchain
         "-ffreestanding",
         "-mno-red-zone",

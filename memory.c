@@ -22,7 +22,7 @@ const u64 kernel_physical_end = (u64)&_kernel_end;
 // When we malloc we take from the free list and put it into the used list.
 // When we free we search the address in the used list and move it back.
 // What other way is there to implement free?
-memory* memory_free_first = nullptr;
+memory* memory_free_list_head = nullptr;
 memory* memory_used_first = nullptr;
 
 // TODO:
@@ -97,7 +97,7 @@ void memory_init(u64 base_address, u64 length) {
   memory* current = (memory*)base_address_after_kernel;
   memory* prev = nullptr;
 
-  memory_free_first = current;
+  memory_free_list_head = current;
 
   for (u64 i = 0; i < page_count; i++) {
     current->address = usable_memory;
@@ -116,13 +116,13 @@ void memory_init(u64 base_address, u64 length) {
     prev = current;
     current++;
   }
-  for (memory* m = memory_free_first; m != nullptr; m = m->next) {
+  for (memory* m = memory_free_list_head; m != nullptr; m = m->next) {
     printf("memory_init: %x %x %x\n", m->address, m->next, m->prev);
   }
 }
 
 void memory_add(u64 address) {
-  if (memory_free_first == nullptr) {
+  if (memory_free_list_head == nullptr) {
     memory_used_first = nullptr;
     // Ouch! We want a new memory. Now do we malloc one? Haha.. Maybe the
     // kernel needs to reserve some memory beforehand for some kind of
@@ -135,13 +135,16 @@ void memory_add(u64 address) {
 }
 
 memory* memory_remove() {
-  if (memory_free_first == nullptr) {
+  if (memory_free_list_head == nullptr) {
+    printf("memory_remove: free list is empty\n");
     return nullptr;
   }
-  memory* memory = memory_free_first;
-  memory_free_first = memory->next;
-  memory_free_first->prev = memory->prev;
-  return memory;
+  memory* current_head = physical2virtual(memory_free_list_head);
+  printf("memory_remove: address=%x\n", current_head->address);
+  memory_free_list_head = current_head->next;
+  memory* new_head = physical2virtual(memory_free_list_head);
+  new_head->prev = current_head->prev;
+  return current_head;
 }
 
 memory* memory_4kb_free_first = nullptr;
@@ -163,7 +166,7 @@ void memory_4kb_pool_init() {
   printf("memory_4kb_pool_init: %d 4kb elements available\n", count);
   printf("memory_4kb_pool_init: usable memory starts from %x\n", usable_memory);
 
-  memory* current = (memory*)pool->address;
+  memory* current = physical2virtual((void*)pool->address);
   memory* prev = nullptr;
 
   memory_4kb_free_first = current;
@@ -433,6 +436,11 @@ void* physical2virtual(void* address) {
   return (void*)((u64)address + pages_virtual_memory_offset);
 }
 
+void* virtual2physical(void* address) {
+  // TODO: check for overrun
+  return (void*)((u64)address - pages_virtual_memory_offset);
+}
+
 pml4_entry* pages_pml4(u64 address) {
   return physical2virtual(&kernel_pml4[index_pml4(address)]);
 }
@@ -614,6 +622,7 @@ void pages_init() {
   switch_cr3(kernel_pml4, (void*)(physical_memory_offset + (u64)gdt_pointer));
   //  switch_gdt(gdt_pointer);
   pages_virtual_memory_offset = physical_memory_offset;
+  printf("pages_init: 0x0=%x\n", physical2virtual((void*)0x0));
   //__asm__("sti");
   // gdt should be aligned on 8byte boundary
   printf("pages_init: new page tables active\n");
@@ -694,18 +703,59 @@ struct memory_header {
   memory_header* next;
 };
 
-memory_header* malloc_free_list = nullptr;
+// Now that paging works, how does this change? Instead of taking physical
+// memory directly malloc needs to ask the paging system to grow our heap area.
+// memory_remove needs to become grow heap what does this do concretely? How can
+// the heap be shrunk again? It's always grown or shrunk in page size increments
+// so just the page base address needs to be returned. Maybe a heap structure
+// could keep track of all the pages allocated and return them. That would be
+// easier.
 
+u64 heap_start = 0;
+u64 heap_end = kernel_heap_start;  // set to heap start
+
+memory heap_grow() {
+  printf("heap grow\n");
+  // needs to return virtual memory
+  // needs to know how big the heap is and where to map it how to map more to
+  // it. does it call memory_remove and pages_map or does the paging system do
+  // that? maybe it doesn't matter for now.
+
+  // reserve 2mb physical memory
+  memory* m = memory_remove();
+
+  // map it to the heap
+  pages_map_contiguous(heap_end, m->address, m->address + m->size);
+  // update heap variables
+
+  printf("grow heap: physical address=%x virtual address=%x\n", m->address,
+	 heap_end);
+  memory new_memory = {.address = heap_end, .size = m->size};
+  heap_end += m->size;
+  return new_memory;
+}
+
+memory* heap_shrink() {
+  return nullptr;
+}
+
+memory_header* malloc_free_list = nullptr;
 void* malloc(u64 size) {
   // TODO: assert size > 0
   printf("malloc: %d\n", size);
   if (malloc_free_list == nullptr) {
+    printf("malloc: free list is empty\n");
+    // We ran out of heap space.
+    // TODO:
+    // There is another case that is not covered. We may have free space but
+    // none fits.
+
     // Reserve a 2mb page.
-    memory* m = memory_remove();
+    memory m = heap_grow();
     // TODO: all these printfs should be converted to a debug logger.
     // printf("malloc: received %d bytes from kernel\n", m->size);
-    memory_header* h = (memory_header*)(m->address);
-    h->size = m->size;
+    memory_header* h = (memory_header*)(m.address);
+    h->size = m.size;
     h->next = nullptr;
     malloc_free_list = h;
   }
@@ -820,13 +870,14 @@ void free(void* memory) {
   // All we know currently is the address. We stored a struct that contains the
   // size before the address.
   memory_header* h = (memory_header*)memory - 1;
-  printf("free: %d\n", h->size);
 
   // Put it back into the free list.
   // Sort it by address so that merging is easier.
   // Hunch: I only have to check prev and next to see if they are mergable.
 
   u64 address = (u64)h;
+  printf("free: address=%x size=%d\n", address, h->size);
+  printf("free: head=%x\n", malloc_free_list);
 
   memory_header* current = malloc_free_list;
   memory_header* prev = nullptr;
@@ -842,7 +893,10 @@ void free(void* memory) {
 
   // What is this state?
   if (current == nullptr) {
-  } else {
+  } else if (prev == nullptr) {  // address was before the first element
+    h->next = current;
+    malloc_free_list = h;
+  } else {  // address was somewhere in the middle
     // Where do I get that object from? The memory. Do I create this again
     // inside the free memory? I could call malloc now, but then I would have
     // some overhead from the header. Can I reuse the header somehow?
@@ -867,11 +921,11 @@ void free(void* memory) {
     prev->next = h;
     h->next = current;
 
-    // Set head of list to smallest address. I assume the big free block is
-    // always at the end because we cut it from the front.
-    if (h < malloc_free_list) {
-      malloc_free_list = h;
-    }
+    // // Set head of list to smallest address. I assume the big free block is
+    // // always at the end because we cut it from the front.
+    // if (h < malloc_free_list) {
+    //   malloc_free_list = h;
+    // }
   }
 
   // printf("free: current free list\n");

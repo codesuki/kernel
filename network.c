@@ -1097,8 +1097,8 @@ void dhcp_service() {
 	memcpy(resp->dns, dhcp_dns, 4);
 	memcpy(resp->router_mac, dhcp_router_mac, 6);
 
-	//	printf("send echo\n");
-	//	send_echo();
+	printf("send echo\n");
+	send_echo();
 	break;
       case dhcp_ack:
 	dhcp_state_current = dhcp_done;

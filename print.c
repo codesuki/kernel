@@ -175,7 +175,7 @@ void print_character_color(char c, char color) {
 //
 // 0x3f9
 //
-// Baud rate generator has to 8bit latches to configure a 16bit divisor.
+// Baud rate generator has two 8bit latches to configure a 16bit divisor.
 // 0xf8 0xf9
 // I think I have to divide the mhz by my desired baud rate to get the divisor.
 // I found this to be 192.
@@ -210,7 +210,7 @@ void serial_init() {
   // Enable bit 0,1,7
   data = data | 0b10000011;
   outb(SERIAL_LINE_CONTROL_REGISTER, data);
-  outb(SERIAL_IO_1, 192);
+  outb(SERIAL_IO_1, 12);
   outb(SERIAL_IO_2, 0);
   data = inb(SERIAL_LINE_CONTROL_REGISTER);
   data = data & ~0b10000000;

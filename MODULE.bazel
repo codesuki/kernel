@@ -28,6 +28,9 @@ llvm.toolchain(
     #    distribution = "LLVM-20.1.2-macOS-ARM64.tar.xz",
     #   target_arch = "amd64",
     #    target_os = "linux",
+
+    # flags:
+    # https://github.com/bazel-contrib/toolchains_llvm/blob/4c3d6cfc62d4639106d807476aa1702dfc2c884b/toolchain/internal/repo.bzl#L48
     stdlib = {"": "none"},
 )
 llvm.sysroot(

@@ -14,7 +14,6 @@ task_replace:
 	mov qword rcx, [rdi+8*4]
 	mov qword rdx, [rdi+8*5]
 	mov qword rsi, [rdi+8*6]
-	mov qword rdi, [rdi+8*7]
 	mov qword r8, [rdi+8*8]
 	mov qword r9, [rdi+8*9]
 	mov qword r10, [rdi+8*10]
@@ -23,6 +22,8 @@ task_replace:
 	mov qword r13, [rdi+8*13]
 	mov qword r14, [rdi+8*14]
 	mov qword r15, [rdi+8*15]
+	; rdi last because we use it
+	mov qword rdi, [rdi+8*7]
 
 	; get id
 	; mov byte rcx, [rsi+0]

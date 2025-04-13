@@ -19,12 +19,12 @@
 // bytes buffer to accept the remainder of the packet. We assume that the
 // remainder of the packet is X bytes. The next packet will be moved into the
 // memory from the X byte offset at the top of the Rx buffer.
-u8 network_rx_buffer[RX_BUFFER_SIZE + 16 + 1500]
-    __attribute__((aligned(4))) = {0};
+u8* network_rx_buffer = nullptr;
+//[RX_BUFFER_SIZE + 16 + 1500]
+//    __attribute__((aligned(4))) = {0};
 u16 network_rx_buffer_index = {0};
 
-u8 network_packet[1518] = {0};
-
+u8* network_tx_buffer = nullptr;
 u8 network_current_tx_descriptor = 0;
 
 u16 num_packets = 0;
@@ -241,13 +241,15 @@ eth_return:
 //
 // most brute force solution is to disable interrupts
 void net_transmit(void* data, u32 length) {
+  memcpy(data, network_tx_buffer, length);
   //__asm__("cli");
   // set address to descriptor
   // set size
   // set 0 to own
   // printf("network: tx: using descriptor %d\n",
   // network_current_tx_descriptor);
-  outl(base + 0x20 + network_current_tx_descriptor * 4, (u32)data);
+  outl(base + 0x20 + network_current_tx_descriptor * 4,
+       (u32)virtual2physical(network_tx_buffer));
   // u32 a = inl(base + 0x20);
   // printf("TX addr: %x\n", a);
   // bit 0-12 = size, bit 13 = own
@@ -383,7 +385,16 @@ void pci_enumerate() {
 	  printf("ethernet: reset successful \n");
 
 	  // 0x30 is a 4 byte receive buffer start address register.
-	  outl(base + 0x30, (u32)network_rx_buffer);
+	  // Must be in 32bit range and 4kb aligned.
+	  memory* rx_buffer = memory_remove();
+	  outl(base + 0x30, (u32)rx_buffer->address);
+	  network_rx_buffer = physical2virtual((void*)rx_buffer->address);
+	  printf("ethernet: rx_buffer physical=%x virtual=%x",
+		 rx_buffer->address, network_rx_buffer);
+	  memory* tx_buffer = memory_remove();
+	  network_tx_buffer = physical2virtual((void*)tx_buffer->address);
+	  printf("ethernet: tx_buffer physical=%x virtual=%x",
+		 tx_buffer->address, network_tx_buffer);
 
 	  // Interrupt Mask Register
 	  // 0x3c 16 bit

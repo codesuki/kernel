@@ -697,7 +697,7 @@ void schedule() {
 }
 
 void local_apic_eoi() {
-  volatile u32* local_apic_eoi = (volatile u32*)0xfee000b0;
+  volatile u32* local_apic_eoi = physical2virtual((void*)0xfee000b0);
   *local_apic_eoi = 0;
 }
 
@@ -1482,23 +1482,23 @@ acpi_rsdp_t* locate_rsdp() {
   return nullptr;
 }
 
-struct acpi_madt {
-  acpi_sdt_header header;
-  u32 local_interrupt_controller_address;
-  u32 flags;
-  u32 interrupt_controller_structure;
-} __attribute__((packed));
-typedef struct acpi_madt acpi_madt_t;
-
 // ics = interrupt controller structure
 struct acpi_ics_header {
   u8 type;
   u8 length;
 } __attribute__((packed));
-typedef struct acpi_ics_header acpi_ics_header_t;
+typedef struct acpi_ics_header acpi_ics_header;
+
+struct acpi_madt {
+  acpi_sdt_header header;
+  u32 local_interrupt_controller_address;
+  u32 flags;
+  acpi_ics_header interrupt_controller_structure[];
+} __attribute__((packed));
+typedef struct acpi_madt acpi_madt;
 
 struct acpi_ics_ioapic {
-  acpi_ics_header_t header;
+  acpi_ics_header header;
   u8 id;
   u8 reserved;
   u32 address;
@@ -1507,7 +1507,7 @@ struct acpi_ics_ioapic {
 typedef struct acpi_ics_ioapic acpi_ics_ioapic_t;
 
 struct acpi_ics_input_source_override {
-  acpi_ics_header_t header;
+  acpi_ics_header header;
   u8 bus;
   u8 source;
   u32 global_system_interrupt;
@@ -1525,6 +1525,7 @@ struct acpi_generic_address_structure {
 typedef struct acpi_generic_address_structure acpi_generic_address_structure_t;
 
 struct acpi_hpet_header {
+  acpi_sdt_header header;
   u32 event_timer_block_id;
   acpi_generic_address_structure_t base_address;
   u8 hpet_number;
@@ -1536,7 +1537,7 @@ typedef struct acpi_hpet_header acpi_hpet_header_t;
 // note: take care when taking references of a pointer.
 void list_tables(acpi_rsdt* rsdt) {
   printf("list_tables: rsdt=%x\n", rsdt);
-  int count = (rsdt->h.length - sizeof(acpi_sdt_header)) / sizeof(u32);
+  int count = (rsdt->h.length - sizeof(rsdt->h)) / sizeof(u32);
   printf("rsdt: entry count: %d\n", count);
   //  acpi_sdt_header_t* h = physical2virtual((void*)rsdt->entries);
   // printf("rsdt: entries physical=%x virtual=%x\n", rsdt->entries, h);
@@ -1550,16 +1551,12 @@ void list_tables(acpi_rsdt* rsdt) {
     acpi_sdt_header* e = physical2virtual((void*)rsdt->entries[i]);
     printf("table %d: %.*s\n", i, 4, e->signature);
     if (strncmp(e->signature, "APIC", 4)) {
-      acpi_madt_t* madt = (acpi_madt_t*)e;
-      printf("configuring acpi: %x\n",
-	     madt->local_interrupt_controller_address);
-      // how many? madt->length?
-      // first
-      int j = 0;
-      // TODO: refactor this pointer arithmetic.
-      for (acpi_ics_header_t* h =
-	       (acpi_ics_header_t*)(&(madt->interrupt_controller_structure));
-	   ; h = (acpi_ics_header_t*)((char*)h + h->length)) {
+      acpi_madt* madt = (acpi_madt*)e;
+      int count = (madt->header.length - sizeof(madt->header)) / sizeof(u32);
+      printf("madt: interrupt_controller_address=%x entries=%d\n",
+	     madt->local_interrupt_controller_address, count);
+      for (u32 i = 0; i < count; i++) {
+	acpi_ics_header* h = &madt->interrupt_controller_structure[i];
 	printf("type: %d, length: %d\n", h->type, h->length);
 	if (h->type == 1) {
 	  acpi_ics_ioapic_t* ioapic = (acpi_ics_ioapic_t*)h;
@@ -1579,19 +1576,12 @@ void list_tables(acpi_rsdt* rsdt) {
 	  printf("source: %x, interrupt: %x\n", iso->source,
 		 iso->global_system_interrupt);
 	}
-	j++;
-	if (j == 10) {
-	  break;
-	}
       }
     } else if (strncmp(e->signature, "HPET", 4)) {
-      // // note: without u8 case here we go too far.
-      // acpi_hpet_header_t* hpet =
-      //	  (acpi_hpet_header_t*)((u8*)h + sizeof(acpi_sdt_header2_t));
-      // printf("HPET: hpet number: %d\n", hpet->hpet_number);
-      // printf("HPET: address space: %d base: %x\n",
-      //	     hpet->base_address.address_space_id,
-      // hpet->base_address.address);
+      acpi_hpet_header_t* hpet = (acpi_hpet_header_t*)e;
+      printf("HPET: hpet number: %d\n", hpet->hpet_number);
+      printf("HPET: address space: %d base: %x\n",
+	     hpet->base_address.address_space_id, hpet->base_address.address);
     }
   }
 }
@@ -1738,6 +1728,9 @@ typedef struct multiboot2_tag_memory_map_entry
 extern void pages_init_wrapper();
 
 int kmain(multiboot2_information_t* mbd, u32 magic) {
+  // TODO:
+  // paging should be one of the first things to be configured, but errors will
+  // be silent if we don't set upt interrupts.
   printf("kernel start=%x end=%x size=%x\n", &_kernel_start, &_kernel_end,
 	 (u64)&_kernel_end - (u64)&_kernel_start);
 
@@ -1801,6 +1794,19 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
 
   printf("total memory: %x start addr %x\n", memory_size, first);
 
+  // TODO: could add some inline tests here if I know available memory or
+  // something.
+
+  // I created this wrapper to fix up the rbp. This should be solved in a nicer
+  // way but I wanted to get it done and move on for now.
+  // Possible follow ups
+  // - set up paging before calling kmain
+  // - reset stack and tail call kmain
+  pages_init_wrapper();
+
+  // Here we are order dependent. Only allow malloc after the pages are
+  // configured, otherwise the memory malloc allocated before may become
+  // inaccessible.
   // Should give chopped log
   u8* c = malloc(1);
   u8* c2 = malloc(1);
@@ -1815,16 +1821,6 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   free(c4);
   free(c5);
 
-  // TODO: could add some inline tests here if I know available memory or
-  // something.
-
-  // I created this wrapper to fix up the rbp. This should be solved in a nicer
-  // way but I wanted to get it done and move on for now.
-  // Possible follow ups
-  // - set up paging before calling kmain
-  // - reset stack and tail call kmain
-  pages_init_wrapper();
-
   // set pit 0 to one shot mode
   // bit 4-5 = access mode
   // bit 2-3 = mode
@@ -1836,7 +1832,6 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   idt_setup();
 
   cls();
-
   char test[10];
   itoa(123, test, 10);
   print_string(test);
@@ -1886,6 +1881,10 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
   // to.
   //  TODO: check delivery mode. IRQ 11 (0xB).
+
+  // syscalls
+  // vol 3 6.8.8
+  // syscall and sysret
 
   // timer
   // ref:

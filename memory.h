@@ -16,6 +16,8 @@ struct memory {
   memory* prev;
 };
 
+memory* memory_remove();
+
 void memory_init(u64 base_address, u64 length);
 void* malloc(u64 size);
 void free(void* memory);
@@ -24,7 +26,7 @@ extern void switch_cr3(void* cr3, void* gdt);
 extern void switch_gdt(void* gdt);
 
 void* physical2virtual(void* address);
-
+void* virtual2physical(void* address);
 void pages_init();
 void pages_map_contiguous(u64 virtual_address,
 			  u64 physical_start,
