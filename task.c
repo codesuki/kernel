@@ -79,6 +79,24 @@ task* task_new_malloc(u64 entry_point) {
   return task;
 }
 
+task* task_new_user(u64 entry_point) {
+  // needs a stack in user land
+  // allocate physical memory
+  memory* m = memory_remove();
+  const u64 stack_end = 0x00007fffffffffff - m->size * 2;
+  // map it to the heap
+  printf("task_new_user: virt=%x phys_start=%x phys_end=%x", stack_end,
+	 m->address, m->address + m->size);
+  pages_map_contiguous(stack_end, m->address, m->address + m->size);
+
+  task* task = (struct task*)malloc(sizeof(*task));
+  task_new(entry_point, stack_end, m->size, task);
+
+  // needs the right gdt entry
+  // hijack this field
+  task->id = 16;
+}
+
 // TODO: free memory
 task* task_remove(task* task) {
   printf("Removing task %d\n", task->id);

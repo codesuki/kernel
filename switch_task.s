@@ -1,5 +1,33 @@
 bits 64
 
+global enable_syscalls
+enable_syscalls:
+	; write to model specific register for sysret
+	mov eax, 0
+	mov edx, 16 << 16
+	mov ecx, 0xc0000081	; IA32_STAR
+	wrmsr
+
+	mov eax, edi
+	shr rdi, 32
+	mov edx, edi
+	mov ecx, 0xc0000082	; IA32_LSTAR
+	wrmsr
+
+	ret
+
+extern syscall_handler
+global syscall_wrapper
+syscall_wrapper:
+	; switch stack
+	push rcx		; contains rip
+
+	call syscall_handler
+
+	pop rcx
+	; switch stack
+	o64 sysret
+
 global switch_task
 switch_task:
 	; Thought on tasks having their own memory. Does this mean I need to
@@ -77,7 +105,7 @@ switch_task:
 
 	; get ip
 	mov qword rax, [rsi+8*2]
-	push rax
+	mov rcx, rax
 
 	; last we can overwrite rsi
 	mov qword rsi, [rsi+8*7]
@@ -87,5 +115,11 @@ switch_task:
 	; Should maybe initialize differently.
 	; Also, the new schedule code disables interrupts and we want to enable
 	; them again.
-	sti
-	ret
+	;sti
+	o64 sysret
+
+;; https://stackoverflow.com/a/48597025
+;; nasm will optimize mov rax, 1. One has to be specific on the size.
+;; mov eax, 1
+;; mov rax, strict dword 1
+;; mov rax, strict qword 1

@@ -110,7 +110,8 @@ extern int isr0;         // divide error, no error code, fault
 extern void isr3(void);  // breakpoint, no error code, trap
 extern void isr4(void);  // overflow, no error code, trap
 extern void isr8(void);
-extern int isr12;         // stack-segment fault, error code, fault
+extern int isr11(void);   // segment not present
+extern int isr12(void);   // stack-segment fault, error code, fault
 extern void isr13(void);  // general protection fault, error code, fault
 extern void isr14(void);  // page fault, error code, fault
 extern void isr32(void);
@@ -201,12 +202,23 @@ void task2(u8 id) {
   printf("running task 2 %d\n", id);
 }
 
+// Let's say I want to make this my first user task.
+// I need
+// GDT entries for user code and data / stack
+// map the binary to 0x0
+// allocate a stack and map it
+// somehow transfer control to main()
+// how do I even know it ran?
+// easiest would be to let it 'print', but we cannot do that yet.
+// so the goal would be to make it do a syscall, any syscall, that prints
+// something.
+
 void task_network() {
   // This will try to resolve the host to the ip and send the echo, but it
   // relies on the network stack being up. We need to wait for that.
   // Could just be a global for now, but that's boring to continue.
-  printf("task_network: sending echo\n");
-  send_echo();
+  // printf("task_network: sending echo\n");
+  // send_echo();
 }
 
 int mouse_bytes_received = 0;
@@ -835,8 +847,8 @@ void idt_setup() {
   idt_set_gate(8, (u64)isr8, 0x08, 0x8E);
   idt_set_gate(9, 0, 0x08, 0x0E);
   idt_set_gate(10, 0, 0x08, 0x0E);
-  idt_set_gate(11, 0, 0x08, 0x0E);
-  idt_set_gate(12, 0, 0x08, 0x0E);
+  idt_set_gate(11, (u64)isr11, 0x08, 0x0E);
+  idt_set_gate(12, (u64)isr12, 0x08, 0x0E);
   idt_set_gate(13, (u64)isr13, 0x08, 0x8E);
   idt_set_gate(14, (u64)isr14, 0x08, 0x8E);
   idt_set_gate(15, 0, 0x08, 0x0E);
@@ -1726,6 +1738,12 @@ typedef struct multiboot2_tag_memory_map_entry
 #define MULTIBOOT2_TAG_MEMORY_MAP 6
 
 extern void pages_init_wrapper();
+extern void syscall_wrapper();
+extern void enable_syscalls(void*);
+
+void syscall_handler(u8 syscall) {
+  printf("syscall_handler: syscall=%d\n", syscall);
+}
 
 int kmain(multiboot2_information_t* mbd, u32 magic) {
   // TODO:
@@ -1905,13 +1923,18 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   //
   // DONE
   // Make message_receive time out.
+  // Encapsulate queues in a struct.
+  // Paging, virtual memory for malloc.
   //
   // Issues:
+  // Lots of addresses hardcoded, HPET for example.
+  // Read everything from the ACPI tables.
+  // Improve network transmit code, i.e. interrupt based, solve race.
   //
   // Next:
-  // Encapsulate queues in a struct.
-  // Somehow register for specific messages.
+  // Load some user space process?
   //
+  // Somehow register for specific messages.
   // 3. extract more to separate files
   // 4. tasks/processes that have their own address space
   // 5. keyboard commands?
@@ -1966,14 +1989,14 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // pointers to service_mouse and service_keyboard, etc.
   task_current = task_scheduler = task_new_malloc((u64)schedule);
   task_idle = task_new_malloc((u64)idle_task);
-  service_mouse = task_new_malloc((u64)mouse_service);
-  service_keyboard = task_new_malloc((u64)keyboard_service);
-  service_network = task_new_malloc((u64)network_service);
-  service_dhcp = task_new_malloc((u64)dhcp_service);
-  service_dns = task_new_malloc((u64)dns_service);
-  task_new_malloc((u64)task_network);
-  task_new_malloc((u64)task1);
-  task_new_malloc((u64)task2);
+  // service_mouse = task_new_malloc((u64)mouse_service);
+  // service_keyboard = task_new_malloc((u64)keyboard_service);
+  // service_network = task_new_malloc((u64)network_service);
+  // service_dhcp = task_new_malloc((u64)dhcp_service);
+  // service_dns = task_new_malloc((u64)dns_service);
+  // task_new_malloc((u64)task_network);
+  // task_new_malloc((u64)task1);
+  // task_new_malloc((u64)task2);
 
   // How do we start the schedule task here? Call 'switch_task'? We will lose
   // the current stack. Can we reclaim it, or we don't care because it's so
@@ -1981,8 +2004,23 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // actually use it and stay the 'kernel' task, then we would just call
   // schedule here.
   printf("switching to scheduler task\n");
-  setup_hpet();
-  task_replace(task_scheduler);
+  //  setup_hpet();
+
+  extern u64 _embed_start;
+  extern u64 _embed_end;
+  const u64 embed_physical_start = (u64)&_embed_start;
+  const u64 embed_physical_end = (u64)&_embed_end;
+  // hijacking this
+  pages_map_contiguous(0x0, embed_physical_start, embed_physical_end);
+
+  task* user = task_new_user(0x0);
+  // how do we jump to it?
+
+  enable_syscalls(syscall_wrapper);
+
+  task dummy;
+  switch_task(&dummy, user);
+  // task_replace(task_scheduler);
 
   return 0xDEADBABA;
 }

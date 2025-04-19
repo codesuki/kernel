@@ -55,6 +55,12 @@ memory* memory_used_first = nullptr;
 // This code is very naive. It should do a better job of categorizing memory and
 // marking some memory as unusable, e.g. mapped hardware memory, kernel memory,
 // etc.
+
+extern u64 _embed_start;
+extern u64 _embed_end;
+const u64 embed_physical_start = (u64)&_embed_start;
+const u64 embed_physical_end = (u64)&_embed_end;
+
 void memory_init(u64 base_address, u64 length) {
   // We don't want to touch the memory block from 0 - 1mb.
   // All BIOS things live there.
@@ -70,7 +76,7 @@ void memory_init(u64 base_address, u64 length) {
   // u64 fixed it. This caused the memorys to be allocated on kernel
   // memory which caused memory corruption.
   u64 base_address_after_kernel =
-      base_address + ((u64)&_kernel_end - (u64)&_kernel_start);
+      base_address + ((u64)&_embed_end - (u64)&_kernel_start);
   // simpler
   // if base_address < _kernel_end { base_address = kernel_end }
 
@@ -82,7 +88,7 @@ void memory_init(u64 base_address, u64 length) {
 
   // TODO: length is too big because of the loader. Make this more resilient.
   // For now I subtract 1.
-  u64 page_count = (length / page_size) - 1;
+  u64 page_count = (length / page_size) - 2;
   u64 memory_size = page_count * sizeof(memory);
 
   // After our memorys
@@ -212,19 +218,47 @@ void* memory_4kb_remove() {
 gdt_ptr* gdt_pointer = {0};
 gdt_entry* gdt = {0};
 
+// ref: table 3-1
+
+// Code, Execute-Only
 #define SEGMENT_TYPE_CODE 0b1000
 #define SEGMENT_TYPE_CODE_READ 0b1100
+
+// Data, Read/Write, expand-down
+#define SEGMENT_TYPE_STACK 0b0110
 
 void init_gdt() {
   gdt = memory_4kb_remove();  // waste
   /// gdt[0] should be empty
+
+  // Kernel code
   gdt[1].type = SEGMENT_TYPE_CODE;
   gdt[1].l = 1;  // long mode
   gdt[1].p = 1;  // present
   gdt[1].s = 1;  // code / data segment
 
+  // Kernel data
+  gdt[2].type = SEGMENT_TYPE_STACK;
+  gdt[2].l = 1;  // long mode
+  gdt[2].p = 1;  // present
+  gdt[2].s = 1;  // code / data segment
+
+  // User data
+  gdt[3].type = SEGMENT_TYPE_STACK;
+  gdt[3].l = 1;    // long mode
+  gdt[3].p = 1;    // present
+  gdt[3].s = 1;    // code / data segment
+  gdt[3].dpl = 3;  // level 3 / user
+
+  // User code
+  gdt[4].type = SEGMENT_TYPE_CODE;
+  gdt[4].l = 1;    // long mode
+  gdt[4].p = 1;    // present
+  gdt[4].s = 1;    // code / data segment
+  gdt[4].dpl = 3;  // level 3 / user
+
   gdt_pointer = memory_4kb_remove();  // waste
-  gdt_pointer->limit = 2 * 8 - 1;     // for two entries
+  gdt_pointer->limit = 3 * 8 - 1;     // for two entries
   gdt_pointer->base = physical_memory_offset + (u64)gdt;
 
   // f  gdt_pointer = physical2virtual(gdt_pointer);
@@ -397,11 +431,12 @@ void pages_free_pml4(pml4_entry* table) {
   // loop and free
 }
 
-void pages_create_pml4_entry(pml4_entry* e) {
+void pages_create_pml4_entry(pml4_entry* e, u8 us) {
   printf("pages_create_pml4_entry: entry=%x\n", e);
   e->p = 1;
-  e->rw = 1;  // kernel code should not be writeable so we need to configure
-  // this.
+  // kernel code should not be writeable so we need to configure this.
+  e->rw = 1;
+  e->us = us;
 
   // next we need to allocate the next level
   // ouch we call malloc here?
@@ -411,23 +446,40 @@ void pages_create_pml4_entry(pml4_entry* e) {
   e->pointer_table_ptr = (u64)pdpt >> 12;
 }
 
-void pages_create_pdpt_entry(page_directory_pointer_table_entry* e) {
+void pages_create_pdpt_entry(page_directory_pointer_table_entry* e, u8 us) {
   printf("pages_create_pdpt_entry: entry=%x\n", e);
 
   e->p = 1;
   e->rw = 1;
+  e->us = us;
 
   page_table_entry* pd = memory_4kb_remove();
   e->directory_ptr = (u64)pd >> 12;
 }
 
-void pages_create_pd_entry(page_directory_entry* e, u64 physical) {
+void pages_create_pd_entry(page_directory_entry* e, u64 physical, u8 us) {
   printf("pages_create_pd_entry: to=%x to=%x entry=%x\n", physical,
 	 physical >> 21, e);
+  printf("pages_create_pd_entry: us=%d\n", us);
   e->ptr = physical >> 21;
   e->p = 1;
   e->rw = 1;
   e->ps = 1;
+
+  // I was setting us = 1 only on the pd entry which resulted in page faults.
+  // Then I found that the whole chain has to have us = 1 to be accessible in
+  // user mode.
+  //
+  // Quote
+  //
+  // "Access rights are also controlled by the mode of a linear address as
+  // specified by the paging-structure entries controlling the translation of
+  // the linear address. If the U/S flag (bit 2) is 0 in at least one of the
+  // paging-structure entries, the address is a supervisor-mode address.
+  // Otherwise, the address is a user-mode address."
+  //
+  // ref: Vol 3 5.6.1
+  e->us = us;
 }
 
 u64 pages_virtual_memory_offset = 0;
@@ -463,7 +515,7 @@ page_directory_entry* pages_pd(u64 address) {
   return physical2virtual(&pd[index_pd(address)]);
 }
 
-void pages_map_one(u64 virtual, u64 physical) {
+void pages_map_one(u64 virtual, u64 physical, u8 us) {
   printf("pages_map_one: from=%x to=%x\n", virtual, physical);
 
   pml4_entry* e = pages_pml4(virtual);
@@ -471,7 +523,7 @@ void pages_map_one(u64 virtual, u64 physical) {
     printf("pages_map_one: pml4 entry present\n");
   } else {
     printf("pages_map_one: pml4 missing\n");
-    pages_create_pml4_entry(e);
+    pages_create_pml4_entry(e, us);
   }
 
   page_directory_pointer_table_entry* pdpt_e = pages_pdpt(virtual);
@@ -480,7 +532,7 @@ void pages_map_one(u64 virtual, u64 physical) {
     printf("pages_map_one: pdpt entry present\n");
   } else {
     printf("pages_map_one: pdpt entry missing\n");
-    pages_create_pdpt_entry(pdpt_e);
+    pages_create_pdpt_entry(pdpt_e, us);
   }
 
   page_directory_entry* pd_e = pages_pd(virtual);
@@ -490,13 +542,17 @@ void pages_map_one(u64 virtual, u64 physical) {
   } else {
     // overwrite or fail? basically a remap
     printf("pages_map_one: pd entry missing\n");
-    pages_create_pd_entry(pd_e, physical);
+    pages_create_pd_entry(pd_e, physical, us);
   }
 }
 
 // pages_aligns changes the provided address to the containing page
 u64 pages_align(u64 address) {
   return address & ~0x1FFFFF;
+}
+
+u64 pages_align_end(u64 address) {
+  return (address + page_size) & ~0x1FFFFF;
 }
 
 void pages_align_test() {
@@ -552,15 +608,22 @@ void pages_map_contiguous(u64 virtual_address,
   printf("pages_map_contiguous: physical_end=%x physical_end_aligned=%x\n",
 	 physical_end, physical_end_aligned);
 
-  u64 count = ((physical_end_aligned - physical_start_aligned) / page_size) +
-	      1;  // poor mans ceil
+  // TODO: we pass in the virtual address but we do not know how many pages we
+  // need given the alignment. So assuming you want to put things next to each
+  // other the math has to be done before.
+  u64 count = ((physical_end_aligned - physical_start_aligned) / page_size) + 2;
 
   printf("pages_map_contiguous: mapping %d pages from %x to %x\n", count,
 	 virtual_address, physical_start);
 
+  u8 us = 0;
+  if (virtual_address <= lower_half_end) {
+    us = 1;
+  }
+
   for (u64 i = 0; i < count; i++) {
     pages_map_one(virtual_address + i * page_size,
-		  physical_start_aligned + i * page_size);
+		  physical_start_aligned + i * page_size, us);
   }
 }
 
@@ -599,10 +662,6 @@ void pages_init() {
   // create n pages at max-2b with contiguous physical space from 0x2
   // decided to map from 1mb to keep the boot structures.
 
-  // does this choose the page size given a size in bytes?
-  u64 size = kernel_physical_end - kernel_physical_start;
-  // BUG:! kernel physical start contains loader so VMA won't be correct for
-  // kernel code.
   pages_map_contiguous(kernel_code_start, 0x200000, kernel_physical_end);
 
   // 1mb area (included above?)

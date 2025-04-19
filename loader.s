@@ -138,6 +138,7 @@ setup_paging:
 	mov ecx, 0xC0000080
 	rdmsr                   ; edx has higher 32 and eax lower 32 bits
 	or eax, 1 << 8
+	or eax, 1 << 0		; enable syscall instruction
 	wrmsr
 
 

@@ -12,7 +12,7 @@ DEPDIR := .deps
 DEPFLAGS = -MT $@ -MMD -MP -MF $(DEPDIR)/$*.d
 
 LD = x86_64-elf-ld
-LDFLAGS = -T linker.ld -nostdlib -z max-page-size=0x1000
+LDFLAGS = -T linker.ld -nostdlib -z max-page-size=0x1000 -Map kernel.map
 
 CC = x86_64-elf-gcc
 # -mgeneral-regs-only disables usage of sse registers, etc.

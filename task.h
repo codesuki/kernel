@@ -1,8 +1,8 @@
 #pragma once
 
-#include "types.h"
 #include "interrupt.h"
 #include "message.h"
+#include "types.h"
 
 enum task_state { running, blocked, finished };
 typedef enum task_state task_state;
@@ -43,6 +43,7 @@ extern void switch_task(task* current, task* next);
 extern void task_replace(task* task);
 
 // void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task);
+task* task_new_user(u64 entry_point);
 task* task_new_malloc(u64 entry_point);
 task* task_remove(task* task);
 void task_update_context(task* task, interrupt_registers* regs);
