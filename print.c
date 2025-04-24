@@ -255,6 +255,14 @@ void print_hex(u64 d) {
   print_string(number_buffer);
 }
 
+void print_binary(u64 d) {
+  char number_buffer[66];
+  ltoa(d, number_buffer, 2);
+  // char number_buffer[11];
+  // itoa(d, number_buffer, 16);
+  print_string(number_buffer);
+}
+
 // memset with vectorized implementation can be faster
 void cls() {
   videoram = physical2virtual((void*)0xb8000);
@@ -322,6 +330,10 @@ int printf(const char* format, ...) {
 	case 'x':
 	  u64 h = va_arg(args, u64);
 	  print_hex(h);
+	  break;
+	case 'b':
+	  u64 b = va_arg(args, u64);
+	  print_binary(b);
 	  break;
       }
     } else {

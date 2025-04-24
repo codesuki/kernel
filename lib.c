@@ -117,6 +117,9 @@ u8* ltoa(u64 value, u8* buffer, u32 base) {
   if (base == 16) {
     *s++ = 'x';
     *s++ = '0';
+  } else if (base == 2) {
+    *s++ = 'b';
+    *s++ = '0';
   }
   *s = 0;
   reverse(buffer, s - buffer);
