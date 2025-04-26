@@ -64,8 +64,10 @@ $(ISO): $(KERNEL)
 	cp $(KERNEL) dist/boot/
 	grub-mkrescue -o $(ISO) dist/
 
-$(KERNEL): $(OBJECTS)
-	$(LD) $(LDFLAGS) -o $@ $^
+$(KERNEL): $(OBJECTS) linker.ld
+	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+
+$(KERNEL): linker.ld
 
 %.o: %.s
 	$(AS) $(ASFLAGS) $< -o $@
