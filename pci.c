@@ -112,7 +112,8 @@ u8* pci_sub_class(u32 class) {
 // 6               Drive/Head
 // 7               Status/Command
 //
-// Status register
+// Status Register
+//
 // Bit      Name
 // 0        ERR Error
 // 1        IDX Index
@@ -122,6 +123,30 @@ u8* pci_sub_class(u32 class) {
 // 5        DWF Drive write fault
 // 6        DRDY Drive ready
 // 7        BSY Busy
+//
+// Drive/Head Register
+//
+// Bit      Name
+// 0        HS0   Head address
+// 1        HS1
+// 2        HS2
+// 3        HS3
+// 4        DRV   Drive 0/1
+// 5        1
+// 6        L      Address mode LBA=1
+// 7        1
+//
+// Error Register
+//
+// Bit      Name    Desc
+// 0        AMNF    Address mark not found
+// 1        TK0NF   Track 0 not found
+// 2        ABRT    Aborted command
+// 3        MCR     Media change requested
+// 4        IDNF    ID not found
+// 5        MC      Media Changed
+// 6        UNC     Uncorrectale data error
+// 7        BBK     Bad block detect
 //
 // Control
 // Offset         Function
@@ -147,33 +172,117 @@ u8* pci_sub_class(u32 class) {
 // Response in error register
 #define ATA_COMMAND_SELF_TEST 0x90
 
-void hdd_wait_drdy() {
+#define ATA_DATA_REQUEST (1 << 3)
+#define ATA_DRIVE_READY (1 << 6)
+#define ATA_BUSY (1 << 7)
+
+#define ATA_LBA (1 << 6)
+
+#define ATA_DRIVE_1 (1 << 4)
+
+typedef union {
+  u8 raw;
+  struct {
+    u8 error : 1;
+    u8 index : 1;
+    u8 corrected_data : 1;
+    u8 data_request : 1;
+    u8 drive_seek_complete : 1;
+    u8 drive_write_fault : 1;
+    u8 drive_ready : 1;
+    u8 busy : 1;
+  } __attribute__((packed)) bits;
+} ata_status_register;
+
+typedef union {
+  u8 raw;
+  struct {
+    u8 address_mark_not_found : 1;
+    u8 track_0_not_found : 1;
+    u8 aborted_command : 1;
+    u8 media_change_requested : 1;
+    u8 id_not_found : 1;
+    u8 media_changed : 1;
+    u8 uncorrectable_data_error : 1;
+    u8 bad_block_detected : 1;
+  } __attribute__((packed)) bits;
+} ata_error_register;
+
+typedef union {
+  u8 raw;
+  struct {
+    u8 head_or_lba_high : 4;
+    u8 drive : 1;
+    u8 : 1;  // 1
+    u8 lba : 1;
+    u8 : 1;  // 1
+  } __attribute__((packed)) bits;
+} ata_drive_register;
+
+void hdd_wait_drive_ready() {
   while (true) {
-    u8 s = inb(ATA_PORT_COMMAND_PRIMARY_STATUS);
-    printf("pci: status=%b\n", s);
-    if (s & 0b01000000) {
+    ata_status_register r;
+    r.raw = inb(ATA_PORT_COMMAND_PRIMARY_STATUS);
+    printf("pci: status=%b\n", r.raw);
+    if (r.bits.drive_ready) {
       break;
     }
   }
 }
 
-void hdd_wait_drq() {
+void hdd_wait_data_request() {
   while (true) {
-    u8 s = inb(ATA_PORT_COMMAND_PRIMARY_STATUS);
-    printf("pci: status=%b\n", s);
-    if (s & 0b00001000) {
-      printf("pci: data ready\n");
+    ata_status_register r;
+    r.raw = inb(ATA_PORT_COMMAND_PRIMARY_STATUS);
+    printf("pci: status=%b\n", r.raw);
+    if (r.bits.data_request) {
       break;
     }
   }
 }
 
-void hdd_read(u16* buffer) {
+void hdd_enable_lba() {
+  ata_drive_register r;
+  r.raw = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
+  r.bits.lba = 1;
+  outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, r.raw);
+}
+
+void hdd_select_drive(u8 drive) {
+  ata_drive_register r;
+  r.raw = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
+  if (drive == 0) {
+    r.bits.drive = 0;
+  } else {
+    r.bits.drive = 1;
+  }
+  outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, r.raw);
+}
+
+void hdd_select_sector(u32 lba) {
+  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, lba & 0xff);
+  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_LOW, (lba >> 8) & 0xff);
+  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_HIGH, (lba >> 16) & 0xff);
+  ata_drive_register r;
+  r.raw = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
+  r.bits.head_or_lba_high = (lba >> 24) & 0xff;
+  outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, r.raw);
+
+  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
+}
+
+void hdd_read_sector(u8 drive, u32 lba, u16* buffer) {
+  hdd_select_drive(drive);
+  hdd_select_sector(lba);
+  hdd_wait_drive_ready();
+  outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
+  hdd_wait_data_request();
   for (u32 i = 0; i < 256; i++) {
     buffer[i] = inw(ATA_PORT_COMMAND_PRIMARY_DATA);
     u8 e = inb(ATA_PORT_COMMAND_PRIMARY_ERROR);
     if (e != 0x0) {
       printf("pci: error=%b\n", e);
+      __asm__("hlt");
     }
   }
 }
@@ -214,56 +323,19 @@ void hdd_print_boot_record(fat32_boot_record* br) {
 }
 
 void hdd() {
-  // Set drive=0
-  u8 d = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
-  printf("pci: drive=%b\n", d);
-  d &= ~0b00010000;
-  outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, d);
-  d = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
-  printf("pci: drive=%b\n", d);
+  hdd_enable_lba();
+  hdd_select_drive(0);
+  hdd_wait_drive_ready();
 
-  // Enable LBA
-  d = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
-  printf("pci: drive=%b\n", d);
-  d |= 0b01000000;
-  outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, d);
-  d = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
-  printf("pci: drive=%b\n", d);
-
-  // Set head
-  d &= ~0b1111;
-  outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, d);
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, 0);
-  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_LOW, 0);
-  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_HIGH, 0);
-
-  hdd_wait_drdy();
-
-  outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
-
-  u8 e = inb(ATA_PORT_COMMAND_PRIMARY_ERROR);
-  printf("pci: error=%b\n", e);
-
-  hdd_wait_drq();
-
+  // Read boot record
   u16 buf1[512] = {0};
-  hdd_read(buf1);
-  hdd_print_boot_record((fat32_boot_record*)buf1);
+  fat32_boot_record* boot_record = (fat32_boot_record*)buf1;
+  hdd_read_sector(0, 0, buf1);
+  hdd_print_boot_record(boot_record);
 
   // Read FSInfo
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, 1);
-  hdd_wait_drdy();
-  outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
-
-  e = inb(ATA_PORT_COMMAND_PRIMARY_ERROR);
-  printf("pci: error=%b\n", e);
-
-  hdd_wait_drq();
-
   u16 buf2[512] = {0};
-  hdd_read(buf2);
+  hdd_read_sector(0, 1, buf2);
   fat32_fsinfo* fsinfo = (fat32_fsinfo*)buf2;
   if (fsinfo->signature == 0x41615252 && fsinfo->signature_3 == 0xaa550000) {
     printf("fat32: found fsinfo\n");
@@ -272,53 +344,47 @@ void hdd() {
   }
 
   // Read FAT
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
+
   outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, 32);
-  e = inb(ATA_PORT_COMMAND_PRIMARY_ERROR);
-  printf("pci: error=%b\n", e);
-
-  hdd_wait_drdy();
-  outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
-
-  hdd_wait_drq();
 
   u16 buf3[512] = {0};
-  hdd_read(buf3);
+  hdd_read_sector(
+      0, boot_record->fat32_bios_parameter_block.num_reserved_sectors, buf3);
   u32* fatp = (u32*)buf3;
   printf("fat32: cluster0=%x (fat_id) cluster1=%x (end of chain marker)\n",
 	 fatp[0], fatp[1]);
 
-  for (u32 i = 0; i < 256; i++) {
-    if ((fatp[i] & 0x0fffffff) == 0x0) {
-      //  printf("empty\n");
-      continue;
-    }
+  // cluster[2] points to the root directory entry.
+  // It's actually the first cluster, because 0 and 1 are fixed.
+  // We could check it's state before we do anything else for sanity.
 
-    printf("fat32: cluster %d=%x ", i, fatp[i]);
-    if ((fatp[i] & 0x0fffffff) == 0x1) {
-      printf("reserved");
-    } else if ((fatp[i] & 0x0fffffff) >= 0x2 &&
-	       (fatp[i] & 0x0fffffff) <= 0x0fffffef) {
-      printf("next cluster");
-    } else if ((fatp[i] & 0x0fffffff) == 0x0ffffff7) {
-      printf("bad sector");
-    } else if ((fatp[i] & 0x0fffffff) >= 0x0ffffff8) {
-      printf("last cluster in file");
-    }
-    printf("\n");
-  }
+  // for (u32 i = 0; i < 256; i++) {
+  //   if ((fatp[i] & 0x0fffffff) == 0x0) {
+  //     //  printf("empty\n");
+  //     continue;
+  //   }
 
-  // 32 + 788 * 2 (num_fats) = 0x648
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, 0x48);
-  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_LOW, 0x6);
-  hdd_wait_drdy();
-  outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
+  //   printf("fat32: cluster %d=%x ", i, fatp[i]);
+  //   if ((fatp[i] & 0x0fffffff) == 0x1) {
+  //     printf("reserved");
+  //   } else if ((fatp[i] & 0x0fffffff) >= 0x2 &&
+  //	       (fatp[i] & 0x0fffffff) <= 0x0fffffef) {
+  //     printf("next cluster");
+  //   } else if ((fatp[i] & 0x0fffffff) == 0x0ffffff7) {
+  //     printf("bad sector");
+  //   } else if ((fatp[i] & 0x0fffffff) >= 0x0ffffff8) {
+  //     printf("last cluster in file");
+  //   }
+  //   printf("\n");
+  // }
 
-  hdd_wait_drq();
+  // cluster[2] = 1st cluster = 32 + 788 * 2 (num_fats) = 0x648
+  u32 first_cluster =
+      boot_record->fat32_bios_parameter_block.num_reserved_sectors +
+      2 * boot_record->fat32_extended_boot_record.num_sectors_per_fat;
 
   u16 buf4[512] = {0};
-  hdd_read(buf4);
+  hdd_read_sector(0, first_cluster, buf4);
   fat32_directory_entry* de = (fat32_directory_entry*)buf4;
   printf("fat32: filename=%.*s\n", 11, de->file_name);
   printf("fat32: attributes=%b\n", de->attributes);
@@ -326,25 +392,25 @@ void hdd() {
   printf("fat32: first_cluster_low=%x\n", de->first_cluster_low);
   printf("fat32: size_in_bytes=%d\n", de->size_in_bytes);
 
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, 0x49);
-  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_LOW, 0x6);
-  hdd_wait_drdy();
-  outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
-
-  hdd_wait_drq();
+  u32 cluster = (de->first_cluster_high << 16) | de->first_cluster_low;
+  printf("fat32: cluster=%d\n", cluster);
 
   u16 buf5[512] = {0};
-  hdd_read(buf5);
+  hdd_read_sector(
+      0,
+      first_cluster +
+	  (cluster - 2) *
+	      boot_record->fat32_bios_parameter_block.num_sectors_per_cluster,
+      buf5);
   printf("fat32: file contents=\n");
   printf("%.*s", de->size_in_bytes, buf5);
 
   // Identify
   // Wait for DRDY
-  hdd_wait_drdy();
+  hdd_wait_drive_ready();
   outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_IDENTIFY);
 
-  hdd_wait_drq();
+  hdd_wait_data_request();
 
   u16 info = inw(ATA_PORT_COMMAND_PRIMARY_DATA);
   printf("pci: info=%b\n", info);

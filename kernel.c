@@ -2008,16 +2008,21 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   printf("switching to scheduler task\n");
   setup_hpet();
 
-  // pages_map_contiguous(0x0, embed_physical_start, embed_physical_end);
+  task_replace(task_scheduler);
 
-  // task* user = task_new_user(0x0);
-  // // how do we jump to it?
+  // Next would be to load an elf from disk and load it into memory as a
+  // process. We can find a file on FAT32
 
+  //  fs_read_file("README.md")
+  // now we have the file somewhere in memory
+  //  elf_read_load(buf)
+  // pages_map_contiguous(load_location, file_physical_start,
+  // file_physical_end);
+
+  // task* user = task_new_user(_main address);
   // enable_syscalls(syscall_wrapper);
-
   // task dummy;
   // switch_task(&dummy, user);
-  task_replace(task_scheduler);
 
   return 0xDEADBABA;
 }
