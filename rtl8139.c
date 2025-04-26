@@ -263,185 +263,120 @@ void net_transmit(void* data, u32 length) {
   //__asm__("sti");
 }
 
-// PCI vendor
-// - device
-// 0x8086 Intel
-// - 0x1237 440FX - 82441FX PMC [Natoma]
-// - 0x7000 82371SB PIIX3 ISA [Natoma/Triton II]
-// 0x1234 Bochs
-// - 0x1111 Bochs Graphic Adapter
-// 0x10ec Realtek
-// - 0x8139 RTL-8100/8101L/8139 PCI Fast Ethernet Adapter
+void rtl8139_configure(pci_config_address a) {
+  // found ethernet controller
+  a.bits.offset = 0x4;
+  outl(PCI_CONFIG_ADDRESS, a.raw);
+  pci_config_register_1 h1;
+  h1.raw = inl(PCI_CONFIG_DATA);
+  /* printf("pci status: %x, command: %x, bus master: %d\n", */
+  /*        h1.fields.status, h1.fields.command, */
+  /*        h1.fields.command_bits.bus_master); */
 
-// PCI class
-// - subclass
-// 0x2 Network controller
-// - 0x0 Ethernet controller
-// 0x3 Display controller
-// - 0x0 VGA compatible
-// 0x6 Bridge
-// - 0x0 Host Bridge
-// - 0x1 ISA Bridge
-//
+  h1.fields.command_bits.bus_master = 1;
+  outl(PCI_CONFIG_ADDRESS, a.raw);
+  outl(PCI_CONFIG_DATA, h1.raw);
 
-void pci_enumerate() {
-  pci_config_address_t a = {0};
-  a.bits.enabled = 1;
-  a.bits.bus = 0;
-  a.bits.device = 0;
+  outl(PCI_CONFIG_ADDRESS, a.raw);
+  h1.raw = inl(PCI_CONFIG_DATA);
+  /* printf("pci status: %x, command: %x, bus master: %d\n", */
+  /*        h1.fields.status, h1.fields.command, */
+  /*        h1.fields.command_bits.bus_master); */
 
-  // Root bus is apparently always 0 so we could scan from there.
-  for (int bus = 0; bus < 256; bus++) {
-    if (bus > 1) {
-      break;
+  a.bits.offset = 0x10;
+  outl(PCI_CONFIG_ADDRESS, a.raw);
+  pci_config_register_4_rtl8139 h4;
+  h4.raw = inl(PCI_CONFIG_DATA);
+  base = h4.raw & 0xFFFFFFFC;
+  //	printf("pci header: address 1: %x\n", base);
+  if (h4.io_space.is_io_space) {
+    // printf("pci header: io space: address: %x, base: %x\n",
+    //	 h4.io_space.address, base);
+    //	  outb(base + 0x52, 0x0);  // start?
+
+    mac[0] = inb(base + 0x00);
+    mac[1] = inb(base + 0x01);
+    mac[2] = inb(base + 0x02);
+    mac[3] = inb(base + 0x03);
+    mac[4] = inb(base + 0x04);
+    mac[5] = inb(base + 0x05);
+
+    printf("ethernet: mac: %x:%x:%x:%x:%x:%x\n", mac[0], mac[1], mac[2], mac[3],
+	   mac[4], mac[5]);
+
+    //	  u8 config_1 = inb(base + RTL8139_CONFIG_1);
+    //	  printf("ethernet: config 1: %x\n", config_1);
+
+    //	  u8 config_3 = inb(base + 0x59);
+    //	  printf("ethernet: config 3: %x\n", config_3);
+
+    //	  u8 config_4 = inb(base + 0x5A);
+    //	  printf("ethernet: config 4: %x\n", config_4);
+
+    u8 cmd = inb(base + RTL8139_CMD);
+    // here reset is 1 as written on osdev. qemu bug.
+    printf("ethernet: cmd: %x\n", cmd);
+
+    // soft reset
+    outb(base + RTL8139_CMD, 0x10);
+    while ((inb(base + RTL8139_CMD) & 0x10) != 0) {
     }
-    // printf("pci: scanning bus %d\n", bus);
-    a.bits.bus = bus;
-    for (int device = 0; device < 32; device++) {
-      a.bits.device = device;
-      a.bits.offset = 0;
-      outl(PCI_CONFIG_ADDRESS, a.raw);
-      pci_config_register_0_t h1;
-      h1.raw = inl(PCI_CONFIG_DATA);
+    printf("ethernet: reset successful \n");
 
-      if (h1.fields.vendor_id == 0xffff) {
-	continue;
-      }
-      //    printf("pci: %d\n", device);
-      //    printf("pci: vendor: %x, device: %x\n", h1.fields.vendor_id,
-      //	     h1.fields.device_id);
+    // 0x30 is a 4 byte receive buffer start address register.
+    // Must be in 32bit range and 4kb aligned.
+    memory* rx_buffer = memory_remove();
+    outl(base + 0x30, (u32)rx_buffer->address);
+    network_rx_buffer = physical2virtual((void*)rx_buffer->address);
+    printf("ethernet: rx_buffer physical=%x virtual=%x", rx_buffer->address,
+	   network_rx_buffer);
+    memory* tx_buffer = memory_remove();
+    network_tx_buffer = physical2virtual((void*)tx_buffer->address);
+    printf("ethernet: tx_buffer physical=%x virtual=%x", tx_buffer->address,
+	   network_tx_buffer);
 
-      a.bits.offset = 0x8;
-      outl(PCI_CONFIG_ADDRESS, a.raw);
-      pci_config_register_2_t h2;
-      h2.raw = inl(PCI_CONFIG_DATA);
-      //      printf("pci: class: %x, subclass: %x\n", h2.fields.class,
-      //	     h2.fields.subclass);
+    // Interrupt Mask Register
+    // 0x3c 16 bit
+    // bit 0: rx OK
+    // bit 2: tx OK
+    // note: it is important to read / write the right size, i.e.
+    // outb/outw/outl. using the wrong one results in no action.
+    outw(base + 0x3c, 0x5);
 
-      a.bits.offset = 0xc;
-      outl(PCI_CONFIG_ADDRESS, a.raw);
-      pci_config_register_3_t h3;
-      h3.raw = inl(PCI_CONFIG_DATA);
-      //    printf("pci header: %x\n", h3.fields.header_type);
+    // Receive Configuration Register
+    // 0x44
+    // Bit 1: Accept all packets
+    // Bit 2: Accept physical match packets
+    // Bit 3: Accept multicast packets
+    // Bit 4: Accept broadcast packets
+    // Bit 11, 12: decide receive buffer length.
+    // 00 = 8k + 16 byte
+    // 01 = 16k + 16 byte
+    // 10 = 32K + 16 byte
+    // 11 = 64K + 16 byte
 
-      if (h1.fields.vendor_id == 0x10ec && h1.fields.device_id == 0x8139) {
-	// found ethernet controller
-	a.bits.offset = 0x4;
-	outl(PCI_CONFIG_ADDRESS, a.raw);
-	pci_config_register_1_t h1;
-	h1.raw = inl(PCI_CONFIG_DATA);
-	/* printf("pci status: %x, command: %x, bus master: %d\n", */
-	/*        h1.fields.status, h1.fields.command, */
-	/*        h1.fields.command_bits.bus_master); */
+    // 0xf is promiscuous mode, 0xe is normal.
+    outl(base + 0x44,
+	 0xe | (1 << 7));  // wrap bit and rx flags
 
-	h1.fields.command_bits.bus_master = 1;
-	outl(PCI_CONFIG_ADDRESS, a.raw);
-	outl(PCI_CONFIG_DATA, h1.raw);
+    outb(base + 0x37, 0x0C);  // Enable RX and TX in command register
 
-	outl(PCI_CONFIG_ADDRESS, a.raw);
-	h1.raw = inl(PCI_CONFIG_DATA);
-	/* printf("pci status: %x, command: %x, bus master: %d\n", */
-	/*        h1.fields.status, h1.fields.command, */
-	/*        h1.fields.command_bits.bus_master); */
-
-	a.bits.offset = 0x10;
-	outl(PCI_CONFIG_ADDRESS, a.raw);
-	pci_config_register_4_rtl8139_t h4;
-	h4.raw = inl(PCI_CONFIG_DATA);
-	base = h4.raw & 0xFFFFFFFC;
-	//	printf("pci header: address 1: %x\n", base);
-	if (h4.io_space.is_io_space) {
-	  // printf("pci header: io space: address: %x, base: %x\n",
-	  //	 h4.io_space.address, base);
-	  //	  outb(base + 0x52, 0x0);  // start?
-
-	  mac[0] = inb(base + 0x00);
-	  mac[1] = inb(base + 0x01);
-	  mac[2] = inb(base + 0x02);
-	  mac[3] = inb(base + 0x03);
-	  mac[4] = inb(base + 0x04);
-	  mac[5] = inb(base + 0x05);
-
-	  printf("ethernet: mac: %x:%x:%x:%x:%x:%x\n", mac[0], mac[1], mac[2],
-		 mac[3], mac[4], mac[5]);
-
-	  //	  u8 config_1 = inb(base + RTL8139_CONFIG_1);
-	  //	  printf("ethernet: config 1: %x\n", config_1);
-
-	  //	  u8 config_3 = inb(base + 0x59);
-	  //	  printf("ethernet: config 3: %x\n", config_3);
-
-	  //	  u8 config_4 = inb(base + 0x5A);
-	  //	  printf("ethernet: config 4: %x\n", config_4);
-
-	  u8 cmd = inb(base + RTL8139_CMD);
-	  // here reset is 1 as written on osdev. qemu bug.
-	  printf("ethernet: cmd: %x\n", cmd);
-
-	  // soft reset
-	  outb(base + RTL8139_CMD, 0x10);
-	  while ((inb(base + RTL8139_CMD) & 0x10) != 0) {
-	  }
-	  printf("ethernet: reset successful \n");
-
-	  // 0x30 is a 4 byte receive buffer start address register.
-	  // Must be in 32bit range and 4kb aligned.
-	  memory* rx_buffer = memory_remove();
-	  outl(base + 0x30, (u32)rx_buffer->address);
-	  network_rx_buffer = physical2virtual((void*)rx_buffer->address);
-	  printf("ethernet: rx_buffer physical=%x virtual=%x",
-		 rx_buffer->address, network_rx_buffer);
-	  memory* tx_buffer = memory_remove();
-	  network_tx_buffer = physical2virtual((void*)tx_buffer->address);
-	  printf("ethernet: tx_buffer physical=%x virtual=%x",
-		 tx_buffer->address, network_tx_buffer);
-
-	  // Interrupt Mask Register
-	  // 0x3c 16 bit
-	  // bit 0: rx OK
-	  // bit 2: tx OK
-	  // note: it is important to read / write the right size, i.e.
-	  // outb/outw/outl. using the wrong one results in no action.
-	  outw(base + 0x3c, 0x5);
-
-	  // Receive Configuration Register
-	  // 0x44
-	  // Bit 1: Accept all packets
-	  // Bit 2: Accept physical match packets
-	  // Bit 3: Accept multicast packets
-	  // Bit 4: Accept broadcast packets
-	  // Bit 11, 12: decide receive buffer length.
-	  // 00 = 8k + 16 byte
-	  // 01 = 16k + 16 byte
-	  // 10 = 32K + 16 byte
-	  // 11 = 64K + 16 byte
-
-	  // 0xf is promiscuous mode, 0xe is normal.
-	  outl(base + 0x44,
-	       0xe | (1 << 7));  // wrap bit and rx flags
-
-	  outb(base + 0x37, 0x0C);  // Enable RX and TX in command register
-
-	  // everything until here works.
-	} else {
-	  printf("pci header: memory space: %d, type: %d, address: %x\n",
-		 h4.memory_space.is_io_space, h4.memory_space.type,
-		 h4.memory_space.address);
-	}
-
-	a.bits.offset = 0x14;
-	outl(PCI_CONFIG_ADDRESS, a.raw);
-	h4.raw = inl(PCI_CONFIG_DATA);
-	printf("pci header: address 2: %x, addr: %x\n", h4.raw,
-	       h4.memory_space.address);
-
-	a.bits.offset = 0x3c;
-	outl(PCI_CONFIG_ADDRESS, a.raw);
-	pci_config_register_f_t hf;
-	hf.raw = inl(PCI_CONFIG_DATA);
-	printf("pci header: interrupt line: %d, interrupt pin: %d\n",
-	       hf.fields.interrupt_line, hf.fields.interrupt_pin);
-      }
-    }
+    // everything until here works.
+  } else {
+    printf("pci: is_io_space=%d type=%d address=%x\n",
+	   h4.memory_space.is_io_space, h4.memory_space.type,
+	   h4.memory_space.address);
   }
+
+  a.bits.offset = 0x14;
+  outl(PCI_CONFIG_ADDRESS, a.raw);
+  h4.raw = inl(PCI_CONFIG_DATA);
+  printf("pci: address 2: %x, addr: %x\n", h4.raw, h4.memory_space.address);
+
+  a.bits.offset = 0x3c;
+  outl(PCI_CONFIG_ADDRESS, a.raw);
+  pci_config_register_f hf;
+  hf.raw = inl(PCI_CONFIG_DATA);
+  printf("pci header: interrupt line: %d, interrupt pin: %d\n",
+	 hf.fields.interrupt_line, hf.fields.interrupt_pin);
 }

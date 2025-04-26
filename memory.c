@@ -56,11 +56,6 @@ memory* memory_used_first = nullptr;
 // marking some memory as unusable, e.g. mapped hardware memory, kernel memory,
 // etc.
 
-extern u64 _embed_start;
-extern u64 _embed_end;
-const u64 embed_physical_start = (u64)&_embed_start;
-const u64 embed_physical_end = (u64)&_embed_end;
-
 void memory_init(u64 base_address, u64 length) {
   // We don't want to touch the memory block from 0 - 1mb.
   // All BIOS things live there.
@@ -76,7 +71,7 @@ void memory_init(u64 base_address, u64 length) {
   // u64 fixed it. This caused the memorys to be allocated on kernel
   // memory which caused memory corruption.
   u64 base_address_after_kernel =
-      base_address + ((u64)&_embed_end - (u64)&_kernel_start);
+      base_address + ((u64)&_kernel_end - (u64)&_kernel_start);
   // simpler
   // if base_address < _kernel_end { base_address = kernel_end }
 

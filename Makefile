@@ -31,26 +31,36 @@ clean:
 	@rm -f $(OBJECTS) $(KERNEL) $(ISO)
 	@rm -rf dist/
 
-run: $(ISO)
-#	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet
+#-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
+#-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet
 #-d int is
 # show interrupts/exceptions in short format
 # -s is
 # shorthand for -gdb tcp::1234
 # -S is
 # freeze CPU at startup (use 'c' to start execution)
-# -monitor stdio \
+# -monitor stdio
 # -serial stdio
 
-	sudo qemu-system-x86_64 -d int \
-	-no-reboot -cdrom $(ISO) -s -no-shutdown -serial stdio \
-	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet -object filter-dump,id=f1,netdev=vmnet,file=dump.dat
-	#-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
+run: $(ISO)
+	sudo qemu-system-x86_64 -d int -s \
+	-cdrom $(ISO) \
+	-boot d \
+	-no-reboot -no-shutdown \
+	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet \
+	-object filter-dump,id=f1,netdev=vmnet,file=dump.dat \
+	-hda hdd.img \
+	-serial stdio
+#	-monitor stdio
+	#-drive id=disk,file=hdd.img,if=none -device ahci,id=ahci -device ide-hd,drive=disk,bus=ahci.0 \
+# -machine q35 # for PCIe
+
 
 debug: $(ISO)
-	# -monitor stdio
-	sudo qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -serial stdio -S \
-	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet -object filter-dump,id=f1,netdev=vmnet,file=dump.dat
+	sudo qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -monitor stdio -S \
+	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet \
+	-object filter-dump,id=f1,netdev=vmnet,file=dump.dat \
+	-drive id=disk,file=IMAGE.img,if=none -device ahci,id=ahci -device ide-hd,drive=disk,bus=ahci.0
 
 run-bochs: $(ISO)
 	bochs -f bochs.rc
@@ -58,7 +68,7 @@ run-bochs: $(ISO)
 lldb:
 	lldb -o "gdb-remote 1234" --file kernel.bin
 
-$(ISO): $(KERNEL)
+$(ISO): $(KERNEL) hdd.img
 	mkdir -p dist/boot/grub
 	cp grub.cfg dist/boot/grub
 	cp $(KERNEL) dist/boot/
@@ -75,6 +85,11 @@ $(KERNEL): linker.ld
 %.o: %.c
 %.o: %.c $(DEPDIR)/%.d | $(DEPDIR)
 	$(CC) -c $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) $< -o $@
+
+# use mtools to build a fat32 disk image
+hdd.img: README.md
+	mformat -F -i hdd.img ::
+	mcopy -i hdd.img README.md ::
 
 $(DEPDIR): ; @mkdir -p $@
 

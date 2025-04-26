@@ -1896,6 +1896,8 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // Initialize network card
   pci_enumerate();
 
+  return 0;
+
   // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
   // to.
   //  TODO: check delivery mode. IRQ 11 (0xB).
@@ -1989,14 +1991,14 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // pointers to service_mouse and service_keyboard, etc.
   task_current = task_scheduler = task_new_malloc((u64)schedule);
   task_idle = task_new_malloc((u64)idle_task);
-  // service_mouse = task_new_malloc((u64)mouse_service);
-  // service_keyboard = task_new_malloc((u64)keyboard_service);
-  // service_network = task_new_malloc((u64)network_service);
-  // service_dhcp = task_new_malloc((u64)dhcp_service);
-  // service_dns = task_new_malloc((u64)dns_service);
-  // task_new_malloc((u64)task_network);
-  // task_new_malloc((u64)task1);
-  // task_new_malloc((u64)task2);
+  service_mouse = task_new_malloc((u64)mouse_service);
+  service_keyboard = task_new_malloc((u64)keyboard_service);
+  service_network = task_new_malloc((u64)network_service);
+  service_dhcp = task_new_malloc((u64)dhcp_service);
+  service_dns = task_new_malloc((u64)dns_service);
+  task_new_malloc((u64)task_network);
+  task_new_malloc((u64)task1);
+  task_new_malloc((u64)task2);
 
   // How do we start the schedule task here? Call 'switch_task'? We will lose
   // the current stack. Can we reclaim it, or we don't care because it's so
@@ -2004,23 +2006,18 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // actually use it and stay the 'kernel' task, then we would just call
   // schedule here.
   printf("switching to scheduler task\n");
-  //  setup_hpet();
+  setup_hpet();
 
-  extern u64 _embed_start;
-  extern u64 _embed_end;
-  const u64 embed_physical_start = (u64)&_embed_start;
-  const u64 embed_physical_end = (u64)&_embed_end;
-  // hijacking this
-  pages_map_contiguous(0x0, embed_physical_start, embed_physical_end);
+  // pages_map_contiguous(0x0, embed_physical_start, embed_physical_end);
 
-  task* user = task_new_user(0x0);
-  // how do we jump to it?
+  // task* user = task_new_user(0x0);
+  // // how do we jump to it?
 
-  enable_syscalls(syscall_wrapper);
+  // enable_syscalls(syscall_wrapper);
 
-  task dummy;
-  switch_task(&dummy, user);
-  // task_replace(task_scheduler);
+  // task dummy;
+  // switch_task(&dummy, user);
+  task_replace(task_scheduler);
 
   return 0xDEADBABA;
 }
@@ -2091,3 +2088,22 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
 // s1 is 1 byte
 // -f is format
 // -c is count
+
+// brew install mtools
+//
+// # Create a 2 MB file
+// dd if=/dev/zero of=disk.img bs=1M count=2
+//
+// # Put a FAT filesystem on it (use -F for FAT32, otherwise it's automatic)
+// mformat -F -i disk.img ::
+//
+// # Add a file to it
+// mcopy -i disk.img example.txt ::
+//
+// # List files
+// mdir -i disk.img ::
+//
+// # Extract a file
+// mcopy -i disk.img ::/example.txt extracted.txt
+//
+// ref: https://unix.stackexchange.com/a/629494
