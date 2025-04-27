@@ -1,5 +1,6 @@
 #include "pci.h"
 #include "io.h"
+#include "lib.h"
 #include "memory.h"
 #include "print.h"
 #include "rtl8139.h"
@@ -259,25 +260,25 @@ void hdd_select_drive(u8 drive) {
   outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, r.raw);
 }
 
-void hdd_select_sector(u32 lba) {
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, lba & 0xff);
-  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_LOW, (lba >> 8) & 0xff);
-  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_HIGH, (lba >> 16) & 0xff);
+void hdd_select_sectors(u32 start_lba, u32 count) {
+  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, start_lba & 0xff);
+  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_LOW, (start_lba >> 8) & 0xff);
+  outb(ATA_PORT_COMMAND_PRIMARY_CYLINDER_HIGH, (start_lba >> 16) & 0xff);
   ata_drive_register r;
   r.raw = inb(ATA_PORT_COMMAND_PRIMARY_DRIVE);
-  r.bits.head_or_lba_high = (lba >> 24) & 0xff;
+  r.bits.head_or_lba_high = (start_lba >> 24) & 0xff;
   outb(ATA_PORT_COMMAND_PRIMARY_DRIVE, r.raw);
 
   outb(ATA_PORT_COMMAND_PRIMARY_SECTOR_COUNT, 1);
 }
 
-void hdd_read_sector(u8 drive, u32 lba, u16* buffer) {
+void hdd_read_sectors(u8 drive, u32 lba, u32 num_sectors, u16* buffer) {
   hdd_select_drive(drive);
-  hdd_select_sector(lba);
+  hdd_select_sectors(lba, num_sectors);
   hdd_wait_drive_ready();
   outb(ATA_PORT_COMMAND_PRIMARY_COMMAND, ATA_COMMAND_READ_SECTOR_RETRY);
   hdd_wait_data_request();
-  for (u32 i = 0; i < 256; i++) {
+  for (u32 i = 0; i < 256 * num_sectors; i++) {
     buffer[i] = inw(ATA_PORT_COMMAND_PRIMARY_DATA);
     u8 e = inb(ATA_PORT_COMMAND_PRIMARY_ERROR);
     if (e != 0x0) {
@@ -287,6 +288,10 @@ void hdd_read_sector(u8 drive, u32 lba, u16* buffer) {
   }
 }
 
+void hdd_read_sector(u8 drive, u32 lba, u16* buffer) {
+  hdd_read_sectors(drive, lba, 1, buffer);
+}
+
 void hdd_print_boot_record(fat32_boot_record* br) {
   u8* buf = (u8*)br;
   printf("pci: boot record %x %x %x\n", buf[0], buf[1], buf[2]);
@@ -294,32 +299,80 @@ void hdd_print_boot_record(fat32_boot_record* br) {
 	 buf[6], buf[7], buf[8], buf[9], buf[10]);
 
   printf("fat32: bootable_partition_signature=%x\n",
-	 br->fat32_extended_boot_record.bootable_partition_signature);
+	 br->extended_boot_record.bootable_partition_signature);
   printf("fat32: reserved_sectors=%d\n",
-	 br->fat32_bios_parameter_block.num_reserved_sectors);
+	 br->bios_parameter_block.num_reserved_sectors);
   printf("fat32: hidden_sectors=%d\n",
-	 br->fat32_bios_parameter_block.num_hidden_sectors);
+	 br->bios_parameter_block.num_hidden_sectors);
   printf("fat32: backup_boot_sector=%d\n",
-	 br->fat32_extended_boot_record.backup_boot_sector);
+	 br->extended_boot_record.backup_boot_sector);
 
-  printf("fat32: fat_id=%x\n",
-	 br->fat32_bios_parameter_block.media_descriptor_type);
-  printf("fat32: num_fats=%d\n", br->fat32_bios_parameter_block.num_fats);
+  printf("fat32: fat_id=%x\n", br->bios_parameter_block.media_descriptor_type);
+  printf("fat32: num_fats=%d\n", br->bios_parameter_block.num_fats);
   printf("fat32: sectors_per_fat=%d\n",
-	 br->fat32_extended_boot_record.num_sectors_per_fat);
-  printf("fat32: fat_version=%x\n", br->fat32_extended_boot_record.fat_version);
+	 br->extended_boot_record.sectors_per_fat);
+  printf("fat32: fat_version=%x\n", br->extended_boot_record.fat_version);
   printf("fat32: num_bytes_per_sector=%d\n",
-	 br->fat32_bios_parameter_block.num_bytes_per_sector);
+	 br->bios_parameter_block.bytes_per_sector);
   printf("fat32: num_sectors_per_cluster=%d\n",
-	 br->fat32_bios_parameter_block.num_sectors_per_cluster);
-  printf("fat32: root_cluster=%d\n",
-	 br->fat32_extended_boot_record.root_cluster);
-  printf("fat32: fsinfo_sector=%d\n",
-	 br->fat32_extended_boot_record.fsinfo_sector);
+	 br->bios_parameter_block.sectors_per_cluster);
+  printf("fat32: root_cluster=%d\n", br->extended_boot_record.root_cluster);
+  printf("fat32: fsinfo_sector=%d\n", br->extended_boot_record.fsinfo_sector);
   printf("fat32: volume_label=%.*s\n", 11,
-	 br->fat32_extended_boot_record.volume_label);
+	 br->extended_boot_record.volume_label);
   printf("fat32: system_identifier=%.*s\n", 8,
-	 br->fat32_extended_boot_record.system_identifier);
+	 br->extended_boot_record.system_identifier);
+}
+
+typedef enum {
+  unknown,
+  empty,
+  reserved,
+  cluster_pointer,
+  bad_pointer,
+  last,
+} fat32_cluster_type;
+
+fat32_cluster_type fat32_identify_cluster(u32 cluster) {
+  if ((cluster & 0x0fffffff) == 0x0) {
+    return empty;
+  } else if ((cluster & 0x0fffffff) == 0x1) {
+    return reserved;
+  } else if ((cluster & 0x0fffffff) >= 0x2 &&
+	     (cluster & 0x0fffffff) <= 0x0fffffef) {
+    return cluster_pointer;
+  } else if ((cluster & 0x0fffffff) == 0x0ffffff7) {
+    return bad_pointer;
+  } else if ((cluster & 0x0fffffff) >= 0x0ffffff8) {
+    return last;
+  } else {
+    return unknown;
+  }
+}
+
+u32 fat32_cluster_size(fat32_boot_record* boot_record) {
+  // TODO: is byte_per_sector trustworthy? This should be a disk property.
+  return boot_record->bios_parameter_block.sectors_per_cluster *
+	 boot_record->bios_parameter_block.bytes_per_sector;
+}
+
+u32 fat32_cluster_sector(fat32_boot_record* boot_record, u32 cluster) {
+  u32 first_cluster_sector =
+      boot_record->bios_parameter_block.num_reserved_sectors +
+      2 * boot_record->extended_boot_record.sectors_per_fat;
+
+  return first_cluster_sector +
+	 (cluster - 2) * boot_record->bios_parameter_block.sectors_per_cluster;
+}
+
+void fat32_read_cluster(fat32_boot_record* boot_record,
+			u32 cluster,
+			u16* buffer) {
+  u32 sector = fat32_cluster_sector(boot_record, cluster);
+  u32 size = fat32_cluster_size(boot_record);
+
+  hdd_read_sectors(
+      0, sector, boot_record->bios_parameter_block.sectors_per_cluster, buffer);
 }
 
 void hdd() {
@@ -328,82 +381,78 @@ void hdd() {
   hdd_wait_drive_ready();
 
   // Read boot record
-  u16 buf1[512] = {0};
-  fat32_boot_record* boot_record = (fat32_boot_record*)buf1;
-  hdd_read_sector(0, 0, buf1);
-  hdd_print_boot_record(boot_record);
+  //  u16 buf1[512] = {0};
+  fat32_boot_record boot_record = {0};
+  hdd_read_sector(0, 0, (u16*)&boot_record);
+  hdd_print_boot_record(&boot_record);
 
   // Read FSInfo
-  u16 buf2[512] = {0};
-  hdd_read_sector(0, 1, buf2);
-  fat32_fsinfo* fsinfo = (fat32_fsinfo*)buf2;
-  if (fsinfo->signature == 0x41615252 && fsinfo->signature_3 == 0xaa550000) {
+  fat32_fsinfo fsinfo = {0};
+  hdd_read_sector(0, 1, (u16*)&fsinfo);
+  if (fsinfo.signature == 0x41615252 && fsinfo.signature_3 == 0xaa550000) {
     printf("fat32: found fsinfo\n");
-    printf("fat32: %x %x %x\n", fsinfo->signature, fsinfo->signature_2,
-	   fsinfo->signature_3);
+    printf("fat32: %x %x %x\n", fsinfo.signature, fsinfo.signature_2,
+	   fsinfo.signature_3);
   }
 
   // Read FAT
-
-  outb(ATA_PORT_COMMAND_PRIMARY_SECTOR, 32);
-
-  u16 buf3[512] = {0};
-  hdd_read_sector(
-      0, boot_record->fat32_bios_parameter_block.num_reserved_sectors, buf3);
-  u32* fatp = (u32*)buf3;
-  printf("fat32: cluster0=%x (fat_id) cluster1=%x (end of chain marker)\n",
-	 fatp[0], fatp[1]);
-
+  //
   // cluster[2] points to the root directory entry.
   // It's actually the first cluster, because 0 and 1 are fixed.
   // We could check it's state before we do anything else for sanity.
+  // We actually have to check it's state because it could be too big for one
+  // cluster.
+  // What to do:
+  // Read FAT into memory.
+  u32 fat_size = boot_record.extended_boot_record.sectors_per_fat *
+		 boot_record.bios_parameter_block.bytes_per_sector;
+  u32* fat = malloc(fat_size);
 
-  // for (u32 i = 0; i < 256; i++) {
-  //   if ((fatp[i] & 0x0fffffff) == 0x0) {
-  //     //  printf("empty\n");
-  //     continue;
-  //   }
+  hdd_read_sector(0, boot_record.bios_parameter_block.num_reserved_sectors,
+		  (u16*)fat);
+  printf("fat32: cluster0=%x (fat_id) cluster1=%x (end of chain marker)\n",
+	 fat[0], fat[1]);
 
-  //   printf("fat32: cluster %d=%x ", i, fatp[i]);
-  //   if ((fatp[i] & 0x0fffffff) == 0x1) {
-  //     printf("reserved");
-  //   } else if ((fatp[i] & 0x0fffffff) >= 0x2 &&
-  //	       (fatp[i] & 0x0fffffff) <= 0x0fffffef) {
-  //     printf("next cluster");
-  //   } else if ((fatp[i] & 0x0fffffff) == 0x0ffffff7) {
-  //     printf("bad sector");
-  //   } else if ((fatp[i] & 0x0fffffff) >= 0x0ffffff8) {
-  //     printf("last cluster in file");
-  //   }
-  //   printf("\n");
-  // }
+  // Read whole index into memory.
+  // For now I only support 1 cluster.
+  if (fat32_identify_cluster(fat[2]) != last) {
+    printf("fat32: root directory larger than 1 cluster");
+    __asm__("hlt");
+  }
 
-  // cluster[2] = 1st cluster = 32 + 788 * 2 (num_fats) = 0x648
-  u32 first_cluster =
-      boot_record->fat32_bios_parameter_block.num_reserved_sectors +
-      2 * boot_record->fat32_extended_boot_record.num_sectors_per_fat;
+  u32 size = fat32_cluster_size(&boot_record);
+  fat32_directory_entry* index = malloc(size);
+  fat32_read_cluster(&boot_record, 2, (u16*)index);
 
-  u16 buf4[512] = {0};
-  hdd_read_sector(0, first_cluster, buf4);
-  fat32_directory_entry* de = (fat32_directory_entry*)buf4;
-  printf("fat32: filename=%.*s\n", 11, de->file_name);
-  printf("fat32: attributes=%b\n", de->attributes);
-  printf("fat32: first_cluster_high=%x\n", de->first_cluster_high);
-  printf("fat32: first_cluster_low=%x\n", de->first_cluster_low);
-  printf("fat32: size_in_bytes=%d\n", de->size_in_bytes);
+  // Scan to find specific file.
+  fat32_directory_entry* e = index;
+  while (e->name[0] != 0x00) {
+    printf("fat32: name=%.*s\n", 8, e->name);
+    printf("fat32: extension=%.*s\n", 3, e->extension);
+    printf("fat32: attributes=%b\n", e->attributes);
+    printf("fat32: first_cluster_high=%x\n", e->first_cluster_high);
+    printf("fat32: first_cluster_low=%x\n", e->first_cluster_low);
+    printf("fat32: size_in_bytes=%d\n", e->size_in_bytes);
+    u32 cluster = (e->first_cluster_high << 16) | e->first_cluster_low;
+    printf("fat32: cluster=%d\n", cluster);
 
-  u32 cluster = (de->first_cluster_high << 16) | de->first_cluster_low;
-  printf("fat32: cluster=%d\n", cluster);
+    if (strncmp(e->name, "README", 6)) {
+      break;
+    }
 
-  u16 buf5[512] = {0};
-  hdd_read_sector(
-      0,
-      first_cluster +
-	  (cluster - 2) *
-	      boot_record->fat32_bios_parameter_block.num_sectors_per_cluster,
-      buf5);
+    e++;
+  }
+
+  u8* file_contents = malloc(e->size_in_bytes);
+  u32 cluster = (e->first_cluster_high << 16) | e->first_cluster_low;
+  if (fat32_identify_cluster(fat[cluster]) != last) {
+    printf("fat32: file larger than 1 cluster");
+    __asm__("hlt");
+  }
+
+  fat32_read_cluster(&boot_record, cluster, (u16*)file_contents);
   printf("fat32: file contents=\n");
-  printf("%.*s", de->size_in_bytes, buf5);
+  printf("%.*s", e->size_in_bytes, file_contents);
 
   // Identify
   // Wait for DRDY

@@ -119,8 +119,8 @@ typedef struct {
   struct {
     u8 jump[3];
     u8 identifier[8];
-    u16 num_bytes_per_sector;
-    u8 num_sectors_per_cluster;
+    u16 bytes_per_sector;
+    u8 sectors_per_cluster;
     u16 num_reserved_sectors;
     u8 num_fats;
     u16 num_root_dir_entries;
@@ -128,14 +128,14 @@ typedef struct {
     u8 media_descriptor_type;
     // u16 num_sectors_per_fat;
     u16 reserved;
-    u16 num_sectors_per_track;
+    u16 sectors_per_track;
     u16 num_heads;
     u32 num_hidden_sectors;
     u32 num_large_sectors;
-  } __attribute__((packed)) fat32_bios_parameter_block;
+  } __attribute__((packed)) bios_parameter_block;
 
   struct {
-    u32 num_sectors_per_fat;
+    u32 sectors_per_fat;
     u16 flags;
     u16 fat_version;  // high byte = major version, low byte = minor version
     u32 root_cluster;
@@ -150,7 +150,7 @@ typedef struct {
     u8 system_identifier[8];  // "FAT32   "
     u8 boot_code[420];
     u16 bootable_partition_signature;  // 0xaa55
-  } __attribute__((packed)) fat32_extended_boot_record;
+  } __attribute__((packed)) extended_boot_record;
 } fat32_boot_record;
 
 typedef struct {
@@ -171,8 +171,8 @@ typedef struct {
 #define FAT32_FILE_ATTRIBUTE_ARCHIVE 0x20
 
 typedef struct {
-  // tODO: split
-  u8 file_name[11];  // 8 + 3: name + extension
+  u8 name[8];
+  u8 extension[3];
   u8 attributes;
   u8 reserved;
   u8 creation_seconds;  // s/100
