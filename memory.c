@@ -256,7 +256,7 @@ void init_gdt() {
   gdt[4].dpl = 3;  // level 3 / user
 
   gdt_pointer = memory_4kb_remove();  // waste
-  gdt_pointer->limit = 3 * 8 - 1;     // for two entries
+  gdt_pointer->limit = 5 * 8 - 1;     // for two entries
   gdt_pointer->base = physical_memory_offset + (u64)gdt;
 
   // f  gdt_pointer = physical2virtual(gdt_pointer);

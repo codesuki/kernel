@@ -9,10 +9,48 @@ enum task_state { running, blocked, finished };
 typedef enum task_state task_state;
 
 typedef struct task task;
+
+// Consider this order then r8 and index 8 match
+// //
+//       rax = 0x0000000000000202
+//        rbx = 0x0000000000c01600
+//        rcx = 0x0000000000000f9f
+//        rdx = 0xffff832000200010
+//        rsi = 0xffff832000200010
+//        rdi = 0xffff80000010be10
+//        rbp = 0xffff80000010bff0
+//        rsp = 0xffff80000010bdf8 -> 0xffffffff8000338e kernel.bin`kmain + 2087
+//        at kernel.c:2083:10
+//         r8 = 0x000000000000004f
+//         r9 = 0x0000000000000034
+//        r10 = 0x000000000000004f
+//        r11 = 0x0000000000000000
+//        r12 = 0x0000000000000000
+//        r13 = 0x0000000000000000
+//        r14 = 0x0000000000000000
+//        r15 = 0x0000000000000000
+//        rip = 0xffffffff8000028b kernel.bin`switch_task + 96
+//        kernel.bin`switch_task + 96
+//     eflags = 0x00000202
+//         cs = 0x00000008
+//         ss = 0x00000000
+//         ds = 0x00000000
+//         es = 0x00000000
+//         fs = 0x00000000
+//         gs = 0x00000000
+//    fs_base = 0x0000000000000000
+//    gs_base = 0x0000000000000000
+//   k_gs_base = 0x0000000000000000
+//        cr0 = 0x0000000080000011
+//        cr2 = 0x0000000000000000
+//        cr3 = 0x0000000000404000
+//        cr4 = 0x0000000000000020
+//        cr8 = 0x0000000000000000
+//       efer = 0x0000000000000501
+//
 struct task {
-  u8 id;  // TODO: remove
   u64 rsp;
-  u64 eip;
+  u64 rip;
   u64 rax;
   u64 rbx;
   u64 rcx;
@@ -30,6 +68,8 @@ struct task {
   u64 r15;
   u64 rflags;
   u64 cr3;
+  u64 cs;
+  u64 ss;
   // Don't change the order above. It will impact assembly code in switch_task.s
   task* next;
   task_state state;

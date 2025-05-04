@@ -23,7 +23,7 @@ void task_mark_finished(task* task) {
 }
 
 void trampoline() {
-  printf("finished a task: %d\n", task_current->id);
+  printf("finished a task\n");
   task_mark_finished(task_current);
   // Before we called hlt here which wastes time, but it also resulted in a
   // crash because after a hardware interrupt we would jump behind the hlt.
@@ -46,7 +46,7 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   task->state = running;
   task->queue.head = malloc(sizeof(task->queue.head));
   *task->queue.head = nullptr;
-  task->eip = entry_point;
+  task->rip = entry_point;
 
   // Set rsp to end of stack memory because it grows down.
   // E.g. Stack is from 0x200000 to 0x400000. We set it to 0x400000.
@@ -101,17 +101,18 @@ task* task_new_user(pml4_entry* pml4, u64 entry_point) {
   // virtual address in the user paging table. We are already doing this part.
   task_new(entry_point, stack_end, m->size, task);
 
-  // needs the right gdt entry
-  // hijack this field
-  // seems we didn't need it for sysret. maybe we need it for iretq..
-  task->id = 16;
-
+  // Configure page table
   task->cr3 = (u64)pml4;
+  // Point to user segments
+  // We have to set RPL = 3
+  // ref: Vol 3 3.4.2 Segment Selectors
+  task->ss = 0x18 | 3;
+  task->cs = 0x20 | 3;
 }
 
 // TODO: free memory
 task* task_remove(task* task) {
-  printf("Removing task %d\n", task->id);
+  printf("Removing task\n");
 
   free(task->queue.head);
 
@@ -151,7 +152,7 @@ void print_task(task* task) {
   printf(
       "task: rsp = %x, eip = %x\nrax = %x, rcx = %x, rdx = %x\nrsi = %x, rdi = "
       "%x, r8 = %x\nr9 = %x, r10 = %x, r11 = %x\n",
-      task->rsp, task->eip, task->rax, task->rcx, task->rdx, task->rsi,
+      task->rsp, task->rip, task->rax, task->rcx, task->rdx, task->rsi,
       task->rdi, task->r8, task->r9, task->r10, task->r11);
 }
 
@@ -168,7 +169,7 @@ void task_update_context(task* task, interrupt_registers* regs) {
   // print_task(task);
   // If the layout were the same we could memcpy.
   task->rsp = regs->rsp;
-  task->eip = regs->eip;
+  task->rip = regs->eip;
   task->rax = regs->rax;
   task->rbx = regs->rbx;
   task->rcx = regs->rcx;
@@ -196,7 +197,7 @@ void update_regs_from_task(task* task, interrupt_registers* regs) {
   // print_regs(regs);
   //  If the layout were the same we could memcpy.
   regs->rsp = task->rsp;
-  regs->eip = task->eip;
+  regs->eip = task->rip;
   regs->rax = task->rax;
   regs->rbx = task->rbx;
   regs->rcx = task->rcx;
