@@ -1,0 +1,9 @@
+load("@nasm//:defs.bzl", "nasm_library")
+
+nasm_library(
+    name = "user",
+    src = "user.s",
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["user.ld"])

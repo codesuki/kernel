@@ -51,7 +51,8 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   // Set rsp to end of stack memory because it grows down.
   // E.g. Stack is from 0x200000 to 0x400000. We set it to 0x400000.
   u64 rsp = stack_bottom + stack_size;
-  task_setup_stack(rsp);
+  // Stack setup was here, but it's separate now because user and kernel stack
+  // is different.
   rsp = rsp - sizeof(u64*);
   // We push the trampoline pointer on the stack so we need to update rsp.
   task->rsp = rsp;
@@ -72,29 +73,40 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
 
 #define STACK_SIZE 8192
 
-task* task_new_malloc(u64 entry_point) {
+task* task_new_kernel(u64 entry_point) {
   task* task = (struct task*)malloc(sizeof(*task));
   u64 stack = (u64)malloc(STACK_SIZE);
+  task_setup_stack(stack);
   task_new(entry_point, stack, STACK_SIZE, task);
   return task;
 }
 
-task* task_new_user(u64 entry_point) {
+task* task_new_user(pml4_entry* pml4, u64 entry_point) {
+  printf("task_new_user: entry_point=%x\n", entry_point);
   // needs a stack in user land
   // allocate physical memory
   memory* m = memory_remove();
+  // TODO: Do stack setup here.
   const u64 stack_end = 0x00007fffffffffff - m->size * 2;
   // map it to the heap
   printf("task_new_user: virt=%x phys_start=%x phys_end=%x", stack_end,
 	 m->address, m->address + m->size);
-  pages_map_contiguous(stack_end, m->address, m->address + m->size);
+  pages_map_contiguous(pml4, stack_end, m->address, m->address + m->size);
 
   task* task = (struct task*)malloc(sizeof(*task));
+
+  // Problem: the stack that we allocate above has a physical address. To
+  // 'prepare it', e.g. put the trampoline there or similar we need the virtual
+  // address, but in the kernel paging table. Here though we need to pass the
+  // virtual address in the user paging table. We are already doing this part.
   task_new(entry_point, stack_end, m->size, task);
 
   // needs the right gdt entry
   // hijack this field
+  // seems we didn't need it for sysret. maybe we need it for iretq..
   task->id = 16;
+
+  task->cr3 = (u64)pml4;
 }
 
 // TODO: free memory

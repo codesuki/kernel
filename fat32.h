@@ -38,7 +38,7 @@ typedef struct {
     u8 boot_code[420];
     u16 bootable_partition_signature;  // 0xaa55
   } __attribute__((packed)) extended_boot_record;
-} fat32_boot_record;
+} __attribute__((packed)) fat32_boot_record;
 
 typedef struct {
   u32 signature;  // 0x41615252
@@ -85,4 +85,19 @@ typedef enum {
   last,
 } fat32_cluster_type;
 
-void fat32_initialize(fat32_boot_record* boot_record);
+typedef u32 fat32_cluster;
+
+typedef struct {
+  fat32_boot_record* boot_record;
+  fat32_fsinfo* fsinfo;
+  fat32_cluster* fat;
+  fat32_directory_entry* root;
+} fat32_context;
+
+typedef struct {
+  u32 size;
+  void* data;
+} fat32_buffer;
+
+fat32_context* fat32_initialize();
+fat32_buffer* fat32_read_file(fat32_context* ctx, u8* name);

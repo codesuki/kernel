@@ -27,6 +27,14 @@ bool strncmp(char* s1, char* s2, int n) {
   return true;
 }
 
+u32 strlen(u8* str) {
+  u32 len = 0;
+  while (*str++ != '\0') {
+    len++;
+  }
+  return len;
+}
+
 bool memcmp(void* s1, void* s2, usize n) {
   for (usize i = 0; i < n; i++) {
     if (((u8*)s1)[i] != ((u8*)s2)[i]) {

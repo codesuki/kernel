@@ -1,3 +1,5 @@
+#include "elf.h"
+#include "fat32.h"
 #include "interrupt.h"
 #include "io.h"
 #include "lib.h"
@@ -1743,6 +1745,11 @@ extern void enable_syscalls(void*);
 
 void syscall_handler(u8 syscall) {
   printf("syscall_handler: syscall=%d\n", syscall);
+  switch (syscall) {
+    case 1:
+      task_mark_finished(task_current);
+      break;
+  }
 }
 
 int kmain(multiboot2_information_t* mbd, u32 magic) {
@@ -1883,10 +1890,10 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
 
   // TODO:
   // map FEC address range with info from the tables dynamically.
-  pages_map_contiguous((u64)physical2virtual((void*)0xFEE00000), 0xFEE00000,
-		       0xFEEFFFFF);
-  pages_map_contiguous((u64)physical2virtual((void*)0xFEC00000), 0xFEC00000,
-		       0xFECFFFFF);
+  pages_map_contiguous(nullptr, (u64)physical2virtual((void*)0xFEE00000),
+		       0xFEE00000, 0xFEEFFFFF);
+  pages_map_contiguous(nullptr, (u64)physical2virtual((void*)0xFEC00000),
+		       0xFEC00000, 0xFECFFFFF);
 
   // apic_setup();
   ioapic_setup();
@@ -1895,8 +1902,6 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
 
   // Initialize network card
   pci_enumerate();
-
-  return 0;
 
   // locate_pcmp();  // This told us that bus 0 device X (ethernet) is mapped
   // to.
@@ -1989,40 +1994,91 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // t2 = 0x12
   // TODO: also mentioned above, we probably don't want to rely on having
   // pointers to service_mouse and service_keyboard, etc.
-  task_current = task_scheduler = task_new_malloc((u64)schedule);
-  task_idle = task_new_malloc((u64)idle_task);
-  service_mouse = task_new_malloc((u64)mouse_service);
-  service_keyboard = task_new_malloc((u64)keyboard_service);
-  service_network = task_new_malloc((u64)network_service);
-  service_dhcp = task_new_malloc((u64)dhcp_service);
-  service_dns = task_new_malloc((u64)dns_service);
-  task_new_malloc((u64)task_network);
-  task_new_malloc((u64)task1);
-  task_new_malloc((u64)task2);
+  task_current = task_scheduler = task_new_kernel((u64)schedule);
+  task_idle = task_new_kernel((u64)idle_task);
+  // service_mouse = task_new_malloc((u64)mouse_service);
+  // service_keyboard = task_new_malloc((u64)keyboard_service);
+  // service_network = task_new_malloc((u64)network_service);
+  // service_dhcp = task_new_malloc((u64)dhcp_service);
+  // service_dns = task_new_malloc((u64)dns_service);
+  // task_new_malloc((u64)task_network);
+  // task_new_malloc((u64)task1);
+  // task_new_malloc((u64)task2);
 
   // How do we start the schedule task here? Call 'switch_task'? We will lose
   // the current stack. Can we reclaim it, or we don't care because it's so
   // small? I guess I could at least preserve it? Or the schedule task could
   // actually use it and stay the 'kernel' task, then we would just call
   // schedule here.
-  printf("switching to scheduler task\n");
-  setup_hpet();
+  // printf("switching to scheduler task\n");
+  // setup_hpet();
 
-  task_replace(task_scheduler);
+  // task_replace(task_scheduler);
 
   // Next would be to load an elf from disk and load it into memory as a
   // process. We can find a file on FAT32
+  fat32_context* fat32_ctx = fat32_initialize();
+  // Better if this would return a file that has size and buffer
+  fat32_buffer* buffer = fat32_read_file(fat32_ctx, "TEST_APP");
 
-  //  fs_read_file("README.md")
-  // now we have the file somewhere in memory
-  //  elf_read_load(buf)
-  // pages_map_contiguous(load_location, file_physical_start,
-  // file_physical_end);
+  printf("fat32: data=%x\n", buffer->data);
 
-  // task* user = task_new_user(_main address);
-  // enable_syscalls(syscall_wrapper);
-  // task dummy;
-  // switch_task(&dummy, user);
+  elf_header* eh = buffer->data;
+  if (eh->class != 2) {
+    printf("elf: only 64 bit supported\n");
+    __asm__("hlt");
+  }
+
+  // TODO: make a function that does the conversion already
+  memory* m = memory_remove();
+  u8* p = (u8*)physical2virtual((void*)m->address);
+  u64 base_page = 0x600000;
+  elf_program_header* ph = buffer->data + eh->program_header_offset;
+  for (u32 i = 0; i < eh->program_header_entries; i++) {
+    printf("elf: type=%x\n", ph[i].type);
+    if (ph[i].type == ELF_SEGMENT_TYPE_LOAD) {
+      printf("elf: offset=%x file_size=%x\n", ph[i].offset, ph[i].file_size);
+      u64 offset = ph[i].vaddr - base_page;
+      memcpy(&buffer->data[ph[i].offset], &p[offset], ph[i].file_size);
+    }
+  }
+
+  pml4_entry* table = pages_new_table();
+  // TODO: get the 0x60000... dynamically
+  pages_map_contiguous(table, 0x600000, (u64)virtual2physical(p),
+		       (u64)virtual2physical(p + buffer->size));
+
+  task* user = task_new_user(table, eh->entry);
+  printf("kmain: enable_syscalls\n");
+  enable_syscalls(syscall_wrapper);
+  task dummy;
+  printf("kmain: switch_task\n");
+  switch_task(&dummy, user);
+
+  // How to make devices available.
+  // Currently everything is global.
+  // E.g. pci_enumerate finds devices, knows exactly which initialize function
+  // to call, rtl8139_initialize, ata_initialize, etc.
+  // Then we use those as globals. Very brittle.
+  // We want to make those available as devices somehow.
+  // There should be a place to get them.
+  // "Device manager" could use several methods to find devices, PCI is maybe
+  // just one of them, some things are only available through ports
+  // (keyboard,mouse,...)
+  // Assume device manager would use pci_enumerate to find devices. It could
+  // then call the right drivers, they could be registered somehow to make it
+  // extendable, and call an interface function on them.
+  // I delay this until it becomes necessary.
+
+  // About FS abstraction
+  // I delay this until I have more than 1 FS.
+  //
+  // fs_read_file("README.md")
+  // fs_read_file would then use the underlying format like fat32/ntfs to look
+  // for the file. They need to implement some interface of FS to be
+  // exchangable.
+  // we don't know where to read this from, do
+  // fs_initialize(disk?) before?
 
   return 0xDEADBABA;
 }

@@ -1,0 +1,58 @@
+load("@nasm//:defs.bzl", "nasm_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+# cc_binary(
+#     name = "test_binary",
+#     srcs = ["test.c"],
+# )
+
+# cc_library(
+#     name = "test_library",
+#     srcs = ["test.c"],
+#     #    hdrs = ["stdlib.h"],
+#     copts = [
+#         "-ffreestanding",
+#         "-mno-red-zone",
+#         "-mgeneral-regs-only",
+#         "-fno-pic",
+#         "-std=c23",
+#         "-m64",
+#         "-mcmodel=kernel",
+#     ],
+# )
+
+nasm_library(
+    name = "main_asm",
+    src = ":main.s",
+)
+
+cc_library(
+    name = "test_app_lib",
+    #    hdrs = ["stdlib.h"],
+    copts = [
+        "-ffreestanding",
+        #       "-mno-red-zone",
+        #       "-mgeneral-regs-only",
+        #        "-fno-pic",
+        "-std=c23",
+        "-m64",
+    ],
+    #    srcs = ["test.c"],
+    deps = [
+        ":main_asm",
+    ],
+)
+
+cc_binary(
+    name = "test_app",
+    linkopts = [
+        "-T $(location //user:user.ld)",
+        "-Wl,--no-dynamic-linker",
+    ],
+    linkstatic = True,
+    deps = [
+        ":test_app_lib",
+        "//user",
+        "//user:user.ld",
+    ],
+)

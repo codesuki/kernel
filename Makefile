@@ -28,7 +28,7 @@ ASFLAGS = -f elf64 -g -F dwarf
 all: $(ISO)
 
 clean:
-	@rm -f $(OBJECTS) $(KERNEL) $(ISO)
+	@rm -f $(OBJECTS) $(KERNEL) $(ISO) hdd.img
 	@rm -rf dist/
 
 #-netdev vmnet-shared,id=vmnet -device rtl8139,netdev=vmnet
@@ -57,10 +57,13 @@ run: $(ISO)
 
 
 debug: $(ISO)
-	sudo qemu-system-x86_64 -d int -no-reboot -cdrom $(ISO) -s -monitor stdio -S \
+	sudo qemu-system-x86_64 -d int -s -S -no-reboot \
+	-cdrom $(ISO) \
+	-boot d \
 	-netdev vmnet-bridged,id=vmnet,ifname=en0 -device rtl8139,netdev=vmnet \
 	-object filter-dump,id=f1,netdev=vmnet,file=dump.dat \
-	-drive id=disk,file=IMAGE.img,if=none -device ahci,id=ahci -device ide-hd,drive=disk,bus=ahci.0
+	-serial stdio \
+	-hda hdd.img
 
 run-bochs: $(ISO)
 	bochs -f bochs.rc
@@ -88,8 +91,10 @@ $(KERNEL): linker.ld
 
 # use mtools to build a fat32 disk image
 hdd.img: README.md
+	dd if=/dev/zero of=hdd.img bs=1M count=20
 	mformat -F -i hdd.img ::
 	mcopy -i hdd.img README.md ::
+	mcopy -i hdd.img test_app ::
 
 $(DEPDIR): ; @mkdir -p $@
 

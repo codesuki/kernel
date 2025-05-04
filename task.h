@@ -1,6 +1,7 @@
 #pragma once
 
 #include "interrupt.h"
+#include "memory.h"
 #include "message.h"
 #include "types.h"
 
@@ -28,6 +29,7 @@ struct task {
   u64 r14;
   u64 r15;
   u64 rflags;
+  u64 cr3;
   // Don't change the order above. It will impact assembly code in switch_task.s
   task* next;
   task_state state;
@@ -43,9 +45,11 @@ extern void switch_task(task* current, task* next);
 extern void task_replace(task* task);
 
 // void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task);
-task* task_new_user(u64 entry_point);
-task* task_new_malloc(u64 entry_point);
+task* task_new_user(pml4_entry* pml4, u64 entry_point);
+task* task_new_kernel(u64 entry_point);
 task* task_remove(task* task);
+void task_mark_finished(task* task);
+
 void task_update_context(task* task, interrupt_registers* regs);
 void update_regs_from_task(task* task, interrupt_registers* regs);
 

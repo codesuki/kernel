@@ -17,20 +17,11 @@ struct memory {
 };
 
 memory* memory_remove();
+void* memory_4kb_remove();
 
 void memory_init(u64 base_address, u64 length);
 void* malloc(u64 size);
 void free(void* memory);
-
-extern void switch_cr3(void* cr3, void* gdt);
-extern void switch_gdt(void* gdt);
-
-void* physical2virtual(void* address);
-void* virtual2physical(void* address);
-void pages_init();
-void pages_map_contiguous(u64 virtual_address,
-			  u64 physical_start,
-			  u64 physical_end);
 
 // Note: I found using bitfields strongly discouraged, but I will still try to
 // use them.
@@ -194,3 +185,17 @@ struct gdt_ptr {
   u64 base;
 } __attribute__((packed));
 typedef struct gdt_ptr gdt_ptr;
+
+extern void switch_cr3(void* cr3, void* gdt);
+extern void switch_gdt(void* gdt);
+
+void* physical2virtual(void* address);
+void* virtual2physical(void* address);
+void pages_init();
+void pages_map_contiguous(pml4_entry* pml4,
+			  u64 virtual_address,
+			  u64 physical_start,
+			  u64 physical_end
+			  //	  u64 flags
+);
+pml4_entry* pages_new_table();

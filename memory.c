@@ -204,7 +204,7 @@ void* memory_4kb_remove() {
   memory* new_first = physical2virtual(memory_4kb_free_first);
   new_first->prev = m->prev;
 
-  printf("memory_4kb_remote: %x\n", physical2virtual((void*)m->address));
+  printf("memory_4kb_remove: %x\n", physical2virtual((void*)m->address));
 
   memset(physical2virtual((void*)m->address), 0, 8 * 512);
   return (void*)m->address;
@@ -223,6 +223,9 @@ gdt_entry* gdt = {0};
 #define SEGMENT_TYPE_STACK 0b0110
 
 void init_gdt() {
+  // I was wondering why this works although memory_4k_remove returns a physical
+  // address, it's because at the time of calling we have identity paging. We
+  // should actually convert to virtual memory here.
   gdt = memory_4kb_remove();  // waste
   /// gdt[0] should be empty
 
@@ -483,17 +486,15 @@ void* physical2virtual(void* address) {
   return (void*)((u64)address + pages_virtual_memory_offset);
 }
 
-void* virtual2physical(void* address) {
-  // TODO: check for overrun
-  return (void*)((u64)address - pages_virtual_memory_offset);
+pml4_entry* pages_pml4(pml4_entry* pml4, u64 address) {
+  // This works even though pml4 is a physical address because what it does it
+  // pml4 + index which is just a number really and then instead of accessing it
+  // we take the address, which is the physical address at that index.
+  return physical2virtual(&pml4[index_pml4(address)]);
 }
 
-pml4_entry* pages_pml4(u64 address) {
-  return physical2virtual(&kernel_pml4[index_pml4(address)]);
-}
-
-page_directory_pointer_table_entry* pages_pdpt(u64 address) {
-  pml4_entry* e = pages_pml4(address);
+page_directory_pointer_table_entry* pages_pdpt(pml4_entry* pml4, u64 address) {
+  pml4_entry* e = pages_pml4(pml4, address);
   page_directory_pointer_table_entry* pdpt =
       (page_directory_pointer_table_entry*)((u64)e->pointer_table_ptr << 12);
   // In hindsight I think this only works because we take the address and it
@@ -502,18 +503,26 @@ page_directory_pointer_table_entry* pages_pdpt(u64 address) {
   return physical2virtual(&pdpt[index_pdpt(address)]);
 }
 
-page_directory_entry* pages_pd(u64 address) {
-  page_directory_pointer_table_entry* e = pages_pdpt(address);
+page_directory_entry* pages_pd(pml4_entry* pml4, u64 address) {
+  page_directory_pointer_table_entry* e = pages_pdpt(pml4, address);
   page_directory_entry* pd =
       (page_directory_entry*)((u64)e->directory_ptr << 12);
 
   return physical2virtual(&pd[index_pd(address)]);
 }
 
-void pages_map_one(u64 virtual, u64 physical, u8 us) {
+void* virtual2physical(void* address) {
+  // can this somehow use the active one?
+  // read cr3?
+  page_directory_entry* e = pages_pd(kernel_pml4, (u64)address);
+  return (void*)(((u64)e->ptr << 21) | ((u64)address & 0x1FFFFF));
+}
+
+void pages_map_one(pml4_entry* pml4, u64 virtual, u64 physical, u8 us) {
   printf("pages_map_one: from=%x to=%x\n", virtual, physical);
 
-  pml4_entry* e = pages_pml4(virtual);
+  pml4_entry* e = pages_pml4(pml4, virtual);
+  printf("pages_map_one: pml4_entry=%x\n", e);
   if (e->p == 1) {
     printf("pages_map_one: pml4 entry present\n");
   } else {
@@ -521,7 +530,7 @@ void pages_map_one(u64 virtual, u64 physical, u8 us) {
     pages_create_pml4_entry(e, us);
   }
 
-  page_directory_pointer_table_entry* pdpt_e = pages_pdpt(virtual);
+  page_directory_pointer_table_entry* pdpt_e = pages_pdpt(pml4, virtual);
   printf("pages_map_one: pdpt_e=%x\n", pdpt_e);
   if (pdpt_e->p == 1) {
     printf("pages_map_one: pdpt entry present\n");
@@ -530,7 +539,7 @@ void pages_map_one(u64 virtual, u64 physical, u8 us) {
     pages_create_pdpt_entry(pdpt_e, us);
   }
 
-  page_directory_entry* pd_e = pages_pd(virtual);
+  page_directory_entry* pd_e = pages_pd(pml4, virtual);
   printf("pages_map_one: pd_e=%x\n", pd_e);
   if (pd_e->p == 1) {
     printf("pages_map_one: pd entry present\n");
@@ -580,9 +589,17 @@ void pages_align_test() {
 // pages_map_contiguous assumes the physical memory is already allocated and
 // only maps it.
 // TODO: specify whether end is inclusive or not.
-void pages_map_contiguous(u64 virtual_address,
+void pages_map_contiguous(pml4_entry* pml4,
+			  u64 virtual_address,
 			  u64 physical_start,
-			  u64 physical_end) {
+			  u64 physical_end
+			  //	  u64 flags
+) {
+  if (pml4 == nullptr) {
+    pml4 = kernel_pml4;
+    // TODO: dirty hack because I didn't want to make kernel_pml4 public.
+    // Could have a special kernel only function.
+  }
   pages_align_test();
   // alignment is wrong. from is 1 mb which is in the middle of a page and 2.5
   // is in the middle of the next page.
@@ -617,9 +634,27 @@ void pages_map_contiguous(u64 virtual_address,
   }
 
   for (u64 i = 0; i < count; i++) {
-    pages_map_one(virtual_address + i * page_size,
+    pages_map_one(pml4, virtual_address + i * page_size,
 		  physical_start_aligned + i * page_size, us);
   }
+}
+
+pml4_entry* pages_new_table() {
+  // physical address
+  pml4_entry* e_phys = pages_allocate_pml4();
+
+  pml4_entry* e = physical2virtual(e_phys);
+  // top should be clear, we will map the elf there
+  // bottom should be copy of kernel pml4
+  for (u32 i = 256; i < 512; i++) {
+    // broken
+    pml4_entry* kernel_entry = physical2virtual(&kernel_pml4[i]);
+    e[i] = *kernel_entry;
+  }
+
+  // pages_pml4, etc all expect a physical address, hence we return the physical
+  // address here.
+  return e_phys;
 }
 
 // what are pages used for? mapping things to different places. but also
@@ -646,9 +681,10 @@ void pages_init() {
 
   // TODO: consider alignment. I think inside map_contiguous we can just align
   // to bigger sizes if necessary.
-  pages_map_contiguous(physical_memory_offset, 0x0, 0x9FC00);
+  pages_map_contiguous(kernel_pml4, physical_memory_offset, 0x0, 0x9FC00);
 
-  pages_map_contiguous(physical_memory_offset + 0x100000, 0x100000, 0x7EE0000);
+  pages_map_contiguous(kernel_pml4, physical_memory_offset + 0x100000, 0x100000,
+		       0x7EE0000);
 
   // kernel
   // kernel goes from 0x2 to kernel end and we want to map it to max-2gb
@@ -657,7 +693,8 @@ void pages_init() {
   // create n pages at max-2b with contiguous physical space from 0x2
   // decided to map from 1mb to keep the boot structures.
 
-  pages_map_contiguous(kernel_code_start, 0x200000, kernel_physical_end);
+  pages_map_contiguous(kernel_pml4, kernel_code_start, 0x200000,
+		       kernel_physical_end);
 
   // 1mb area (included above?)
   // 4gb thing (included above?)
@@ -779,7 +816,9 @@ memory heap_grow() {
   memory* m = memory_remove();
 
   // map it to the heap
-  pages_map_contiguous(heap_end, m->address, m->address + m->size);
+  // TODO: pml4 needs to come from somewhere else or I need to reimplement heap
+  // for user space.
+  pages_map_contiguous(kernel_pml4, heap_end, m->address, m->address + m->size);
   // update heap variables
 
   printf("grow heap: physical address=%x virtual address=%x\n", m->address,
@@ -795,6 +834,8 @@ memory* heap_shrink() {
 
 memory_header* malloc_free_list = nullptr;
 void* malloc(u64 size) {
+  bool second_try = false;
+top:
   // TODO: assert size > 0
   printf("malloc: %d\n", size);
   if (malloc_free_list == nullptr) {
@@ -913,6 +954,15 @@ void* malloc(u64 size) {
     }
   }
 
+  if (second_try == false) {
+    memory m = heap_grow();
+    memory_header* h = (memory_header*)(m.address);
+    h->size = m.size;
+    h->next = nullptr;
+    malloc_free_list->next = h;
+    goto top;
+  }
+
   // If we came this far we didn't find free memory.
   // TODO: how can we assert?
   printf("malloc: OOM\n");
@@ -987,4 +1037,3 @@ void free(void* memory) {
   //   printf("free: %x %d\n", m, m->size);
   // }
 }
-// Memory end

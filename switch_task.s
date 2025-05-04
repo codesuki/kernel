@@ -103,9 +103,15 @@ switch_task:
 	; get stack_ptr
 	mov qword rsp, [rsi+8*1]
 
-	; get ip
+	; get ip TODO we lost rax here
 	mov qword rax, [rsi+8*2]
 	mov rcx, rax
+
+	mov rax, [rsi+8*19]
+	; set highest 4 bits to 0 bit 60 and 63 must be 0 the others we don't
+	; need, yet.
+	and rax, 0x0000ffffffffffff
+	mov cr3, rax
 
 	; last we can overwrite rsi
 	mov qword rsi, [rsi+8*7]
