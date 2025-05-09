@@ -186,8 +186,64 @@ struct gdt_ptr {
 } __attribute__((packed));
 typedef struct gdt_ptr gdt_ptr;
 
+// "The base, limit, and DPL fields and the granularity and present flags have
+// functions similar to their use in datasegment descriptors (see Section 3.4.5,
+// “Segment Descriptors”). When the G flag is 0 in a TSS descriptor for a 32-
+// bit TSS, the limit field must have a value equal to or greater than 67H, one
+// byte less than the minimum size of a TSS. Attempting to switch to a task
+// whose TSS descriptor has a limit less than 67H generates an invalid-TSS
+// exception (#TS). A larger limit is required if an I/O permission bit map is
+// included or if the operating system stores additional data. The processor
+// does not check for a limit greater than 67H on a task switch; however, it
+// does check when accessing the I/O permission bit map or interrupt redirection
+// bit map."
+// ref: vol 3 9.2.2
+
+struct tss_entry {
+  u16 segment_limit;
+  u16 base_1;
+  u8 base_2;
+  union {
+    u16 raw;
+    struct {
+      u16 type : 4;
+      u16 : 1;
+      u16 dpl : 2;
+      u16 p : 1;
+      u16 limit : 4;
+      u16 avl : 1;
+      u16 : 2;
+      u16 g : 1;
+    };
+  } attributes;
+  u8 base_3;
+  u32 base_4;
+  u32 reserved;
+} __attribute__((packed));
+typedef struct tss_entry tss_entry;
+
+struct tss {
+  u8 reserved[4];
+  u64 rsp0;
+  u64 rsp1;
+  u64 rsp2;
+  u64 reserved_2;
+  u64 ist1;
+  u64 ist2;
+  u64 ist3;
+  u64 ist4;
+  u64 ist5;
+  u64 ist6;
+  u64 ist7;
+  u64 reserved_3;
+  u16 reserved_4;
+  u16 io_map_base_address;
+} __attribute((packed));
+typedef struct tss tss;
+
 extern void switch_cr3(void* cr3, void* gdt);
 extern void switch_gdt(void* gdt);
+extern void switch_tss(u64 descriptor);
 
 void* physical2virtual(void* address);
 void* virtual2physical(void* address);

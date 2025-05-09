@@ -253,10 +253,34 @@ void init_gdt() {
   gdt[4].l = 1;    // long mode
   gdt[4].p = 1;    // present
   gdt[4].s = 1;    // code / data segment
-  gdt[4].dpl = 3;  // level 3 / user
+  gdt[4].dpl = 3;  // level 3 /   tss
+
+  void* interrupt_stack = memory_4kb_remove();
+
+  tss* tss = memory_4kb_remove();
+  tss->rsp0 = physical_memory_offset + (u64)interrupt_stack;
+
+  printf("init_gdt: interrupt_stack=%x\n",
+	 physical_memory_offset + (u64)interrupt_stack);
+
+  u64 tss_virtual = physical_memory_offset + (u64)tss;
+
+  printf("init_gdt: tss_virtual=%x\n", tss_virtual);
+
+  tss_entry* tss_e = (tss_entry*)&gdt[5];
+  tss_e->attributes.p = 1;
+  tss_e->attributes.dpl = 1;
+  tss_e->attributes.type = 9;  // set necessary bits 1 and busy bit 0.
+  // ref: vol 3 9.2.2 figure 9-3
+  // ref: even better: vol 3 3.5 table 3-2
+  tss_e->base_1 = (u64)tss_virtual & 0xffff;
+  tss_e->base_2 = ((u64)tss_virtual >> 16) & 0xff;
+  tss_e->base_3 = ((u64)tss_virtual >> 24) & 0xff;
+  tss_e->base_4 = ((u64)tss_virtual >> 32) & 0xffffffff;
 
   gdt_pointer = memory_4kb_remove();  // waste
-  gdt_pointer->limit = 5 * 8 - 1;     // for two entries
+  gdt_pointer->limit =
+      5 * 8 - 1 + 1 * sizeof(*tss);  // for 5 gdt entries and 1 tss entry
   gdt_pointer->base = physical_memory_offset + (u64)gdt;
 
   // f  gdt_pointer = physical2virtual(gdt_pointer);
@@ -712,6 +736,7 @@ void pages_init() {
   //  __asm__("cli");
   switch_cr3(kernel_pml4, (void*)(physical_memory_offset + (u64)gdt_pointer));
   //  switch_gdt(gdt_pointer);
+  switch_tss(5 << 3);
   pages_virtual_memory_offset = physical_memory_offset;
   printf("pages_init: 0x0=%x\n", physical2virtual((void*)0x0));
   //__asm__("sti");

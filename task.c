@@ -20,6 +20,8 @@ task* service_dns = nullptr;
 
 void task_mark_finished(task* task) {
   task->state = finished;
+  printf("task_mark_finished: switching to scheduler\n");
+  switch_task(task, task_scheduler);
 }
 
 void trampoline() {
@@ -37,6 +39,7 @@ void task_setup_stack(u64 rsp) {
   // Make space for the pointer by subtracting it. The stack grows down.
   u64* s = (u64*)(rsp - sizeof(u64*));
   s[0] = (u64)&trampoline;
+  printf("task_setup_stack: trampoline=%x\n", s);
 }
 
 // TODO: actually we want to allocate a new stack/task now..
@@ -51,11 +54,9 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   // Set rsp to end of stack memory because it grows down.
   // E.g. Stack is from 0x200000 to 0x400000. We set it to 0x400000.
   u64 rsp = stack_bottom + stack_size;
+  task->rsp = rsp;
   // Stack setup was here, but it's separate now because user and kernel stack
   // is different.
-  rsp = rsp - sizeof(u64*);
-  // We push the trampoline pointer on the stack so we need to update rsp.
-  task->rsp = rsp;
 
   if (task_first == nullptr) {
     // First task
@@ -73,11 +74,29 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
 
 #define STACK_SIZE 8192
 
+extern pml4_entry* kernel_pml4;
+
 task* task_new_kernel(u64 entry_point) {
   task* task = (struct task*)malloc(sizeof(*task));
+
+  // There is a bug here. Stack needs to be aligned. We just take whatever we
+  // get from malloc.
   u64 stack = (u64)malloc(STACK_SIZE);
-  task_setup_stack(stack);
+  task_setup_stack(stack + STACK_SIZE);
   task_new(entry_point, stack, STACK_SIZE, task);
+
+  // We push the trampoline pointer on the stack so we need to update rsp.
+  task->rsp -= sizeof(u64*);
+
+  printf("task_new_kernel: rsp=%x\n", task->rsp);
+
+  // Configure page table
+  task->cr3 = (u64)kernel_pml4;
+  // Point to user segments
+  // We have to set RPL = 3
+  // ref: Vol 3 3.4.2 Segment Selectors
+  task->ss = 0x10;
+  task->cs = 0x8;
   return task;
 }
 

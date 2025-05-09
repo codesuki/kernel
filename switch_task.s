@@ -40,6 +40,8 @@ switch_task:
 	; TODO There's a bug. When we fill registers from
 	; maybe rdi it fills in weird data.
 
+	; Save task
+
 	; We leave caller saved scratch registers on the stack.
 	; We return after the call to switch_task
 	mov qword [rdi+8*2], rax
@@ -80,12 +82,12 @@ switch_task:
 	; TODO: I think this can be moved up
 	mov qword [rdi+8*0], rsp	; 1 stack ptr
 
-	; push cr3
+	; Restore task
 
 	; We get a pointer to a task_t. It has the saved registers.
-	; Skip rax because we use it below. Restore last.
+	; Skip rax and rbx because we use it below. Restore last.
 	; mov qword rax, [rsi+8*2]
-	mov qword rbx, [rsi+8*3]
+	; mov qword rbx, [rsi+8*3]
 	mov qword rcx, [rsi+8*4]
 	mov qword rdx, [rsi+8*5]
 	; Skip rsi because we are using it
@@ -108,13 +110,24 @@ switch_task:
 	; cs
 	; rip
 
+	; cr3
+	mov rax, [rsi+8*18]
+	; set highest 4 bits to 0 bit 60 and 63 must be 0 the others we don't
+	; need, yet.
+	and rax, 0x0000ffffffffffff
+	mov cr3, rax
+
 	; ss
 	mov qword rax, [rsi+8*20]
-	push rax
-
 	; rsp
-	mov qword rax, [rsi+8*0]
+	mov qword rbx, [rsi+8*0]
+	; switch stack here because current stack became unavailable after cr3
+	; load
+	mov rsp, rbx
+
+	; push ss then rsp
 	push rax
+	push rbx
 
 	; rflags
 	mov qword rax, [rsi+8*17]
@@ -131,25 +144,16 @@ switch_task:
 	mov qword rax, [rsi+8*1]
 	push rax
 
-	; Save rax to stack so we can access it after changing the page table
+	; restore rax
 	mov qword rax, [rsi+8*2]
-	push rax
 
-	; cr3
-	mov rax, [rsi+8*18]
+	; restore rbx
+	mov qword rbx, [rsi+8*3]
 
 	; last we can overwrite rsi
 	; I do this here because once cr3 is changed we may not be able to
 	; access this.
 	mov qword rsi, [rsi+8*6]
-
-	; set highest 4 bits to 0 bit 60 and 63 must be 0 the others we don't
-	; need, yet.
-	and rax, 0x0000ffffffffffff
-	mov cr3, rax
-
-	; restore rax
-	pop rax
 
 	; The code initializes a task with the interrupt flag IF=0 which
 	; disables interrupts. For now we enable them here manually.

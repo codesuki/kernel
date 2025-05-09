@@ -7,7 +7,6 @@ switch_cr3:
 	or rax, rdi		; set address of new pml4
 	mov cr3, rax
 
-
 global switch_gdt
 switch_gdt:
 	lgdt [rsi]
@@ -27,6 +26,11 @@ switch_gdt:
 	; mov gs, ax
 
 	retfq
+
+global switch_tss
+switch_tss:
+	ltr di
+	ret
 
 extern pages_init
 global pages_init_wrapper

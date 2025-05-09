@@ -57,8 +57,17 @@ typedef struct tss_struct tss_t;
 struct idt_entry {
   u16 offset_start;
   u16 selector;
-  u8 zero;
-  u8 type_attr;
+  union {
+    u16 raw;
+    struct {
+      u16 ist : 3;
+      u16 : 5;
+      u16 type : 4;
+      u16 : 1;
+      u16 dpl : 2;
+      u16 p : 1;
+    };
+  } attributes;
   u16 offset_mid;
   u32 offset_end;
   u32 reserved;
@@ -96,7 +105,7 @@ typedef struct idt_ptr_struct idt_ptr_t;
 idt_ptr_t idt;
 idt_entry_t idt_entries[256] = {0};
 
-tss_t tss;
+// tss_t tss;
 
 // extern void gdt_update(gdt_ptr_t*);
 extern void idt_update(idt_ptr_t*);
@@ -889,9 +898,10 @@ void idt_set_gate(u32 interrupt, u64 offset, u16 selector, u8 type_attr) {
 
   idt_entries[interrupt].selector = selector;
 
-  idt_entries[interrupt].type_attr = type_attr;
+  idt_entries[interrupt].attributes.raw = type_attr << 8;
 
-  idt_entries[interrupt].zero = 0;
+  // idt_entries[interrupt].attributes.ist = 1;
+  // idt_entries[interrupt].zero = 0;}
 }
 
 /* void idt_set_gate(uint32 interrupt, uint32 offset, uint16 selector, */
@@ -1996,24 +2006,14 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // pointers to service_mouse and service_keyboard, etc.
   task_current = task_scheduler = task_new_kernel((u64)schedule);
   task_idle = task_new_kernel((u64)idle_task);
-  // service_mouse = task_new_malloc((u64)mouse_service);
-  // service_keyboard = task_new_malloc((u64)keyboard_service);
-  // service_network = task_new_malloc((u64)network_service);
-  // service_dhcp = task_new_malloc((u64)dhcp_service);
-  // service_dns = task_new_malloc((u64)dns_service);
-  // task_new_malloc((u64)task_network);
-  // task_new_malloc((u64)task1);
-  // task_new_malloc((u64)task2);
-
-  // How do we start the schedule task here? Call 'switch_task'? We will lose
-  // the current stack. Can we reclaim it, or we don't care because it's so
-  // small? I guess I could at least preserve it? Or the schedule task could
-  // actually use it and stay the 'kernel' task, then we would just call
-  // schedule here.
-  // printf("switching to scheduler task\n");
-  // setup_hpet();
-
-  // task_replace(task_scheduler);
+  service_mouse = task_new_kernel((u64)mouse_service);
+  service_keyboard = task_new_kernel((u64)keyboard_service);
+  // service_network = task_new_kernel((u64)network_service);
+  // service_dhcp = task_new_kernel((u64)dhcp_service);
+  // service_dns = task_new_kernel((u64)dns_service);
+  // task_new_kernel((u64)task_network);
+  task_new_kernel((u64)task1);
+  task_new_kernel((u64)task2);
 
   // Next would be to load an elf from disk and load it into memory as a
   // process. We can find a file on FAT32
@@ -2052,8 +2052,8 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   printf("kmain: enable_syscalls\n");
   enable_syscalls(syscall_wrapper);
   task dummy;
-  printf("kmain: switch_task\n");
-  switch_task(&dummy, user);
+  // ("kmain: switch_task\n");
+  // switch_task(&dummy, user);
 
   // How to make devices available.
   // Currently everything is global.
@@ -2079,6 +2079,26 @@ int kmain(multiboot2_information_t* mbd, u32 magic) {
   // exchangable.
   // we don't know where to read this from, do
   // fs_initialize(disk?) before?
+
+  // How do we start the schedule task here? Call 'switch_task'? We will lose
+  // the current stack. Can we reclaim it, or we don't care because it's so
+  // small? I guess I could at least preserve it? Or the schedule task could
+  // actually use it and stay the 'kernel' task, then we would just call
+  // schedule here.
+  printf("switching to scheduler task\n");
+  setup_hpet();
+
+  //  task_replace(task_scheduler);
+  switch_task(&dummy, task_scheduler);
+
+  // BUG:
+  // page fault when trying to switch to task_scheduler after exit() syscall
+  // first thought: being inside a syscall CS is wrong when we save it. but
+  // given that we exit maybe it doesn't matter? we won't use it anymore.
+  // page fault is for a user stack address.
+  // The problem is in switch_task the last pop rax fails because the stack is
+  // not paged in anymore. Actually iretq fails because it cannot access the
+  // stack anymore.
 
   return 0xDEADBABA;
 }
