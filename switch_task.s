@@ -31,6 +31,7 @@ syscall_wrapper:
 
 global switch_task
 switch_task:
+	cli
 	; Thought on tasks having their own memory. Does this mean I need to
 	; reserve memory and copy all the code there? This would explain why
 	; threading works the way it does in Linux. It probably copies the whole
@@ -160,7 +161,7 @@ switch_task:
 	; Should maybe initialize differently.
 	; Also, the new schedule code disables interrupts and we want to enable
 	; them again.
-	;sti
+	sti
 	iretq
 
 ;; https://stackoverflow.com/a/48597025

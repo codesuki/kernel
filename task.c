@@ -58,6 +58,12 @@ void task_new(u64 entry_point, u64 stack_bottom, u32 stack_size, task* task) {
   // Stack setup was here, but it's separate now because user and kernel stack
   // is different.
 
+  // enable interrupt bit
+  // before we restored eflags using popfd, but we switched to using iretq which
+  // loads eflags from the stack, hence the sti at the end of switch_task has no
+  // effect.
+  task->rflags = 1 << 9;
+
   if (task_first == nullptr) {
     // First task
     task_first = task;
